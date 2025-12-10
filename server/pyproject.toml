@@ -1,0 +1,16 @@
+[project]
+name = "server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.121.0",
+    "python-multipart>=0.0.9",
+    "websockets>=13.1",
+    "opencv-python>=4.8.0",
+    "python-ffmpeg>=2.0.12",
+    "brotli-asgi>=0.4.0",
+    "numba>=0.59.0",
+]
+

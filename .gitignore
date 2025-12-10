@@ -1,0 +1,36 @@
+# Python-generated files
+server/__pycache__/
+server/*.py[oc]
+server/build/
+server/dist/
+server/wheels/
+server/*.egg-info
+
+# Virtual environments
+server/.venv
+server/videos/
+server/results/
+server/analyses.db
+
+.DS_Store
+
+
+# Client
+client/node_modules
+client/.vscode
+client/dist
+client/dist-ssr
+client/coverage
+client/*.local
+
+# Editor directories and files
+client/.vscode/*
+!.vscode/extensions.json
+client/.idea
+client/*.suo
+client/*.ntvs*
+client/*.njsproj
+client/*.sln
+client/*.sw?
+client/*.tsbuildinfo
+client/.eslintcache

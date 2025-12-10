@@ -1,0 +1,39 @@
+---
+description: Shared rules for coordinating the FastAPI backend and Vue frontend.
+globs:
+  - "**"
+alwaysApply: true
+---
+
+# Motility Analyzer Project Rules
+
+- Add or update tests whenever altering behavior (FastAPI routes, Pinia stores, composables).
+- Document API contracts and front/back integration points in the PR description or `README.md`.
+
+## Local Development Workflow
+
+1. **Install deps once per stack**
+   - Backend: `cd server && uv sync` (or `pip install -e .` if uv not available).
+   - Frontend: `cd client && npm install`.
+2. **Start services**
+   - Backend: `uvicorn server.main:app --reload --port 8000`.
+   - Frontend: `npm run dev -- --port 5173`.
+3. Confirm CORS rules allow the frontend origin; adjust FastAPI middleware before shipping changes.
+
+## API / Frontend Integration
+
+- Define FastAPI response models so the Vue TS types can mirror them.
+- For new endpoints, expose a typed client helper under `client/src/lib/**` (or nearest shared util) and reuse via Pinia stores or composables.
+- Keep shared enums/strings in one place; update both stacks in the same PR when contracts change.
+
+## Testing & Quality
+
+- Backend: prefer pytest + httpx clients; include regression tests for bugfixes.
+- Frontend: use Vitest + Vue Test Utils for component logic; Cypress or Playwright for E2E if needed.
+- Run `npm run build` and a backend `uv run fastapi dev` smoke test before release to ensure both stacks compile.
+
+## Tooling Notes
+
+- Use TypeScript strict mode; avoid `any`.
+- Keep dependencies minimal; explain new ones in PR notes.
+- Update documentation whenever commands or environment variables change.

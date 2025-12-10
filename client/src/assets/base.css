@@ -1,0 +1,177 @@
+:root {
+  /* ───────────────────────────
+     PRIMARY BRAND COLORS
+     Inspired by modern analytics UI palettes (e.g., InfluxDB)
+  ─────────────────────────── */
+  --color-primary-50:  oklch(96.66% 0.0200 229.03);
+  --color-primary-100: oklch(91.66% 0.0489 232.20);
+  --color-primary-200: oklch(86.36% 0.0810 232.86);
+  --color-primary-300: oklch(80.18% 0.1168 235.49);
+  --color-primary-400: oklch(73.42% 0.1520 241.19);
+  --color-primary-500: oklch(66.02% 0.1878 250.18); /* main */
+  --color-primary-600: oklch(56.54% 0.1676 251.69);
+  --color-primary-700: oklch(47.53% 0.1411 251.73);
+  --color-primary-800: oklch(37.88% 0.1159 252.73);
+  --color-primary-900: oklch(27.87% 0.0820 251.44);
+
+  /* Accent for contrast (teal-blue mix, like InfluxDB’s vibrancy) */
+  --color-accent-50:  oklch(98.08% 0.0265 185.20);
+  --color-accent-100: oklch(94.72% 0.0764 183.79);
+  --color-accent-200: oklch(92.14% 0.1180 181.40);
+  --color-accent-300: oklch(89.93% 0.1458 179.78);
+  --color-accent-400: oklch(86.17% 0.1550 178.76);
+  --color-accent-500: oklch(77.87% 0.1426 178.62); /* main */
+  --color-accent-600: oklch(66.41% 0.1206 179.87);
+  --color-accent-700: oklch(55.82% 0.1020 178.99);
+  --color-accent-800: oklch(44.76% 0.0814 179.69);
+  --color-accent-900: oklch(31.85% 0.0589 177.29);
+
+  /* ───────────────────────────
+     NEUTRALS (UI backgrounds, borders, text)
+  ─────────────────────────── */
+  --color-neutral-50:  oklch(98.51% 0.0000 89.88);
+  --color-neutral-100: oklch(97.04% 0.0013 286.38);
+  --color-neutral-200: oklch(92.47% 0.0029 264.54);
+  --color-neutral-300: oklch(86.00% 0.0047 258.33);
+  --color-neutral-400: oklch(77.51% 0.0066 255.48);
+  --color-neutral-500: oklch(65.82% 0.0088 253.88);
+  --color-neutral-600: oklch(51.55% 0.0093 253.91);
+  --color-neutral-700: oklch(41.10% 0.0099 253.94);
+  --color-neutral-800: oklch(31.57% 0.0083 255.56);
+  --color-neutral-900: oklch(23.42% 0.0065 258.36);
+
+  /* Text helpers */
+  --text-primary:   var(--color-neutral-900);
+  --text-secondary: var(--color-neutral-600);
+  --text-inverted:  oklch(100.00% 0.0000 89.88);
+
+  /* Background helpers */
+  --bg-primary:   oklch(100.00% 0.0000 89.88);
+  --bg-secondary: var(--color-neutral-50);
+  --bg-elevated:  var(--color-neutral-100);
+  
+  /* Popover colors */
+  --popover: var(--bg-primary);
+  --popover-foreground: var(--text-primary);
+
+  /* ───────────────────────────
+     SEMANTIC COLORS
+     (Analytics-style, modern & vibrant)
+  ─────────────────────────── */
+  /* Success (green–teal) */
+  --color-success-100: oklch(97.23% 0.0300 175.97);
+  --color-success-200: oklch(92.76% 0.0698 173.45);
+  --color-success-300: oklch(87.90% 0.1147 172.34);
+  --color-success-400: oklch(81.24% 0.1487 169.51);
+  --color-success-500: oklch(72.72% 0.1515 165.67); /* main */
+  --color-success-600: oklch(62.32% 0.1283 166.63);
+  --color-success-700: oklch(51.14% 0.1044 167.32);
+
+  /* Warning (gold-amber) */
+  --color-warning-100: oklch(97.76% 0.0251 86.87);
+  --color-warning-200: oklch(93.51% 0.0717 86.07);
+  --color-warning-300: oklch(88.66% 0.1185 83.69);
+  --color-warning-400: oklch(84.07% 0.1537 79.80);
+  --color-warning-500: oklch(79.45% 0.1709 71.19); /* main */
+  --color-warning-600: oklch(68.89% 0.1488 70.43);
+  --color-warning-700: oklch(57.53% 0.1240 70.84);
+
+  /* Error (rose–red, modern analytic style) */
+  --color-error-100: oklch(95.68% 0.0221 7.17);
+  --color-error-200: oklch(89.31% 0.0569 11.54);
+  --color-error-300: oklch(77.16% 0.1024 19.67);
+  --color-error-400: oklch(68.75% 0.1420 21.46);
+  --color-error-500: oklch(65.39% 0.1926 25.14); /* main */
+  --color-error-600: oklch(56.80% 0.2002 26.41);
+  --color-error-700: oklch(50.16% 0.1887 27.48);
+
+  /* ───────────────────────────
+     CHART COLORS
+     (Curated set—useful, distinct, not overwhelming)
+  ─────────────────────────── */
+  --chart-1: oklch(66.02% 0.1878 250.18);
+  --chart-2: oklch(77.87% 0.1426 178.62);
+  --chart-3: oklch(79.45% 0.1709 71.19);
+  --chart-4: oklch(65.39% 0.1926 25.14);
+  --chart-5: oklch(54.95% 0.1615 297.66);
+  --chart-6: oklch(65.63% 0.1071 185.34);
+  --chart-7: oklch(71.85% 0.1417 144.89);
+  --chart-8: oklch(70.02% 0.1488 246.66);
+
+  /* ───────────────────────────
+     UTILITY SHADOWS & BORDERS
+  ─────────────────────────── */
+  --border-light: rgba(0, 0, 0, 0.08);
+  --border-medium: rgba(0, 0, 0, 0.16);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 3px 8px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 6px 18px rgba(0, 0, 0, 0.2);
+}
+
+
+/* *,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  font-weight: normal;
+} */
+
+body {
+  min-height: 100vh;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  transition:
+    color 0.5s,
+    background-color 0.5s;
+  line-height: 1.6;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    Oxygen,
+    Ubuntu,
+    Cantarell,
+    'Fira Sans',
+    'Droid Sans',
+    'Helvetica Neue',
+    sans-serif;
+  font-size: 15px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ───────────────────────────
+   TYPOGRAPHY (h1-h4)
+   Default font sizes for headings
+─────────────────────────── */
+h1 {
+  font-size: 2rem; /* 36px */
+  line-height: 1;
+  font-weight: 300;
+  margin-block: 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.6rem; /* 30px */
+  line-height: 1.1;
+  font-weight: 300;
+  margin-block: 0 0.4rem;
+}
+
+h3 {
+  font-size: 1.2rem; /* 24px */
+  line-height: 1.1; 
+  font-weight: 400;
+  margin-block: 0 0.3rem;
+}
+
+h4 {
+  font-size: 1.125rem; /* 18px */
+  line-height: 1.1;
+  font-weight: 400;
+  margin-block: 0 0.2rem;
+}

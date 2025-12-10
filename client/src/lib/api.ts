@@ -1,0 +1,363 @@
+/** API client for video analysis backend. */
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+// Request cancellation management
+const activeRequests = new Map<string, AbortController>();
+
+/**
+ * Get or create an AbortController for a given endpoint key.
+ * Cancels any existing request for the same key before creating a new one.
+ */
+function getAbortController(endpointKey: string): AbortController {
+  // Cancel any existing request for this endpoint
+  const existing = activeRequests.get(endpointKey);
+  if (existing) {
+    existing.abort();
+  }
+  
+  // Create new controller
+  const controller = new AbortController();
+  activeRequests.set(endpointKey, controller);
+  
+  return controller;
+}
+
+/**
+ * Remove the AbortController for an endpoint after request completes.
+ */
+function cleanupAbortController(endpointKey: string): void {
+  activeRequests.delete(endpointKey);
+}
+
+// Types matching backend models
+export interface VideoMetadata {
+  total_frames: number;
+  fps: number;
+  width: number;
+  height: number;
+  display_aspect_ratio: number | null;
+  duration: number;
+  file_size: number;
+  codec: string | null;
+}
+
+export interface Video {
+  id: string;
+  filename: string;
+  upload_date: string;
+  file_path: string;
+  metadata?: VideoMetadata;
+}
+
+export interface AnalysisParameters {
+  // Costmap parameters
+  alpha?: number;
+  band?: number;
+  smoothing_factor?: number;
+  threshold_percentile?: number;
+  // Horizontal window parameters
+  horizontal_window_x_left?: number | null;
+  horizontal_window_x_right?: number | null;
+  // Measurement configuration
+  num_tracking_points?: number;
+  distribution_method?: "center_line_projection" | "x_axis_even";
+}
+
+export interface Analysis {
+  id: string;
+  video_id: string;
+  parameters: Record<string, unknown>;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  processed_frames?: number | null;
+  results_path: string | null;
+  global_data?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface FrameData {
+  f: number; // frame_number
+  pt: Array<[number, number]>; // path_top: [[x, y], ...]
+  pb: Array<[number, number]>; // path_bottom: [[x, y], ...]
+  pc: Array<[number, number]>; // path_center: [[x, y], ...]
+  colored_regions: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    color: string;
+    opacity: number;
+  }>;
+  mpp?: Array<[number, number, number, number, number, number, number]>; // measurement_point_pairs: [[cx, cy, tx, ty, bx, by, distance], ...]
+}
+
+export interface AnalysisResult {
+  per_frame: FrameData[];
+  global_data: Record<string, unknown>;
+}
+
+export interface ProgressUpdate {
+  analysis_id: string;
+  progress: number;
+  status: string;
+  current_frame: number | null;
+  total_frames: number | null;
+  frame_data?: FrameData; // Optional frame data for live updates
+}
+
+// HTTP API functions
+async function fetchJson<T>(url: string, options?: RequestInit & { endpointKey?: string }): Promise<T> {
+  const endpointKey = options?.endpointKey || url;
+  const controller = getAbortController(endpointKey);
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}${url}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options?.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    cleanupAbortController(endpointKey);
+    return result;
+  } catch (error) {
+    cleanupAbortController(endpointKey);
+    
+    // Don't throw error if request was aborted
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+    
+    // Re-throw with more context if it's a network error
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Network error: Could not reach server at ${API_BASE_URL}. Make sure the backend server is running.`);
+    }
+    throw error;
+  }
+}
+
+export async function uploadVideo(file: File): Promise<Video> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE_URL}/api/videos/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function listVideos(): Promise<Video[]> {
+  return fetchJson<Video[]>('/api/videos');
+}
+
+export function getFrameImageUrl(videoId: string, frameNumber: number): string {
+  return `${API_BASE_URL}/api/videos/${encodeURIComponent(videoId)}/frame/${frameNumber}/image`;
+}
+
+export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> {
+  return fetchJson<VideoMetadata>(`/api/videos/${encodeURIComponent(videoId)}/metadata`, {
+    endpointKey: `metadata:${videoId}`,
+  });
+}
+
+export async function startAnalysis(
+  videoId: string,
+  parameters: AnalysisParameters
+): Promise<Analysis> {
+  return fetchJson<Analysis>(`/api/analysis/start?video_id=${encodeURIComponent(videoId)}`, {
+    method: 'POST',
+    body: JSON.stringify(parameters),
+  });
+}
+
+export async function getAnalysisStatus(analysisId: string): Promise<Analysis> {
+  return fetchJson<Analysis>(`/api/analysis/${analysisId}/status`, {
+    endpointKey: `status:${analysisId}`,
+  });
+}
+
+export async function listAnalyses(
+  videoId?: string,
+  status?: string,
+  limit?: number,
+  offset?: number
+): Promise<Analysis[]> {
+  const params = new URLSearchParams();
+  if (videoId) params.append('video_id', videoId);
+  if (status) params.append('status', status);
+  if (limit !== undefined) params.append('limit', limit.toString());
+  if (offset !== undefined) params.append('offset', offset.toString());
+  
+  const queryString = params.toString();
+  return fetchJson<Analysis[]>(`/api/analysis${queryString ? `?${queryString}` : ''}`);
+}
+
+export async function getAnalysisFrame(analysisId: string, frameNumber: number): Promise<FrameData> {
+  return fetchJson<FrameData>(`/api/analysis/${analysisId}/frame/${frameNumber}`, {
+    endpointKey: `frame:${analysisId}:${frameNumber}`,
+  });
+}
+
+export interface FramesChunkResponse {
+  frames: FrameData[];
+  total_available: number;
+  requested_range: [number, number];
+}
+
+export async function getFramesChunk(
+  analysisId: string,
+  start: number = 0,
+  count: number = 100
+): Promise<FramesChunkResponse> {
+  const params = new URLSearchParams({
+    start: start.toString(),
+    count: count.toString(),
+  });
+  return fetchJson<FramesChunkResponse>(`/api/analysis/${encodeURIComponent(analysisId)}/frames?${params.toString()}`);
+}
+
+export interface FrameIndexResponse {
+  frames: number[];
+  total: number;
+}
+
+export async function getFrameIndex(analysisId: string): Promise<FrameIndexResponse> {
+  return fetchJson<FrameIndexResponse>(`/api/analysis/${encodeURIComponent(analysisId)}/frame-index`);
+}
+
+export async function stopAnalysis(analysisId: string): Promise<Analysis> {
+  return fetchJson<Analysis>(`/api/analysis/${analysisId}/stop`, {
+    method: 'POST',
+  });
+}
+
+export async function restartAnalysis(
+  analysisId: string,
+  parameters?: AnalysisParameters
+): Promise<Analysis> {
+  const options: RequestInit = {
+    method: 'POST',
+  };
+  
+  if (parameters) {
+    options.body = JSON.stringify(parameters);
+  }
+  
+  return fetchJson<Analysis>(`/api/analysis/${encodeURIComponent(analysisId)}/restart`, options);
+}
+
+export interface HorizontalWindowDetectionResult {
+  x_left: number;
+  x_right: number;
+  y_mid: number;
+}
+
+export async function analyzeFrame(
+  videoId: string,
+  frameNumber: number,
+  parameters: AnalysisParameters
+): Promise<FrameData> {
+  return fetchJson<FrameData>(
+    `/api/analysis/frame?video_id=${encodeURIComponent(videoId)}&frame_number=${frameNumber}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(parameters),
+      endpointKey: `analyzeFrame:${videoId}:${frameNumber}`,
+    }
+  );
+}
+
+export async function detectHorizontalWindow(
+  videoId: string,
+  frameNumber: number,
+  y?: number | null
+): Promise<HorizontalWindowDetectionResult> {
+  const params = new URLSearchParams({
+    video_id: videoId,
+    frame_number: frameNumber.toString(),
+  });
+  if (y !== null && y !== undefined) {
+    params.append('y', y.toString());
+  }
+  return fetchJson<HorizontalWindowDetectionResult>(`/api/analysis/detect-window?${params.toString()}`, {
+    method: 'POST',
+  });
+}
+
+export async function getVideoSettings(videoId: string): Promise<AnalysisParameters | null> {
+  try {
+    const settings = await fetchJson<AnalysisParameters>(`/api/videos/${encodeURIComponent(videoId)}/settings`, {
+      endpointKey: `settings:${videoId}`,
+    });
+    // Return null if settings object is empty (no saved settings)
+    if (!settings || Object.keys(settings).length === 0) {
+      return null;
+    }
+    return settings;
+  } catch (error) {
+    // If request was aborted, re-throw
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+    // If settings file doesn't exist, return null (not an error)
+    if (error instanceof Error && error.message.includes('404')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function saveVideoSettings(videoId: string, settings: AnalysisParameters): Promise<void> {
+  await fetchJson(`/api/videos/${encodeURIComponent(videoId)}/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function deleteAnalysis(analysisId: string): Promise<void> {
+  await fetchJson(`/api/analysis/${encodeURIComponent(analysisId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export interface HeatmapMeta {
+  width: number;
+  height: number;
+  dtype: string;
+  min: number;
+  max: number;
+  fps: number;
+}
+
+export async function getHeatmapMeta(analysisId: string): Promise<HeatmapMeta> {
+  return fetchJson<HeatmapMeta>(`/api/analysis/${encodeURIComponent(analysisId)}/heatmap/meta`);
+}
+
+export async function getHeatmapRaw(analysisId: string): Promise<ArrayBuffer> {
+  const response = await fetch(`${API_BASE_URL}/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`);
+  
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+  
+  return response.arrayBuffer();
+}
+
+

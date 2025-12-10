@@ -1,0 +1,40 @@
+---
+description: Frontend rules for the Vue 3 + Vite client.
+globs:
+  - "src/**/*"
+alwaysApply: false
+---
+
+# Vue Frontend Rules
+
+## Tooling & Commands
+
+- Use Node 20.19+ (per `package.json` engines). Install dependencies with `npm install`.
+- Dev server: `npm run dev` (default port 5173). Build: `npm run build`. Preview: `npm run preview`.
+- Keep the TypeScript config strict; do not disable `noImplicitAny` or `strictNullChecks`.
+- Prefer `<script setup lang="ts">` syntax for components.
+
+## Architecture & State
+
+- Organize feature views under `src/views/**`, reusable components under `src/components/**`, and composables under `src/composables/**`.
+- Use Pinia stores (`src/stores/**`) for cross-view state; avoid prop drilling when a store fits better.
+- Keep routing definitions in `src/router/index.ts`; lazy-load route components for large views.
+- Centralize API calls in dedicated modules (e.g., `src/api/**`); define response/request types that mirror the FastAPI schemas.
+
+## Styling & UX
+
+- Global styles live in `src/assets/main.css`; feature-specific styles should be scoped within components.
+- Follow accessible color contrast; prefer semantic HTML + ARIA where needed.
+- Use icons in `src/components/icons/**` for consistency; avoid ad-hoc SVG duplication.
+
+## Testing & Quality
+
+- Unit/component tests: add Vitest specs under `src` mirrored next to the file or inside `tests/unit`.
+- Use Vue Test Utils together with Vitest for interactive components.
+- Run `npm run type-check` and `npm run build` before submitting PRs; fix lint/type warnings proactively.
+
+## Backend Integration
+
+- Base API URL should come from `import.meta.env.VITE_API_BASE_URL`; default to `http://localhost:8000`.
+- Handle fetch errors centrally (e.g., composables or API layer) and surface helpful UI messages.
+- Update generated/handwritten TS types whenever backend schemas change; keep the change in the same PR.

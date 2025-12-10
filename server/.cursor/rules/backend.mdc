@@ -1,0 +1,45 @@
+---
+description: Backend rules for the FastAPI service.
+globs:
+  - "**/*.py"
+alwaysApply: false
+---
+
+# FastAPI Backend Rules
+
+## Environment & Tooling
+
+- Target Python 3.12+; sync dependencies with `uv` (`uv sync`) to honor `pyproject.toml`/`uv.lock`.
+- Use Ruff for linting (`ruff check server`) and formatting (`ruff format server`); add new rules in `pyproject.toml`.
+- Type-check with `pyright` or `mypy` before pushing if touch core logic.
+
+## App Structure
+
+- Keep the ASGI app in `server/main.py`; new routers live under `server/routes/**` and are included via `app.include_router`.
+- Use Pydantic models for request/response validation; never return bare dicts for public endpoints.
+- Centralize settings in a config module (e.g., `server/config.py`) using `pydantic-settings` when secrets/env vars appear.
+
+## Local Development
+
+```bash
+cd server
+uv run fastapi dev server.main:app --port 8000
+# or
+uv run uvicorn server.main:app --reload --port 8000
+```
+
+- Expose CORS middleware allowing the Vue origin (`http://localhost:5173` by default).
+- Add health checks at `/healthz` for monitoring integrations.
+
+## Testing
+
+- Use pytest; keep tests under `server/tests/**`.
+- For HTTP behavior, leverage `httpx.AsyncClient(app=app, base_url="http://test")`.
+- Mock external services with `respx` or dependency overrides (`app.dependency_overrides`).
+- Run `uv run pytest` before committing; include fixtures for DB state or background tasks.
+
+## API Contracts
+
+- Keep versioned routes (e.g., `/api/v1`) to avoid breaking the frontend.
+- Provide OpenAPI tags/descriptions so the UI (Swagger) stays readable.
+- When updating schema, bump TypeScript types or client code in the same PR.

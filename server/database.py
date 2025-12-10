@@ -1,0 +1,600 @@
+"""Database module for storing analysis data."""
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+
+from .config import DATABASE_PATH
+from .models import Analysis, AnalysisResult, FrameData
+
+
+def init_database() -> None:
+    """Initialize the database and create tables if they don't exist."""
+    db_path = Path(DATABASE_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    conn = sqlite3.connect(str(db_path))
+    # Enable foreign key constraints
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+    
+    # Create analyses table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analyses (
+            id TEXT PRIMARY KEY,
+            video_id TEXT NOT NULL,
+            parameters TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress REAL NOT NULL DEFAULT 0.0,
+            global_data TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            error_message TEXT
+        )
+    """)
+    
+    # Create frames table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS frames (
+            analysis_id TEXT NOT NULL,
+            frame_number INTEGER NOT NULL,
+            frame_data TEXT NOT NULL,
+            PRIMARY KEY (analysis_id, frame_number),
+            FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+        )
+    """)
+    
+    # Create indexes for efficient queries
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_id ON analyses(video_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON analyses(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON analyses(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_frames_analysis_id ON frames(analysis_id)")
+    
+    conn.commit()
+    conn.close()
+
+
+class AnalysisDB:
+    """Database operations for analyses."""
+    
+    def __init__(self, db_path: str = DATABASE_PATH):
+        """Initialize with database path."""
+        self.db_path = db_path
+    
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a database connection with foreign keys enabled."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        # Enable foreign key constraints
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+    
+    def create_analysis(self, analysis: Analysis) -> None:
+        """Insert a new analysis."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                INSERT INTO analyses (id, video_id, parameters, status, progress, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                analysis.id,
+                analysis.video_id,
+                json.dumps(analysis.parameters),
+                analysis.status,
+                analysis.progress,
+                analysis.created_at.isoformat(),
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def get_analysis(self, analysis_id: str) -> Optional[Analysis]:
+        """Retrieve an analysis by ID (without results)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT id, video_id, parameters, status, progress, created_at, completed_at, error_message, global_data
+                FROM analyses
+                WHERE id = ?
+            """, (analysis_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            # Count processed frames
+            cursor.execute("SELECT COUNT(*) as count FROM frames WHERE analysis_id = ?", (analysis_id,))
+            frame_count_row = cursor.fetchone()
+            processed_frames = int(frame_count_row["count"]) if frame_count_row else 0
+            
+            # Load global_data if present
+            global_data = None
+            if row["global_data"]:
+                global_data = json.loads(row["global_data"])
+            
+            return Analysis(
+                id=row["id"],
+                video_id=row["video_id"],
+                parameters=json.loads(row["parameters"]),
+                status=row["status"],
+                progress=row["progress"],
+                processed_frames=processed_frames if processed_frames > 0 else None,
+                results_path=None,  # Not stored in DB anymore
+                global_data=global_data,
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
+        finally:
+            conn.close()
+    
+    def get_analysis_with_results(self, analysis_id: str) -> tuple[Optional[Analysis], Optional[AnalysisResult]]:
+        """Retrieve an analysis with its results."""
+        analysis = self.get_analysis(analysis_id)
+        if not analysis:
+            return None, None
+        
+        results = self.load_results(analysis_id)
+        return analysis, results
+    
+    def get_frame(self, analysis_id: str, frame_number: int) -> Optional[FrameData]:
+        """Retrieve a single frame by analysis_id and frame_number."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT frame_data
+                FROM frames
+                WHERE analysis_id = ? AND frame_number = ?
+            """, (analysis_id, frame_number))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            frame_data_dict = json.loads(row["frame_data"])
+            return FrameData(**frame_data_dict)
+        finally:
+            conn.close()
+    
+    def update_analysis(self, analysis_id: str, **updates: Any) -> None:
+        """Update analysis fields."""
+        if not updates:
+            return
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Build dynamic update query
+            set_clauses = []
+            values = []
+            
+            for key, value in updates.items():
+                if key == "parameters":
+                    set_clauses.append("parameters = ?")
+                    values.append(json.dumps(value))
+                elif key == "global_data":
+                    set_clauses.append("global_data = ?")
+                    values.append(json.dumps(value, default=str) if value is not None else None)
+                elif key == "completed_at":
+                    if value is None:
+                        set_clauses.append("completed_at = NULL")
+                    else:
+                        set_clauses.append("completed_at = ?")
+                        values.append(value.isoformat() if isinstance(value, datetime) else value)
+                elif key == "created_at":
+                    set_clauses.append("created_at = ?")
+                    values.append(value.isoformat() if isinstance(value, datetime) else value)
+                else:
+                    set_clauses.append(f"{key} = ?")
+                    values.append(value)
+            
+            values.append(analysis_id)
+            
+            query = f"UPDATE analyses SET {', '.join(set_clauses)} WHERE id = ?"
+            cursor.execute(query, values)
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def save_results(self, analysis_id: str, results: AnalysisResult) -> None:
+        """Store analysis results by saving global_data to analyses and frames to frames table."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Save global_data to analyses table
+            global_data_json = json.dumps(results.global_data, default=str)
+            cursor.execute("""
+                UPDATE analyses
+                SET global_data = ?
+                WHERE id = ?
+            """, (global_data_json, analysis_id))
+            
+            # Insert or replace all frames
+            for frame_data in results.per_frame:
+                frame_data_json = json.dumps(frame_data.model_dump(), default=str)
+                cursor.execute("""
+                    INSERT OR REPLACE INTO frames (analysis_id, frame_number, frame_data)
+                    VALUES (?, ?, ?)
+                """, (analysis_id, frame_data.f, frame_data_json))
+            
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def load_results(self, analysis_id: str) -> Optional[AnalysisResult]:
+        """Load analysis results by querying frames table and reconstructing AnalysisResult."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Get global_data from analyses table
+            cursor.execute("SELECT global_data FROM analyses WHERE id = ?", (analysis_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            # Load global_data (may be None if not set yet)
+            global_data = {}
+            if row["global_data"]:
+                global_data = json.loads(row["global_data"])
+            
+            # Query all frames for this analysis, ordered by frame_number
+            cursor.execute("""
+                SELECT frame_data
+                FROM frames
+                WHERE analysis_id = ?
+                ORDER BY frame_number
+            """, (analysis_id,))
+            
+            frame_rows = cursor.fetchall()
+            
+            # Reconstruct per_frame list
+            per_frame = []
+            for frame_row in frame_rows:
+                frame_data_dict = json.loads(frame_row["frame_data"])
+                frame_data = FrameData(**frame_data_dict)
+                per_frame.append(frame_data)
+            
+            # Return None if no frames and no global_data (no results yet)
+            if not per_frame and not global_data:
+                return None
+            
+            return AnalysisResult(per_frame=per_frame, global_data=global_data)
+        finally:
+            conn.close()
+    
+    def list_analyses(
+        self,
+        video_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Analysis]:
+        """List analyses with optional filters."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            query = """
+                SELECT id, video_id, parameters, status, progress, created_at, completed_at, error_message, global_data
+                FROM analyses
+                WHERE 1=1
+            """
+            params = []
+            
+            if video_id:
+                query += " AND video_id = ?"
+                params.append(video_id)
+            
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            
+            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            analyses = []
+            for row in rows:
+                # Count processed frames for this analysis
+                cursor.execute("SELECT COUNT(*) as count FROM frames WHERE analysis_id = ?", (row["id"],))
+                frame_count_row = cursor.fetchone()
+                processed_frames = int(frame_count_row["count"]) if frame_count_row else 0
+                
+                # Load global_data if present
+                global_data = None
+                if row["global_data"]:
+                    global_data = json.loads(row["global_data"])
+                
+                analyses.append(Analysis(
+                    id=row["id"],
+                    video_id=row["video_id"],
+                    parameters=json.loads(row["parameters"]),
+                    status=row["status"],
+                    progress=row["progress"],
+                    processed_frames=processed_frames if processed_frames > 0 else None,
+                    results_path=None,
+                    global_data=global_data,
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                ))
+            
+            return analyses
+        finally:
+            conn.close()
+    
+    def delete_analysis(self, analysis_id: str) -> None:
+        """Delete an analysis. Frames will be automatically deleted via CASCADE DELETE."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def results_exist(self, analysis_id: str) -> bool:
+        """Check if results exist for an analysis (has frames or global_data)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Check if any frames exist for this analysis
+            cursor.execute("SELECT 1 FROM frames WHERE analysis_id = ? LIMIT 1", (analysis_id,))
+            if cursor.fetchone():
+                return True
+            
+            # Check if global_data exists
+            cursor.execute("SELECT 1 FROM analyses WHERE id = ? AND global_data IS NOT NULL", (analysis_id,))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+    
+    def get_last_analyzed_frame(self, analysis_id: str) -> Optional[int]:
+        """Get the last analyzed frame number for an analysis, or None if no frames exist."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT MAX(frame_number) as max_frame
+                FROM frames
+                WHERE analysis_id = ?
+            """, (analysis_id,))
+            
+            row = cursor.fetchone()
+            if row and row["max_frame"] is not None:
+                return int(row["max_frame"])
+            return None
+        finally:
+            conn.close()
+    
+    def append_frame_to_results(self, analysis_id: str, frame_data: FrameData, total_frames: int) -> None:
+        """Append a frame to existing results by inserting into frames table."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Insert or replace frame in frames table
+            frame_data_json = json.dumps(frame_data.model_dump(), default=str)
+            cursor.execute("""
+                INSERT OR REPLACE INTO frames (analysis_id, frame_number, frame_data)
+                VALUES (?, ?, ?)
+            """, (analysis_id, frame_data.f, frame_data_json))
+            
+            # Count processed frames
+            cursor.execute("SELECT COUNT(*) as count FROM frames WHERE analysis_id = ?", (analysis_id,))
+            processed_count = cursor.fetchone()["count"]
+            
+            # Update global_data in analyses table
+            global_data = {
+                "total_frames": total_frames,
+                "processed_frames": processed_count
+            }
+            global_data_json = json.dumps(global_data, default=str)
+            cursor.execute("""
+                UPDATE analyses
+                SET global_data = ?
+                WHERE id = ?
+            """, (global_data_json, analysis_id))
+            
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def finalize_results(self, analysis_id: str, results: AnalysisResult) -> None:
+        """Finalize results with complete global_data calculation."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Load existing frames to merge with final results
+            # (in case finalize is called before all frames are appended)
+            cursor.execute("""
+                SELECT frame_data
+                FROM frames
+                WHERE analysis_id = ?
+                ORDER BY frame_number
+            """, (analysis_id,))
+            
+            existing_frame_rows = cursor.fetchall()
+            existing_frame_nums = set()
+            
+            # Collect existing frame numbers
+            for frame_row in existing_frame_rows:
+                frame_data_dict = json.loads(frame_row["frame_data"])
+                existing_frame_nums.add(frame_data_dict["f"])
+            
+            # Ensure all existing frames are in final results
+            final_frame_nums = {f.f for f in results.per_frame}
+            for frame_row in existing_frame_rows:
+                frame_data_dict = json.loads(frame_row["frame_data"])
+                if frame_data_dict["f"] not in final_frame_nums:
+                    frame_data = FrameData(**frame_data_dict)
+                    results.per_frame.append(frame_data)
+            
+            # Sort by frame number
+            results.per_frame.sort(key=lambda f: f.f)
+            
+            # Save global_data to analyses table
+            global_data_json = json.dumps(results.global_data, default=str)
+            completed_at = datetime.now().isoformat()
+            
+            cursor.execute("""
+                UPDATE analyses
+                SET global_data = ?, completed_at = ?, status = 'completed', progress = 100.0
+                WHERE id = ?
+            """, (global_data_json, completed_at, analysis_id))
+            
+            # Insert or replace all frames
+            for frame_data in results.per_frame:
+                frame_data_json = json.dumps(frame_data.model_dump(), default=str)
+                cursor.execute("""
+                    INSERT OR REPLACE INTO frames (analysis_id, frame_number, frame_data)
+                    VALUES (?, ?, ?)
+                """, (analysis_id, frame_data.f, frame_data_json))
+            
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def clear_analysis_frames(self, analysis_id: str) -> None:
+        """Delete all frame data for an analysis."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Delete all frames for this analysis
+            cursor.execute("DELETE FROM frames WHERE analysis_id = ?", (analysis_id,))
+            # Clear global_data as well
+            cursor.execute("""
+                UPDATE analyses
+                SET global_data = NULL, completed_at = NULL
+                WHERE id = ?
+            """, (analysis_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def get_frames_range(self, analysis_id: str, start: int, count: int) -> list[FrameData]:
+        """Efficiently fetch a range of frames."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Query frames in the specified range, ordered by frame_number
+            cursor.execute("""
+                SELECT frame_data
+                FROM frames
+                WHERE analysis_id = ? AND frame_number >= ?
+                ORDER BY frame_number
+                LIMIT ?
+            """, (analysis_id, start, count))
+            
+            frame_rows = cursor.fetchall()
+            frames = []
+            for frame_row in frame_rows:
+                frame_data_dict = json.loads(frame_row["frame_data"])
+                frame_data = FrameData(**frame_data_dict)
+                frames.append(frame_data)
+            
+            return frames
+        finally:
+            conn.close()
+    
+    def get_available_frame_numbers(self, analysis_id: str) -> list[int]:
+        """Return all frame numbers that have data."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT frame_number
+                FROM frames
+                WHERE analysis_id = ?
+                ORDER BY frame_number
+            """, (analysis_id,))
+            
+            rows = cursor.fetchall()
+            return [int(row["frame_number"]) for row in rows]
+        finally:
+            conn.close()
+    
+    def build_heatmap_matrix(self, analysis_id: str) -> tuple[np.ndarray, float, float]:
+        """Extract distances from mpp field across all frames, return (matrix, min, max).
+        
+        The matrix is row-major: [frame0: pt0..ptN, frame1: pt0..ptN, ...]
+        Each mpp entry is [cx, cy, tx, ty, bx, by, distance] where distance is at index 6.
+        
+        Returns:
+            Tuple of (matrix as np.ndarray with shape (frame_count, point_count), min_value, max_value)
+        """
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Query all frames ordered by frame number
+            cursor.execute("""
+                SELECT frame_number, frame_data
+                FROM frames
+                WHERE analysis_id = ?
+                ORDER BY frame_number
+            """, (analysis_id,))
+            
+            frame_rows = cursor.fetchall()
+            
+            if not frame_rows:
+                # Return empty matrix
+                return np.array([], dtype=np.float32).reshape(0, 0), 0.0, 0.0
+            
+            # Find the number of measurement points in the first frame
+            first_frame_data = json.loads(frame_rows[0]["frame_data"])
+            mpp = first_frame_data.get("mpp")
+            num_points = len(mpp) if mpp else 0
+            
+            if num_points == 0:
+                # No measurement points found
+                return np.array([], dtype=np.float32).reshape(0, 0), 0.0, 0.0
+            
+            num_frames = len(frame_rows)
+
+            # Initialize matrix: (num_frames, num_points)
+            matrix = np.zeros((num_frames, num_points), dtype=np.float32)
+            
+            # Extract distance values (index 6) from each frame's mpp
+            for row_idx, frame_row in enumerate(frame_rows):
+                frame_data_dict = json.loads(frame_row["frame_data"])
+                mpp = frame_data_dict.get("mpp")
+                
+                if mpp:
+                    for point_idx, point_pair in enumerate(mpp):
+                        if len(point_pair) >= 7:
+                            # Distance is at index 6
+                            distance = float(point_pair[6])
+                            matrix[row_idx, point_idx] = distance
+            
+            # Calculate min and max
+            if matrix.size > 0:
+                min_val = float(np.min(matrix))
+                max_val = float(np.max(matrix))
+            else:
+                min_val = 0.0
+                max_val = 0.0
+            
+            return matrix, min_val, max_val
+        finally:
+            conn.close()
+

@@ -1,0 +1,93 @@
+"""Data models for video analysis."""
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+class Video(BaseModel):
+    """Video model."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    filename: str
+    upload_date: datetime = Field(default_factory=datetime.now)
+    file_path: str
+
+
+class VideoMetadata(BaseModel):
+    """Video metadata model."""
+    total_frames: int = Field(description="Total number of frames")
+    fps: float = Field(description="Frames per second")
+    frame_multiplier: float = Field(description="Frame multiplier for the video")
+    width: int = Field(description="Video width in pixels")
+    height: int = Field(description="Video height in pixels")
+    display_aspect_ratio: Optional[float] = Field(None, description="Display aspect ratio (width/height) accounting for non-square pixels")
+    duration: float = Field(description="Duration in seconds")
+    file_size: int = Field(description="File size in bytes")
+    codec: Optional[str] = Field(None, description="Video codec")
+
+
+class AnalysisParameters(BaseModel):
+    """Analysis parameters."""
+    # Costmap parameters
+    alpha: float = Field(default=1.5, ge=0.0, le=5.0, description="Contrast enhancement factor for costmap")
+    band: int = Field(default=20, ge=1, le=100, description="Width of the search band around the current path position (in pixels)")
+    smoothing_factor: float = Field(default=0.2, ge=0.0, le=1.0, description="Smoothing factor for path following (0-1, higher = more smoothing)")
+    threshold_percentile: float = Field(default=80.0, ge=0.0, le=100.0, description="Percentile threshold for keeping brightest pixels (0-100)")
+    # Horizontal window parameters
+    horizontal_window_x_left: Optional[int] = Field(default=None, description="Left x-coordinate for horizontal window (pixels)")
+    horizontal_window_x_right: Optional[int] = Field(default=None, description="Right x-coordinate for horizontal window (pixels)")
+    # Subsequent frame optimization
+    subsequent_frame_band: Optional[int] = Field(default=None, ge=1, le=100, description="Band width for subsequent frames (if None, uses 'band' value)")
+    # Measurement configuration
+    num_tracking_points: int = Field(default=30, ge=5, le=200, description="Number of tracking points for measurement")
+    distribution_method: Literal["center_line_projection", "x_axis_even"] = Field(default="center_line_projection", description="Method for distributing measurement points")
+
+
+class Analysis(BaseModel):
+    """Analysis model."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    video_id: str
+    parameters: Dict[str, Any]
+    status: str = "pending"  # pending, processing, completed, failed
+    progress: float = 0.0  # 0.0 to 100.0
+    processed_frames: Optional[int] = Field(default=None, description="Number of frames processed so far")
+    results_path: Optional[str] = None
+    global_data: Optional[Dict[str, Any]] = Field(default=None, description="Global statistics and aggregated data")
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class FrameData(BaseModel):
+    """Data for a single frame."""
+    f: int = Field(description="Frame number")
+    pt: List[List[int]] = Field(description="Top boundary path: [[x, y], ...]")
+    pb: List[List[int]] = Field(description="Bottom boundary path: [[x, y], ...]")
+    pc: List[List[int]] = Field(description="Center path: [[x, y], ...]")
+    colored_regions: List[Dict[str, Any]]  # List of colored region data
+    mpp: Optional[List[List[float]]] = Field(default=None, description="Measurement point pairs: [[cx, cy, tx, ty, bx, by, distance], ...]")
+
+
+class AnalysisResult(BaseModel):
+    """Analysis result model."""
+    per_frame: List[FrameData]
+    global_data: Dict[str, Any]
+
+
+class AnalysisProgress(BaseModel):
+    """Progress update model."""
+    analysis_id: str
+    progress: float
+    status: str
+    current_frame: Optional[int] = None
+    total_frames: Optional[int] = None
+
+
+class HeatmapMeta(BaseModel):
+    """Heatmap metadata model."""
+    width: int = Field(description="Number of frames (x-axis)")
+    height: int = Field(description="Number of tracking points (y-axis)")
+    dtype: str = Field(default="float32", description="Data type")
+    min: float = Field(description="Minimum distance value")
+    max: float = Field(description="Maximum distance value")
+    fps: float = Field(description="Frames per second for time conversion")
+
