@@ -4,22 +4,11 @@ import math
 
 import cv2
 import numpy as np
+from numba import njit
 
 from .edge_utils import interpolate_path_to_array, starting_point_detection
 
 logger = logging.getLogger(__name__)
-
-# Optional Numba acceleration
-try:
-    from numba import njit
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-    # Create dummy decorator if numba not available
-    def njit(*args, **kwargs):
-        def decorator(func):
-            return func
-        return decorator
 
 
 def collapse_to_1d(
@@ -152,49 +141,7 @@ def extract_strips_batch(
     """
     logger.debug(f"extract_strips_batch: n_coords={len(x_coords)}, frame shape={frame.shape}")
     
-    # Use Numba-accelerated version if available, otherwise fall back to Python
-    if NUMBA_AVAILABLE:
-        return _extract_strips_batch_numba(frame, x_coords, y_centers, strip_width, band_height)
-    else:
-        # Fallback Python implementation
-        H, W = frame.shape
-        n_coords = len(x_coords)
-        half_width = strip_width // 2
-        half_height = band_height // 2
-        
-        all_signals = np.zeros((n_coords, band_height), dtype=np.float32)
-        y_tops = np.zeros(n_coords, dtype=np.int32)
-        
-        for i in range(n_coords):
-            x = int(x_coords[i])
-            y_center = y_centers[i]
-            
-            # Calculate strip boundaries
-            x_left = max(0, x - half_width)
-            x_right = min(W, x + half_width + 1)
-            
-            # Calculate band boundaries - ensure range is exactly band_height
-            y_top = max(0, int(y_center) - half_height)
-            # Ensure y_bottom is exactly band_height pixels from y_top (or at image boundary)
-            y_bottom = min(H, y_top + band_height)
-            
-            y_tops[i] = y_top
-            
-            # Extract strip
-            strip = frame[y_top:y_bottom, x_left:x_right]
-            
-            # Compute mean across width
-            if strip.size > 0:
-                signal = np.mean(strip, axis=1).astype(np.float32)
-                actual_height = len(signal)
-                
-                # Ensure we don't exceed band_height (defensive check)
-                if actual_height > band_height:
-                    actual_height = band_height
-                
-                all_signals[i, :actual_height] = signal[:actual_height]
-                
-        return all_signals, y_tops
+    return _extract_strips_batch_numba(frame, x_coords, y_centers, strip_width, band_height)
 
 
 @njit(cache=True)
@@ -438,157 +385,6 @@ def _detect_edges_batch_numba(
     return results
 
 
-def find_edge_gradient(
-    signal: np.ndarray,
-    polarity: str,
-    y_center_rough: float,
-) -> float | None:
-    """Find edge center using gradient peak with sub-pixel interpolation.
-    
-    This is much faster than curve fitting while maintaining good accuracy.
-    
-    Args:
-        signal: 1D smoothed signal.
-        polarity: "dark_to_light" or "light_to_dark".
-        y_center_rough: Rough estimate of edge center (for search window).
-    
-    Returns:
-        Edge position (index in signal), or None if detection fails.
-    """
-    if len(signal) < 3:
-        return None
-    
-    # Compute gradient (first derivative)
-    gradient = np.gradient(signal)
-    
-    # For dark_to_light: positive gradient peak
-    # For light_to_dark: negative gradient peak (invert to find maximum)
-    if polarity == "light_to_dark":
-        gradient = -gradient
-    
-    # Search window around rough center (±10 pixels)
-    window_size = 10
-    center_idx = int(y_center_rough)
-    start_idx = max(0, center_idx - window_size)
-    end_idx = min(len(gradient), center_idx + window_size + 1)
-    
-    if end_idx - start_idx < 3:
-        return None
-    
-    # Find peak in window
-    gradient_window = gradient[start_idx:end_idx]
-    peak_idx_rel = np.argmax(gradient_window)
-    peak_idx = start_idx + peak_idx_rel
-    
-    # Sub-pixel refinement via parabolic interpolation
-    if 0 < peak_idx < len(gradient) - 1:
-        y0 = gradient[peak_idx - 1]
-        y1 = gradient[peak_idx]
-        y2 = gradient[peak_idx + 1]
-        
-        # Parabolic fit: y = ax^2 + bx + c
-        # Peak at x = -b/(2a)
-        # Using three points: (peak_idx-1, y0), (peak_idx, y1), (peak_idx+1, y2)
-        # Solve for offset from peak_idx
-        denominator = y0 - 2 * y1 + y2
-        if abs(denominator) > 1e-10:
-            offset = 0.5 * (y0 - y2) / denominator
-            edge_center = peak_idx + offset
-        else:
-            edge_center = float(peak_idx)
-    else:
-        edge_center = float(peak_idx)
-    
-    # Clamp to valid range
-    edge_center = max(0.0, min(len(signal) - 1, edge_center))
-    
-    return edge_center
-
-
-def find_edge_midpoint(
-    signal: np.ndarray,
-    polarity: str,
-    y_center_rough: float,
-    plateau_samples: int = 5,
-    window_size: int = 10,
-) -> float | None:
-    """Find edge center using midpoint crossing method.
-    
-    Fast method that estimates plateaus and finds the midpoint crossing.
-    No gradient computation needed - works well for sigmoid-like edges.
-    
-    Args:
-        signal: 1D smoothed signal.
-        polarity: "dark_to_light" or "light_to_dark".
-        y_center_rough: Rough estimate of edge center (for search window).
-        plateau_samples: Number of samples to use for plateau estimation.
-        window_size: Search window size around expected center.
-    
-    Returns:
-        Edge position (index in signal), or None if detection fails.
-    """
-    n = len(signal)
-    if n < 3:
-        return None
-    
-    # 1. Estimate plateaus from signal boundaries
-    k = min(plateau_samples, n // 4)
-    if k < 1:
-        k = 1
-    
-    top_plateau = np.mean(signal[:k])
-    bottom_plateau = np.mean(signal[-k:])
-    
-    # 2. Handle polarity (dark_to_light: signal goes low->high)
-    polarity_is_dark_to_light = polarity == "dark_to_light"
-    if polarity_is_dark_to_light:
-        # top of signal is dark (low), bottom is light (high)
-        dark_level = top_plateau
-        light_level = bottom_plateau
-    else:
-        # top of signal is light (high), bottom is dark (low)
-        dark_level = bottom_plateau
-        light_level = top_plateau
-    
-    mid = (dark_level + light_level) / 2.0
-    
-    # 3. Scan window for crossing
-    center_idx = int(y_center_rough)
-    start = max(0, center_idx - window_size)
-    end = min(n - 1, center_idx + window_size)
-    
-    # Find first crossing (where signal crosses mid value)
-    crossing_idx = -1
-    if polarity_is_dark_to_light:
-        # Looking for signal to go from below mid to above mid
-        for i in range(start, end):
-            if signal[i] <= mid < signal[i + 1]:
-                crossing_idx = i
-                break
-    else:
-        # Looking for signal to go from above mid to below mid
-        for i in range(start, end):
-            if signal[i] >= mid > signal[i + 1]:
-                crossing_idx = i
-                break
-    
-    if crossing_idx < 0:
-        return None
-    
-    # 4. Linear interpolation for sub-pixel precision
-    y0 = signal[crossing_idx]
-    y1 = signal[crossing_idx + 1]
-    diff = y1 - y0
-    if abs(diff) > 1e-10:
-        t = (mid - y0) / diff
-        edge_center = float(crossing_idx) + t
-    else:
-        edge_center = float(crossing_idx)
-    
-    # Clamp to valid range
-    edge_center = max(0.0, min(len(signal) - 1, edge_center))
-    
-    return edge_center
 
 
 def detect_edge_1d(
@@ -632,11 +428,8 @@ def detect_edge_1d(
     signal_center_idx = int(y_center) - y_top
     signal_center_idx = max(0, min(len(signal_1d) - 1, signal_center_idx))
     
-    edge_idx = find_edge_midpoint(signal_1d, polarity, signal_center_idx)
-    
-    if edge_idx is None:
-        # Fallback to center if detection fails
-        return y_center
+    polarity_is_dark_to_light = polarity == "dark_to_light"
+    edge_idx = _find_edge_midpoint_numba(signal_1d, polarity_is_dark_to_light, float(signal_center_idx))
     
     # Convert signal index back to image y coordinate
     edge_y = y_top + edge_idx
@@ -803,54 +596,22 @@ def edge_detection_1d_calculation(
                 )
                 
                 # No per-strip smoothing needed - image is already smoothed
-                # Use Numba-accelerated batch detection if available, otherwise fall back to Python
-                if NUMBA_AVAILABLE:
-                    y_top_detected = _detect_edges_batch_numba(
-                        all_signals_top,
-                        y_tops_top.astype(np.float32),
-                        polarity_is_dark_to_light=True,
-                        smoothing_factor=smoothing_factor,
-                        prev_y_centers=prev_y_top_array,
-                    )
-                    
-                    y_bottom_detected = _detect_edges_batch_numba(
-                        all_signals_bottom,
-                        y_tops_bottom.astype(np.float32),
-                        polarity_is_dark_to_light=False,
-                        smoothing_factor=smoothing_factor,
-                        prev_y_centers=prev_y_bottom_array,
-                    )
-                else:
-                    # Fallback to Python implementation
-                    y_top_detected = np.zeros(n_coords, dtype=np.float32)
-                    y_bottom_detected = np.zeros(n_coords, dtype=np.float32)
-                    
-                    for i in range(n_coords):
-                        # Top edge: dark to light
-                        signal_top = all_signals_top[i]
-                        y_top = y_tops_top[i]
-                        signal_center_idx = prev_y_top_array[i] - y_top
-                        signal_center_idx = max(0, min(len(signal_top) - 1, signal_center_idx))
-                        
-                        edge_idx = find_edge_midpoint(signal_top, "dark_to_light", signal_center_idx)
-                        if edge_idx is not None:
-                            edge_y = y_top + edge_idx
-                            y_top_detected[i] = smoothing_factor * prev_y_top_array[i] + (1 - smoothing_factor) * edge_y
-                        else:
-                            y_top_detected[i] = prev_y_top_array[i]
-                        
-                        # Bottom edge: light to dark
-                        signal_bottom = all_signals_bottom[i]
-                        y_bottom = y_tops_bottom[i]
-                        signal_center_idx = prev_y_bottom_array[i] - y_bottom
-                        signal_center_idx = max(0, min(len(signal_bottom) - 1, signal_center_idx))
-                        
-                        edge_idx = find_edge_midpoint(signal_bottom, "light_to_dark", signal_center_idx)
-                        if edge_idx is not None:
-                            edge_y = y_bottom + edge_idx
-                            y_bottom_detected[i] = smoothing_factor * prev_y_bottom_array[i] + (1 - smoothing_factor) * edge_y
-                        else:
-                            y_bottom_detected[i] = prev_y_bottom_array[i]
+                # Use Numba-accelerated batch detection
+                y_top_detected = _detect_edges_batch_numba(
+                    all_signals_top,
+                    y_tops_top.astype(np.float32),
+                    polarity_is_dark_to_light=True,
+                    smoothing_factor=smoothing_factor,
+                    prev_y_centers=prev_y_top_array,
+                )
+                
+                y_bottom_detected = _detect_edges_batch_numba(
+                    all_signals_bottom,
+                    y_tops_bottom.astype(np.float32),
+                    polarity_is_dark_to_light=False,
+                    smoothing_factor=smoothing_factor,
+                    prev_y_centers=prev_y_bottom_array,
+                )
                 
                 # Clamp results to valid image bounds
                 y_top_detected = np.clip(y_top_detected, 0, H - 1)
