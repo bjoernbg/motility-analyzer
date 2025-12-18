@@ -65,14 +65,15 @@ def collapse_to_1d(
     return signal_1d
 
 
-def extract_strips_batch(
+@njit(cache=True)
+def _extract_strips_batch_numba(
     frame: np.ndarray,
     x_coords: np.ndarray,
     y_centers: np.ndarray,
     strip_width: int,
     band_height: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract and collapse strips for multiple x coordinates in batch.
+    """Numba-accelerated extraction and collapse of strips for multiple x coordinates.
     
     Args:
         frame: Input grayscale image.
@@ -86,7 +87,6 @@ def extract_strips_batch(
         - all_signals: Array of shape (n_coords, band_height) with 1D signals
         - y_tops: Array of y-top positions for each coordinate
     """
-    logger.debug(f"extract_strips_batch: n_coords={len(x_coords)}, frame shape={frame.shape}")
     H, W = frame.shape
     n_coords = len(x_coords)
     half_width = strip_width // 2
@@ -110,21 +110,92 @@ def extract_strips_batch(
         
         y_tops[i] = y_top
         
-        # Extract strip
-        strip = frame[y_top:y_bottom, x_left:x_right]
+        # Compute mean across width manually (avoid NumPy call overhead)
+        actual_height = y_bottom - y_top
+        actual_width = x_right - x_left
         
-        # Compute mean across width
-        if strip.size > 0:
-            signal = np.mean(strip, axis=1).astype(np.float32)
-            actual_height = len(signal)
-            
-            # Ensure we don't exceed band_height (defensive check)
-            if actual_height > band_height:
-                actual_height = band_height
-            
-            all_signals[i, :actual_height] = signal[:actual_height]
+        if actual_height > 0 and actual_width > 0:
+            # Manual mean calculation: sum across width, then divide
+            for y_idx in range(actual_height):
+                y = y_top + y_idx
+                sum_val = 0.0
+                for x_idx in range(actual_width):
+                    x_pos = x_left + x_idx
+                    sum_val += float(frame[y, x_pos])
+                
+                # Compute mean
+                mean_val = sum_val / float(actual_width)
+                all_signals[i, y_idx] = mean_val
             
     return all_signals, y_tops
+
+
+def extract_strips_batch(
+    frame: np.ndarray,
+    x_coords: np.ndarray,
+    y_centers: np.ndarray,
+    strip_width: int,
+    band_height: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract and collapse strips for multiple x coordinates in batch.
+    
+    Args:
+        frame: Input grayscale image.
+        x_coords: Array of x coordinates.
+        y_centers: Array of y-center positions for each x coordinate.
+        strip_width: Width of horizontal strip (pixels).
+        band_height: Height of vertical band (pixels).
+    
+    Returns:
+        Tuple of (all_signals, y_tops) where:
+        - all_signals: Array of shape (n_coords, band_height) with 1D signals
+        - y_tops: Array of y-top positions for each coordinate
+    """
+    logger.debug(f"extract_strips_batch: n_coords={len(x_coords)}, frame shape={frame.shape}")
+    
+    # Use Numba-accelerated version if available, otherwise fall back to Python
+    if NUMBA_AVAILABLE:
+        return _extract_strips_batch_numba(frame, x_coords, y_centers, strip_width, band_height)
+    else:
+        # Fallback Python implementation
+        H, W = frame.shape
+        n_coords = len(x_coords)
+        half_width = strip_width // 2
+        half_height = band_height // 2
+        
+        all_signals = np.zeros((n_coords, band_height), dtype=np.float32)
+        y_tops = np.zeros(n_coords, dtype=np.int32)
+        
+        for i in range(n_coords):
+            x = int(x_coords[i])
+            y_center = y_centers[i]
+            
+            # Calculate strip boundaries
+            x_left = max(0, x - half_width)
+            x_right = min(W, x + half_width + 1)
+            
+            # Calculate band boundaries - ensure range is exactly band_height
+            y_top = max(0, int(y_center) - half_height)
+            # Ensure y_bottom is exactly band_height pixels from y_top (or at image boundary)
+            y_bottom = min(H, y_top + band_height)
+            
+            y_tops[i] = y_top
+            
+            # Extract strip
+            strip = frame[y_top:y_bottom, x_left:x_right]
+            
+            # Compute mean across width
+            if strip.size > 0:
+                signal = np.mean(strip, axis=1).astype(np.float32)
+                actual_height = len(signal)
+                
+                # Ensure we don't exceed band_height (defensive check)
+                if actual_height > band_height:
+                    actual_height = band_height
+                
+                all_signals[i, :actual_height] = signal[:actual_height]
+                
+        return all_signals, y_tops
 
 
 @njit(cache=True)
