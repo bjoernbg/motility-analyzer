@@ -779,7 +779,7 @@ def edge_detection_1d_calculation(
     if use_previous_paths:
         # Use optimized detection for subsequent frames
         # Get all x coordinates in range
-        x_coords = np.array(list(range(x_start, x_end + 1, 3)), dtype=np.int32)
+        x_coords = np.array(list(range(x_start, x_end + 1, 5)), dtype=np.int32)
         n_coords = len(x_coords)
         
         if n_coords == 0:
