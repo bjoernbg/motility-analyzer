@@ -719,7 +719,7 @@ def edge_detection_1d_calculation(
     horizontal_window_x_right: int | None = None,
     prev_path_top: list[tuple[int, int]] | None = None,
     prev_path_bottom: list[tuple[int, int]] | None = None,
-) -> tuple[np.ndarray, list[tuple[int, int]], list[tuple[int, int]]]:
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     """Calculate edge paths using 1D signal-based detection.
     
     Args:
@@ -735,7 +735,7 @@ def edge_detection_1d_calculation(
         prev_path_bottom: Previous frame's bottom path. If provided, skips starting point detection.
     
     Returns:
-        Tuple of (output_frame, path_top, path_bottom) where paths are lists of (x, y) tuples.
+        Tuple of (path_top, path_bottom) where paths are lists of (x, y) tuples.
     """
     if frame is None or not isinstance(frame, np.ndarray):
         raise TypeError("'frame' must be a numpy ndarray")
@@ -746,7 +746,6 @@ def edge_detection_1d_calculation(
     else:
         img_gray = frame.copy()
     
-    output_frame = frame.copy()
     H, W = img_gray.shape
     
     # Apply vertical-only Gaussian blur to the whole image once
@@ -863,16 +862,6 @@ def edge_detection_1d_calculation(
             except Exception as e:
                 logger.error(f"Error in batch processing: {e}", exc_info=True)
                 raise
-        
-        # Draw paths on output frame
-        if path_top:
-            cv2.polylines(
-                output_frame, [np.array(path_top)], isClosed=False, color=(0, 0, 255), thickness=1
-            )
-        if path_bottom:
-            cv2.polylines(
-                output_frame, [np.array(path_bottom)], isClosed=False, color=(0, 255, 0), thickness=1
-            )
     
     else:
         logger.info("First frame: using starting point detection")
@@ -884,10 +873,7 @@ def edge_detection_1d_calculation(
         
         if y_top < 0 or y_bottom < 0:
             # Detection failed, return empty paths
-            return output_frame, [], []
-        
-        cv2.line(output_frame, (x_mid, y_top - 10), (x_mid, y_top + 10), (0, 0, 255), 1)
-        cv2.line(output_frame, (x_mid, y_bottom - 10), (x_mid, y_bottom + 10), (0, 255, 0), 1)
+            return [], []
         
         # Determine x_end values based on horizontal window if available
         x_end_left = (
@@ -951,19 +937,6 @@ def edge_detection_1d_calculation(
             x_end=x_end_right,
         )
         
-        cv2.polylines(
-            output_frame, [np.array(path_top_left)], isClosed=False, color=(0, 0, 255), thickness=1
-        )
-        cv2.polylines(
-            output_frame, [np.array(path_top_right)], isClosed=False, color=(0, 0, 255), thickness=1
-        )
-        cv2.polylines(
-            output_frame, [np.array(path_bottom_left)], isClosed=False, color=(0, 255, 0), thickness=1
-        )
-        cv2.polylines(
-            output_frame, [np.array(path_bottom_right)], isClosed=False, color=(0, 255, 0), thickness=1
-        )
-        
         # Combine paths: reverse left paths so they go from left to right, then combine with right paths
         path_top_left_reversed = list(reversed(path_top_left))
         path_bottom_left_reversed = list(reversed(path_bottom_left))
@@ -977,4 +950,4 @@ def edge_detection_1d_calculation(
         path_storage["path_top"] = path_top
         path_storage["path_bottom"] = path_bottom
     
-    return output_frame, path_top, path_bottom
+    return path_top, path_bottom

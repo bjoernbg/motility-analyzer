@@ -649,7 +649,7 @@ async def process_video(
             
             # Dispatch to correct edge detection method
             if parameters.edge_detection_method == "signal_1d":
-                _, path_top, path_bottom = edge_detection_1d_calculation(
+                path_top, path_bottom = edge_detection_1d_calculation(
                     frame=frame_np,
                     strip_width=parameters.strip_width,
                     band_height=parameters.band_height,
