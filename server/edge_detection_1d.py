@@ -1,9 +1,25 @@
 """1D signal-based edge detection method."""
+import logging
+
 import cv2
 import numpy as np
-from scipy import ndimage, optimize, special
+from scipy import ndimage
 
 from .edge_utils import interpolate_path_to_array, starting_point_detection
+
+logger = logging.getLogger(__name__)
+
+# Optional Numba acceleration
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Create dummy decorator if numba not available
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 
 def collapse_to_1d(
@@ -23,7 +39,7 @@ def collapse_to_1d(
         band_height: Height of vertical band (pixels).
     
     Returns:
-        1D array of length band_height with median values across width.
+        1D array of length band_height with mean values across width.
     """
     H, W = frame.shape
     
@@ -32,19 +48,82 @@ def collapse_to_1d(
     x_left = max(0, x - half_width)
     x_right = min(W, x + half_width + 1)
     
-    # Calculate band boundaries
+    # Calculate band boundaries - ensure range is exactly band_height
     half_height = band_height // 2
     y_top = max(0, int(y_center) - half_height)
-    y_bottom = min(H, int(y_center) + half_height + 1)
+    # Ensure y_bottom is exactly band_height pixels from y_top (or at image boundary)
+    y_bottom = min(H, y_top + band_height)
     
     # Extract strip (shape: (band_height, strip_width))
     strip = frame[y_top:y_bottom, x_left:x_right]
     
-    # Compute median across width (robust to artifacts)
-    # Result: 1D array of length band_height
-    signal_1d = np.median(strip, axis=1).astype(np.float32)
+    # Compute mean across width (faster than median, sufficient for small strips)
+    # Result: 1D array of length band_height (or less if at image boundary)
+    signal_1d = np.mean(strip, axis=1).astype(np.float32)
     
     return signal_1d
+
+
+def extract_strips_batch(
+    frame: np.ndarray,
+    x_coords: np.ndarray,
+    y_centers: np.ndarray,
+    strip_width: int,
+    band_height: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract and collapse strips for multiple x coordinates in batch.
+    
+    Args:
+        frame: Input grayscale image.
+        x_coords: Array of x coordinates.
+        y_centers: Array of y-center positions for each x coordinate.
+        strip_width: Width of horizontal strip (pixels).
+        band_height: Height of vertical band (pixels).
+    
+    Returns:
+        Tuple of (all_signals, y_tops) where:
+        - all_signals: Array of shape (n_coords, band_height) with 1D signals
+        - y_tops: Array of y-top positions for each coordinate
+    """
+    logger.debug(f"extract_strips_batch: n_coords={len(x_coords)}, frame shape={frame.shape}")
+    H, W = frame.shape
+    n_coords = len(x_coords)
+    half_width = strip_width // 2
+    half_height = band_height // 2
+    
+    all_signals = np.zeros((n_coords, band_height), dtype=np.float32)
+    y_tops = np.zeros(n_coords, dtype=np.int32)
+    
+    for i in range(n_coords):
+        x = int(x_coords[i])
+        y_center = y_centers[i]
+        
+        # Calculate strip boundaries
+        x_left = max(0, x - half_width)
+        x_right = min(W, x + half_width + 1)
+        
+        # Calculate band boundaries - ensure range is exactly band_height
+        y_top = max(0, int(y_center) - half_height)
+        # Ensure y_bottom is exactly band_height pixels from y_top (or at image boundary)
+        y_bottom = min(H, y_top + band_height)
+        
+        y_tops[i] = y_top
+        
+        # Extract strip
+        strip = frame[y_top:y_bottom, x_left:x_right]
+        
+        # Compute mean across width
+        if strip.size > 0:
+            signal = np.mean(strip, axis=1).astype(np.float32)
+            actual_height = len(signal)
+            
+            # Ensure we don't exceed band_height (defensive check)
+            if actual_height > band_height:
+                actual_height = band_height
+            
+            all_signals[i, :actual_height] = signal[:actual_height]
+            
+    return all_signals, y_tops
 
 
 def smooth_signal(
@@ -63,91 +142,218 @@ def smooth_signal(
     return ndimage.gaussian_filter1d(signal, sigma=sigma)
 
 
-
-
-def erf_edge_model(y: np.ndarray, a: float, b: float, y0: float, sigma: float) -> np.ndarray:
-    """Error function model for edge: I(y) = a + b * erf((y - y0) / sigma).
+@njit(cache=True)
+def _compute_gradient_1d(signal: np.ndarray) -> np.ndarray:
+    """Compute gradient of 1D signal (Numba-accelerated).
     
     Args:
-        y: Y coordinates (array).
-        a: Baseline intensity.
-        b: Amplitude.
-        y0: Edge center position.
-        sigma: Blur width.
+        signal: 1D input signal.
     
     Returns:
-        Modeled intensity values.
+        Gradient array (same length as input).
     """
-    return a + b * special.erf((y - y0) / sigma)
+    n = len(signal)
+    gradient = np.zeros(n, dtype=np.float32)
+    
+    if n < 2:
+        return gradient
+    
+    # Forward difference at start
+    gradient[0] = signal[1] - signal[0]
+    
+    # Central difference in middle
+    for i in range(1, n - 1):
+        gradient[i] = (signal[i + 1] - signal[i - 1]) / 2.0
+    
+    # Backward difference at end
+    gradient[n - 1] = signal[n - 1] - signal[n - 2]
+    
+    return gradient
 
 
-def find_edge_sigmoid_fit(
+@njit(cache=True)
+def _find_edge_gradient_numba(
+    signal: np.ndarray,
+    polarity_is_dark_to_light: bool,
+    y_center_rough: float,
+) -> float:
+    """Numba-accelerated gradient-based edge detection.
+    
+    Args:
+        signal: 1D smoothed signal.
+        polarity_is_dark_to_light: True for dark_to_light, False for light_to_dark.
+        y_center_rough: Rough estimate of edge center.
+    
+    Returns:
+        Edge position (index in signal).
+    """
+    n = len(signal)
+    if n < 3:
+        return y_center_rough
+    
+    # Compute gradient
+    gradient = _compute_gradient_1d(signal)
+    
+    # Adjust for polarity
+    if not polarity_is_dark_to_light:
+        for i in range(n):
+            gradient[i] = -gradient[i]
+    
+    # Search window around rough center
+    window_size = 10
+    center_idx = int(y_center_rough)
+    start_idx = max(0, center_idx - window_size)
+    end_idx = min(n, center_idx + window_size + 1)
+    
+    if end_idx - start_idx < 3:
+        return y_center_rough
+    
+    # Find peak in window
+    peak_idx = start_idx
+    max_val = gradient[start_idx]
+    for i in range(start_idx + 1, end_idx):
+        if gradient[i] > max_val:
+            max_val = gradient[i]
+            peak_idx = i
+    
+    # Sub-pixel refinement via parabolic interpolation
+    if 0 < peak_idx < n - 1:
+        y0 = gradient[peak_idx - 1]
+        y1 = gradient[peak_idx]
+        y2 = gradient[peak_idx + 1]
+        
+        denominator = y0 - 2.0 * y1 + y2
+        if abs(denominator) > 1e-10:
+            offset = 0.5 * (y0 - y2) / denominator
+            edge_center = float(peak_idx) + offset
+        else:
+            edge_center = float(peak_idx)
+    else:
+        edge_center = float(peak_idx)
+    
+    # Clamp to valid range
+    if edge_center < 0.0:
+        edge_center = 0.0
+    elif edge_center >= n:
+        edge_center = float(n - 1)
+    
+    return edge_center
+
+
+@njit(cache=True)
+def _detect_edges_batch_numba(
+    all_smoothed: np.ndarray,
+    y_tops: np.ndarray,
+    polarity_is_dark_to_light: bool,
+    smoothing_factor: float,
+    prev_y_centers: np.ndarray,
+) -> np.ndarray:
+    """Numba-accelerated batch edge detection for multiple x coordinates.
+    
+    Args:
+        all_smoothed: Array of shape (n_coords, band_height) containing smoothed signals.
+        y_tops: Array of y-top positions for each coordinate (for converting to image coords).
+        polarity_is_dark_to_light: True for dark_to_light, False for light_to_dark.
+        smoothing_factor: Smoothing factor (0-1).
+        prev_y_centers: Previous y-center positions for smoothing.
+    
+    Returns:
+        Array of detected edge y positions (image coordinates).
+    """
+    n_coords = all_smoothed.shape[0]
+    results = np.zeros(n_coords, dtype=np.float32)
+    
+    for i in range(n_coords):
+        signal = all_smoothed[i]
+        y_top = y_tops[i]
+        prev_y_center = prev_y_centers[i]
+        
+        # Calculate rough center relative to signal
+        signal_center_idx = prev_y_center - y_top
+        if signal_center_idx < 0:
+            signal_center_idx = 0
+        elif signal_center_idx >= len(signal):
+            signal_center_idx = len(signal) - 1
+        
+        # Find edge using gradient
+        edge_idx = _find_edge_gradient_numba(
+            signal, polarity_is_dark_to_light, float(signal_center_idx)
+        )
+        
+        # Convert to image coordinates
+        edge_y = y_top + edge_idx
+        
+        # Apply smoothing
+        results[i] = smoothing_factor * prev_y_center + (1.0 - smoothing_factor) * edge_y
+    
+    return results
+
+
+def find_edge_gradient(
     signal: np.ndarray,
     polarity: str,
     y_center_rough: float,
-    band_height: int,
 ) -> float | None:
-    """Find edge center using sigmoid/erf fit.
+    """Find edge center using gradient peak with sub-pixel interpolation.
+    
+    This is much faster than curve fitting while maintaining good accuracy.
     
     Args:
         signal: 1D smoothed signal.
         polarity: "dark_to_light" or "light_to_dark".
-        y_center_rough: Rough estimate of edge center (for fitting window).
-        band_height: Height of the band (for coordinate mapping).
+        y_center_rough: Rough estimate of edge center (for search window).
     
     Returns:
-        Edge position (index in signal), or None if fit fails.
+        Edge position (index in signal), or None if detection fails.
     """
-    y_indices = np.arange(len(signal), dtype=np.float32)
+    if len(signal) < 3:
+        return None
     
-    # Determine fitting window (±5 pixels around rough edge)
-    window_size = 5
+    # Compute gradient (first derivative)
+    gradient = np.gradient(signal)
+    
+    # For dark_to_light: positive gradient peak
+    # For light_to_dark: negative gradient peak (invert to find maximum)
+    if polarity == "light_to_dark":
+        gradient = -gradient
+    
+    # Search window around rough center (±10 pixels)
+    window_size = 10
     center_idx = int(y_center_rough)
     start_idx = max(0, center_idx - window_size)
-    end_idx = min(len(signal), center_idx + window_size + 1)
+    end_idx = min(len(gradient), center_idx + window_size + 1)
     
     if end_idx - start_idx < 3:
-        # Window too small for fitting
         return None
     
-    # Extract window for fitting
-    y_window = y_indices[start_idx:end_idx]
-    signal_window = signal[start_idx:end_idx]
+    # Find peak in window
+    gradient_window = gradient[start_idx:end_idx]
+    peak_idx_rel = np.argmax(gradient_window)
+    peak_idx = start_idx + peak_idx_rel
     
-    # Initial parameter estimates
-    a_init = np.min(signal_window)  # Baseline
-    b_init = np.max(signal_window) - a_init  # Amplitude
-    
-    # Adjust for polarity
-    if polarity == "light_to_dark":
-        b_init = -b_init
-    
-    y0_init = float(center_idx)  # Edge center
-    sigma_init = 2.0  # Blur width
-    
-    try:
-        # Fit the model
-        popt, _ = optimize.curve_fit(
-            erf_edge_model,
-            y_window,
-            signal_window,
-            p0=[a_init, b_init, y0_init, sigma_init],
-            bounds=(
-                [a_init - abs(b_init), -2 * abs(b_init), y0_init - window_size, 0.5],
-                [a_init + abs(b_init), 2 * abs(b_init), y0_init + window_size, 10.0],
-            ),
-        )
+    # Sub-pixel refinement via parabolic interpolation
+    if 0 < peak_idx < len(gradient) - 1:
+        y0 = gradient[peak_idx - 1]
+        y1 = gradient[peak_idx]
+        y2 = gradient[peak_idx + 1]
         
-        # Extract edge center (y0 parameter)
-        edge_center = popt[2]
-        
-        # Clamp to valid range
-        edge_center = max(0, min(len(signal) - 1, edge_center))
-        
-        return edge_center
-    except (RuntimeError, ValueError):
-        # Fit failed, return None
-        return None
+        # Parabolic fit: y = ax^2 + bx + c
+        # Peak at x = -b/(2a)
+        # Using three points: (peak_idx-1, y0), (peak_idx, y1), (peak_idx+1, y2)
+        # Solve for offset from peak_idx
+        denominator = y0 - 2 * y1 + y2
+        if abs(denominator) > 1e-10:
+            offset = 0.5 * (y0 - y2) / denominator
+            edge_center = peak_idx + offset
+        else:
+            edge_center = float(peak_idx)
+    else:
+        edge_center = float(peak_idx)
+    
+    # Clamp to valid range
+    edge_center = max(0.0, min(len(signal) - 1, edge_center))
+    
+    return edge_center
 
 
 def detect_edge_1d(
@@ -187,14 +393,14 @@ def detect_edge_1d(
     # Step 2: Smooth with Gaussian filter
     signal_smooth = smooth_signal(signal_1d, sigma)
     
-    # Step 3: Find edge center using sigmoid fit
+    # Step 3: Find edge center using gradient peak
     # Calculate rough edge position relative to signal
     half_height = band_height // 2
     y_top = max(0, int(y_center) - half_height)
     signal_center_idx = int(y_center) - y_top
     signal_center_idx = max(0, min(len(signal_smooth) - 1, signal_center_idx))
     
-    edge_idx = find_edge_sigmoid_fit(signal_smooth, polarity, signal_center_idx, band_height)
+    edge_idx = find_edge_gradient(signal_smooth, polarity, signal_center_idx)
     
     if edge_idx is None:
         # Fallback to center if detection fails
@@ -337,52 +543,86 @@ def edge_detection_1d_calculation(
             path_top = []
             path_bottom = []
         else:
-            # Pre-compute y-centers from previous paths using vectorized interpolation
-            default_y = float(H // 2)
-            prev_y_top_array = interpolate_path_to_array(prev_path_top, x_coords, default_y=default_y)
-            prev_y_bottom_array = interpolate_path_to_array(prev_path_bottom, x_coords, default_y=default_y)
-            
-            # Clamp x coordinates to valid range
-            x_coords_clamped = np.clip(x_coords, 0, W - 1)
-            
-            # Detect edges for each x coordinate
-            y_top_detected = np.zeros(n_coords, dtype=np.float32)
-            y_bottom_detected = np.zeros(n_coords, dtype=np.float32)
-            
-            for i in range(n_coords):
-                x = int(x_coords_clamped[i])
+            try:
+                # Pre-compute y-centers from previous paths using vectorized interpolation
+                default_y = float(H // 2)
+                prev_y_top_array = interpolate_path_to_array(prev_path_top, x_coords, default_y=default_y)
+                prev_y_bottom_array = interpolate_path_to_array(prev_path_bottom, x_coords, default_y=default_y)
                 
-                # Top edge: dark to light (upper edge)
-                y_center_top = prev_y_top_array[i]
-                y_top_raw = detect_edge_1d(
-                    frame=img_gray,
-                    y_center=y_center_top,
-                    x=x,
-                    strip_width=strip_width,
-                    band_height=band_height,
-                    sigma=sigma,
-                    polarity="dark_to_light",
-                )
-                # Apply smoothing
-                y_top_detected[i] = smoothing_factor * y_center_top + (1 - smoothing_factor) * y_top_raw
+                # Clamp x coordinates to valid range
+                x_coords_clamped = np.clip(x_coords, 0, W - 1)
                 
-                # Bottom edge: light to dark (lower edge)
-                y_center_bottom = prev_y_bottom_array[i]
-                y_bottom_raw = detect_edge_1d(
-                    frame=img_gray,
-                    y_center=y_center_bottom,
-                    x=x,
-                    strip_width=strip_width,
-                    band_height=band_height,
-                    sigma=sigma,
-                    polarity="light_to_dark",
+                # Extract all strips in batch
+                all_signals_top, y_tops_top = extract_strips_batch(
+                    img_gray, x_coords_clamped, prev_y_top_array, strip_width, band_height
                 )
-                # Apply smoothing
-                y_bottom_detected[i] = smoothing_factor * y_center_bottom + (1 - smoothing_factor) * y_bottom_raw
-            
-            # Convert to (x, y) tuples with integer y (already sorted by x)
-            path_top = [(int(x_coords[i]), int(np.round(y_top_detected[i]))) for i in range(n_coords)]
-            path_bottom = [(int(x_coords[i]), int(np.round(y_bottom_detected[i]))) for i in range(n_coords)]
+                all_signals_bottom, y_tops_bottom = extract_strips_batch(
+                    img_gray, x_coords_clamped, prev_y_bottom_array, strip_width, band_height
+                )
+                
+                # Apply Gaussian smoothing to all signals at once using vectorized operation
+                all_smoothed_top = ndimage.gaussian_filter1d(all_signals_top, sigma=sigma, axis=1, mode='constant')
+                all_smoothed_bottom = ndimage.gaussian_filter1d(all_signals_bottom, sigma=sigma, axis=1, mode='constant')
+                
+                # Use Numba-accelerated batch detection if available, otherwise fall back to Python
+                if NUMBA_AVAILABLE:
+                    y_top_detected = _detect_edges_batch_numba(
+                        all_smoothed_top,
+                        y_tops_top.astype(np.float32),
+                        polarity_is_dark_to_light=True,
+                        smoothing_factor=smoothing_factor,
+                        prev_y_centers=prev_y_top_array,
+                    )
+                    
+                    y_bottom_detected = _detect_edges_batch_numba(
+                        all_smoothed_bottom,
+                        y_tops_bottom.astype(np.float32),
+                        polarity_is_dark_to_light=False,
+                        smoothing_factor=smoothing_factor,
+                        prev_y_centers=prev_y_bottom_array,
+                    )
+                else:
+                    # Fallback to Python implementation
+                    y_top_detected = np.zeros(n_coords, dtype=np.float32)
+                    y_bottom_detected = np.zeros(n_coords, dtype=np.float32)
+                    
+                    for i in range(n_coords):
+                        # Top edge: dark to light
+                        signal_top = all_smoothed_top[i]
+                        y_top = y_tops_top[i]
+                        signal_center_idx = prev_y_top_array[i] - y_top
+                        signal_center_idx = max(0, min(len(signal_top) - 1, signal_center_idx))
+                        
+                        edge_idx = find_edge_gradient(signal_top, "dark_to_light", signal_center_idx)
+                        if edge_idx is not None:
+                            edge_y = y_top + edge_idx
+                            y_top_detected[i] = smoothing_factor * prev_y_top_array[i] + (1 - smoothing_factor) * edge_y
+                        else:
+                            y_top_detected[i] = prev_y_top_array[i]
+                        
+                        # Bottom edge: light to dark
+                        signal_bottom = all_smoothed_bottom[i]
+                        y_bottom = y_tops_bottom[i]
+                        signal_center_idx = prev_y_bottom_array[i] - y_bottom
+                        signal_center_idx = max(0, min(len(signal_bottom) - 1, signal_center_idx))
+                        
+                        edge_idx = find_edge_gradient(signal_bottom, "light_to_dark", signal_center_idx)
+                        if edge_idx is not None:
+                            edge_y = y_bottom + edge_idx
+                            y_bottom_detected[i] = smoothing_factor * prev_y_bottom_array[i] + (1 - smoothing_factor) * edge_y
+                        else:
+                            y_bottom_detected[i] = prev_y_bottom_array[i]
+                
+                # Clamp results to valid image bounds
+                y_top_detected = np.clip(y_top_detected, 0, H - 1)
+                y_bottom_detected = np.clip(y_bottom_detected, 0, H - 1)
+                
+                # Convert to (x, y) tuples with integer y (already sorted by x)
+                path_top = [(int(x_coords[i]), int(np.round(y_top_detected[i]))) for i in range(n_coords)]
+                path_bottom = [(int(x_coords[i]), int(np.round(y_bottom_detected[i]))) for i in range(n_coords)]
+            except Exception as e:
+                logger.error(f"Error in batch processing: {e}", exc_info=True)
+                raise
         
         # Draw paths on output frame
         if path_top:
@@ -395,8 +635,12 @@ def edge_detection_1d_calculation(
             )
     
     else:
+        logger.info("First frame: using starting point detection")
         # First frame: use starting point detection
-        y_top, y_bottom, x_mid = starting_point_detection(frame=frame)
+        try:
+            y_top, y_bottom, x_mid = starting_point_detection(frame=frame)
+        except Exception as e:
+            raise
         
         if y_top < 0 or y_bottom < 0:
             # Detection failed, return empty paths
@@ -487,7 +731,7 @@ def edge_detection_1d_calculation(
         # Combine into single paths
         path_top = path_top_left_reversed + path_top_right
         path_bottom = path_bottom_left_reversed + path_bottom_right
-    
+        
     # Store paths in path_storage if provided
     if path_storage is not None:
         path_storage["path_top"] = path_top
