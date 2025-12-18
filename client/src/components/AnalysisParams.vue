@@ -12,11 +12,21 @@ import { Label } from './ui/label';
 
 const store = useAnalysisStore();
 
-// Costmap parameters
+// Edge detection method
+const edgeDetectionMethod = ref<"costmap" | "signal_1d">("costmap");
+
+// Costmap parameters (only used when edge_detection_method="costmap")
 const alpha = ref(1.5);
 const band = ref(20);
-const smoothingFactor = ref(0.2);
 const thresholdPercentile = ref(80.0);
+
+// Smoothing factor (used by both methods)
+const smoothingFactor = ref(0.2);
+
+// 1D Signal method parameters (only used when edge_detection_method="signal_1d")
+const stripWidth = ref(5);
+const bandHeight = ref(30);
+const sigma = ref(2.0);
 
 // Measurement configuration parameters
 const numTrackingPoints = ref(30);
@@ -50,22 +60,45 @@ const numTrackingPointsModel = computed({
   set: (value: number[]) => { numTrackingPoints.value = value[0] ?? 30; }
 });
 
+const stripWidthModel = computed({
+  get: () => [stripWidth.value],
+  set: (value: number[]) => { stripWidth.value = value[0] ?? 5; }
+});
+
+const bandHeightModel = computed({
+  get: () => [bandHeight.value],
+  set: (value: number[]) => { bandHeight.value = value[0] ?? 30; }
+});
+
+const sigmaModel = computed({
+  get: () => [sigma.value],
+  set: (value: number[]) => { sigma.value = value[0] ?? 2.0; }
+});
+
 // Function to sync local refs with store parameters
 function syncParamsFromStore() {
   const params = store.currentParameters;
   if (params) {
+    edgeDetectionMethod.value = params.edge_detection_method ?? "costmap";
     alpha.value = params.alpha ?? 1.5;
     band.value = params.band ?? 20;
     smoothingFactor.value = params.smoothing_factor ?? 0.2;
     thresholdPercentile.value = params.threshold_percentile ?? 80.0;
+    stripWidth.value = params.strip_width ?? 5;
+    bandHeight.value = params.band_height ?? 30;
+    sigma.value = params.sigma ?? 2.0;
     numTrackingPoints.value = params.num_tracking_points ?? 30;
     distributionMethod.value = params.distribution_method ?? "center_line_projection";
   } else {
     // Reset to defaults if no saved settings
+    edgeDetectionMethod.value = "costmap";
     alpha.value = 1.5;
     band.value = 20;
     smoothingFactor.value = 0.2;
     thresholdPercentile.value = 80.0;
+    stripWidth.value = 5;
+    bandHeight.value = 30;
+    sigma.value = 2.0;
     numTrackingPoints.value = 30;
     distributionMethod.value = "center_line_projection";
   }
@@ -107,10 +140,14 @@ const debouncedSaveSettings = debounce(async () => {
 // Watch for parameter changes and trigger debounced single-frame analysis and save
 watch(
   [
+    edgeDetectionMethod,
     alpha,
     band,
     smoothingFactor,
     thresholdPercentile,
+    stripWidth,
+    bandHeight,
+    sigma,
     numTrackingPoints,
     distributionMethod,
   ],
@@ -129,10 +166,14 @@ function getCurrentParameters(): AnalysisParameters {
   // Get horizontal window values from store's current parameters if available
   const currentParams = store.currentParameters;
   return {
+    edge_detection_method: edgeDetectionMethod.value,
     alpha: alpha.value,
     band: band.value,
     smoothing_factor: smoothingFactor.value,
     threshold_percentile: thresholdPercentile.value,
+    strip_width: stripWidth.value,
+    band_height: bandHeight.value,
+    sigma: sigma.value,
     horizontal_window_x_left: currentParams?.horizontal_window_x_left ?? null,
     horizontal_window_x_right: currentParams?.horizontal_window_x_right ?? null,
     num_tracking_points: numTrackingPoints.value,
@@ -437,36 +478,130 @@ const canRerunAnalysis = computed(() => {
       <h3>Edge Detection</h3>
 
       <div class="param-group">
-        <label for="alpha">
-          Alpha: {{ alpha.toFixed(2) }}
+        <Label for="edge-detection-method">
+          Edge Detection Method
           <Popover>
             <PopoverTrigger class="float-right">
               <Icon name="mdi:information-outline" />
             </PopoverTrigger>
             <PopoverContent>
-              <div>Contrast enhancement factor (0.0 - 5.0)</div>
+              <div>
+                <div><strong>Costmap:</strong> Original gradient-based method using costmap</div>
+                <div><strong>1D Signal:</strong> Alternative method using 1D signal analysis with median collapse and edge center detection</div>
+              </div>
             </PopoverContent>
           </Popover>
-        </label>
-        <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-
+        </Label>
+        <RadioGroup id="edge-detection-method" v-model="edgeDetectionMethod" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
+          <div class="radio-option">
+            <RadioGroupItem value="costmap" id="costmap" />
+            <Label for="costmap" class="radio-label">Costmap</Label>
+          </div>
+          <div class="radio-option">
+            <RadioGroupItem value="signal_1d" id="signal-1d" />
+            <Label for="signal-1d" class="radio-label">1D Signal</Label>
+          </div>
+        </RadioGroup>
       </div>
 
-      <div class="param-group">
-        <label for="band">
-          Band: {{ band }}
-          <Popover>
-            <PopoverTrigger class="float-right">
-              <Icon name="mdi:information-outline" />
-            </PopoverTrigger>
-            <PopoverContent>
-              <div>Search band width in pixels (1 - 100)</div>
-            </PopoverContent>
-          </Popover>
-        </label>
-        <Slider v-model="bandModel" :min="1" :max="100" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-      </div>
+      <!-- Costmap method parameters -->
+      <template v-if="edgeDetectionMethod === 'costmap'">
+        <div class="param-group">
+          <label for="alpha">
+            Alpha: {{ alpha.toFixed(2) }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Contrast enhancement factor (0.0 - 5.0)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
 
+        <div class="param-group">
+          <label for="band">
+            Band: {{ band }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Search band width in pixels (1 - 100)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="bandModel" :min="1" :max="100" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+
+        <div class="param-group">
+          <label for="threshold-percentile">
+            Threshold Percentile: {{ thresholdPercentile.toFixed(1) }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Percentile threshold for brightest pixels (0.0 - 100.0)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
+            :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+      </template>
+
+      <!-- 1D Signal method parameters -->
+      <template v-if="edgeDetectionMethod === 'signal_1d'">
+        <div class="param-group">
+          <label for="strip-width">
+            Strip Width: {{ stripWidth }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Width of horizontal strip for 1D signal collapse (1 - 20 pixels)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="stripWidthModel" :min="1" :max="20" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+
+        <div class="param-group">
+          <label for="band-height">
+            Band Height: {{ bandHeight }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Height of vertical band for 1D signal (10 - 100 pixels)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="bandHeightModel" :min="10" :max="100" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+
+        <div class="param-group">
+          <label for="sigma">
+            Sigma: {{ sigma.toFixed(2) }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Gaussian sigma parameter for smoothing (0.5 - 10.0)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+      </template>
+
+      <!-- Smoothing factor (shared by both methods) -->
       <div class="param-group">
         <label for="smoothing-factor">
           Smoothing Factor: {{ smoothingFactor.toFixed(2) }}
@@ -480,22 +615,6 @@ const canRerunAnalysis = computed(() => {
           </Popover>
         </label>
         <Slider v-model="smoothingFactorModel" :min="0" :max="1" :step="0.01"
-          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-      </div>
-
-      <div class="param-group">
-        <label for="threshold-percentile">
-          Threshold Percentile: {{ thresholdPercentile.toFixed(1) }}
-          <Popover>
-            <PopoverTrigger class="float-right">
-              <Icon name="mdi:information-outline" />
-            </PopoverTrigger>
-            <PopoverContent>
-              <div>Percentile threshold for brightest pixels (0.0 - 100.0)</div>
-            </PopoverContent>
-          </Popover>
-        </label>
-        <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
           :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
       </div>
 

@@ -15,6 +15,7 @@ import numpy as np
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .config import MAX_UPLOAD_SIZE
 from .costmap import costmap_calculation
+from .edge_detection_1d import edge_detection_1d_calculation
 from .database import init_database
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -653,17 +654,29 @@ async def analyze_frame(video_id: str, frame_number: int, parameters: AnalysisPa
         # Convert to numpy array
         frame_np = np.array(frame)
         
-        # Run costmap calculation
-        _, path_top, path_bottom = costmap_calculation(
-            frame=frame_np,
-            alpha=parameters.alpha,
-            band=parameters.band,
-            smoothing_factor=parameters.smoothing_factor,
-            threshold_percentile=parameters.threshold_percentile,
-            horizontal_window_x_left=parameters.horizontal_window_x_left,
-            horizontal_window_x_right=parameters.horizontal_window_x_right,
-            subsequent_frame_band=parameters.subsequent_frame_band,
-        )
+        # Dispatch to correct edge detection method
+        if parameters.edge_detection_method == "signal_1d":
+            _, path_top, path_bottom = edge_detection_1d_calculation(
+                frame=frame_np,
+                strip_width=parameters.strip_width,
+                band_height=parameters.band_height,
+                sigma=parameters.sigma,
+                smoothing_factor=parameters.smoothing_factor,
+                horizontal_window_x_left=parameters.horizontal_window_x_left,
+                horizontal_window_x_right=parameters.horizontal_window_x_right,
+            )
+        else:
+            # Default to costmap method
+            _, path_top, path_bottom = costmap_calculation(
+                frame=frame_np,
+                alpha=parameters.alpha,
+                band=parameters.band,
+                smoothing_factor=parameters.smoothing_factor,
+                threshold_percentile=parameters.threshold_percentile,
+                horizontal_window_x_left=parameters.horizontal_window_x_left,
+                horizontal_window_x_right=parameters.horizontal_window_x_right,
+                subsequent_frame_band=parameters.subsequent_frame_band,
+            )
         
         # Calculate center path with perpendicular projection
         path_center = calculate_center_path(

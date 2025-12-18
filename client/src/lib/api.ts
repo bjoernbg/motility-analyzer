@@ -51,11 +51,19 @@ export interface Video {
 }
 
 export interface AnalysisParameters {
-  // Costmap parameters
+  // Edge detection method selection
+  edge_detection_method?: "costmap" | "signal_1d";
+  // Costmap parameters (only used when edge_detection_method="costmap")
   alpha?: number;
   band?: number;
-  smoothing_factor?: number;
   threshold_percentile?: number;
+  subsequent_frame_band?: number | null;
+  // Smoothing factor (used by both methods)
+  smoothing_factor?: number;
+  // 1D Signal method parameters (only used when edge_detection_method="signal_1d")
+  strip_width?: number;
+  band_height?: number;
+  sigma?: number;
   // Horizontal window parameters
   horizontal_window_x_left?: number | null;
   horizontal_window_x_right?: number | null;

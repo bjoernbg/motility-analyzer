@@ -29,16 +29,26 @@ class VideoMetadata(BaseModel):
 
 class AnalysisParameters(BaseModel):
     """Analysis parameters."""
-    # Costmap parameters
+    # Edge detection method selection
+    edge_detection_method: Literal["costmap", "signal_1d"] = Field(
+        default="costmap",
+        description="Edge detection method: 'costmap' (original) or 'signal_1d' (1D signal-based)"
+    )
+    # Costmap parameters (only used when edge_detection_method="costmap")
     alpha: float = Field(default=1.5, ge=0.0, le=5.0, description="Contrast enhancement factor for costmap")
     band: int = Field(default=20, ge=1, le=100, description="Width of the search band around the current path position (in pixels)")
-    smoothing_factor: float = Field(default=0.2, ge=0.0, le=1.0, description="Smoothing factor for path following (0-1, higher = more smoothing)")
     threshold_percentile: float = Field(default=80.0, ge=0.0, le=100.0, description="Percentile threshold for keeping brightest pixels (0-100)")
+    # Subsequent frame optimization (costmap method)
+    subsequent_frame_band: Optional[int] = Field(default=None, ge=1, le=100, description="Band width for subsequent frames (if None, uses 'band' value)")
+    # Smoothing factor (used by both methods)
+    smoothing_factor: float = Field(default=0.2, ge=0.0, le=1.0, description="Smoothing factor for path following (0-1, higher = more smoothing)")
+    # 1D Signal method parameters (only used when edge_detection_method="signal_1d")
+    strip_width: int = Field(default=5, ge=1, le=20, description="Width of horizontal strip for 1D signal method (pixels)")
+    band_height: int = Field(default=30, ge=10, le=100, description="Height of vertical band for 1D signal method (pixels)")
+    sigma: float = Field(default=2.0, ge=0.5, le=10.0, description="Gaussian sigma parameter for 1D signal smoothing")
     # Horizontal window parameters
     horizontal_window_x_left: Optional[int] = Field(default=None, description="Left x-coordinate for horizontal window (pixels)")
     horizontal_window_x_right: Optional[int] = Field(default=None, description="Right x-coordinate for horizontal window (pixels)")
-    # Subsequent frame optimization
-    subsequent_frame_band: Optional[int] = Field(default=None, ge=1, le=100, description="Band width for subsequent frames (if None, uses 'band' value)")
     # Measurement configuration
     num_tracking_points: int = Field(default=30, ge=5, le=200, description="Number of tracking points for measurement")
     distribution_method: Literal["center_line_projection", "x_axis_even"] = Field(default="center_line_projection", description="Method for distributing measurement points")
