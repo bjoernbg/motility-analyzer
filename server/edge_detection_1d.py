@@ -1,5 +1,6 @@
 """1D signal-based edge detection method."""
 import logging
+import math
 
 import cv2
 import numpy as np
@@ -131,6 +132,9 @@ def smooth_signal(
     sigma: float,
 ) -> np.ndarray:
     """Smooth a 1D signal using Gaussian blur.
+    
+    DEPRECATED: This function is no longer used. Smoothing is now done
+    on the whole image using OpenCV before strip extraction.
     
     Args:
         signal: 1D input signal.
@@ -368,12 +372,12 @@ def detect_edge_1d(
     """Detect edge position using 1D signal analysis.
     
     Args:
-        frame: Input grayscale image.
+        frame: Input grayscale image (should already be smoothed if sigma > 0).
         y_center: Rough estimate of edge center (y coordinate).
         x: X coordinate to detect edge at.
         strip_width: Width of horizontal strip (pixels).
         band_height: Height of vertical band (pixels).
-        sigma: Gaussian sigma parameter.
+        sigma: Gaussian sigma parameter (unused, kept for API compatibility).
         polarity: "dark_to_light" or "light_to_dark".
     
     Returns:
@@ -384,23 +388,20 @@ def detect_edge_1d(
     # Clamp x to valid range
     x = max(0, min(W - 1, x))
     
-    # Step 1: Collapse width to 1D
+    # Step 1: Collapse width to 1D (frame is already smoothed)
     signal_1d = collapse_to_1d(frame, x, y_center, strip_width, band_height)
     
     if len(signal_1d) == 0:
         return y_center
     
-    # Step 2: Smooth with Gaussian filter
-    signal_smooth = smooth_signal(signal_1d, sigma)
-    
-    # Step 3: Find edge center using gradient peak
+    # Step 2: Find edge center using gradient peak (no smoothing needed, already done on image)
     # Calculate rough edge position relative to signal
     half_height = band_height // 2
     y_top = max(0, int(y_center) - half_height)
     signal_center_idx = int(y_center) - y_top
-    signal_center_idx = max(0, min(len(signal_smooth) - 1, signal_center_idx))
+    signal_center_idx = max(0, min(len(signal_1d) - 1, signal_center_idx))
     
-    edge_idx = find_edge_gradient(signal_smooth, polarity, signal_center_idx)
+    edge_idx = find_edge_gradient(signal_1d, polarity, signal_center_idx)
     
     if edge_idx is None:
         # Fallback to center if detection fails
@@ -431,12 +432,12 @@ def follow_path_1d(
     """Follow a path using 1D edge detection.
     
     Args:
-        frame: Input grayscale image.
+        frame: Input grayscale image (should already be smoothed if sigma > 0).
         y_start: Starting y-coordinate for the path.
         x_start: Starting x-coordinate for the path.
         strip_width: Width of horizontal strip (pixels).
         band_height: Height of vertical band (pixels).
-        sigma: Gaussian sigma parameter.
+        sigma: Gaussian sigma parameter (unused, kept for API compatibility).
         polarity: "dark_to_light" or "light_to_dark".
         smoothing_factor: Smoothing factor between 0-1 (higher = more smoothing).
         x_step: Step size for x-direction traversal (-1 for left, 1 for right).
@@ -517,6 +518,17 @@ def edge_detection_1d_calculation(
     output_frame = frame.copy()
     H, W = img_gray.shape
     
+    # Apply vertical-only Gaussian blur to the whole image once
+    # This replaces per-strip smoothing with a single efficient OpenCV operation
+    if sigma > 0:
+        # Vertical-only blur: ksize=(1, k) means vertical-only blur (cheap, SIMD-optimized)
+        # sigmaX=0 means no horizontal blur, sigmaY=sigma means blur along y-axis
+        # Compute kernel size from sigma: k = 2 * ceil(3 * sigma) + 1 (must be odd)
+        k = int(2 * math.ceil(3 * sigma) + 1)
+        if k % 2 == 0:
+            k += 1  # Ensure odd
+        img_gray = cv2.GaussianBlur(img_gray, ksize=(1, k), sigmaX=0, sigmaY=sigma)
+    
     # Determine x range based on horizontal window or frame width
     # Extend 100px beyond the horizontal window for better path coverage
     x_start = (
@@ -552,7 +564,7 @@ def edge_detection_1d_calculation(
                 # Clamp x coordinates to valid range
                 x_coords_clamped = np.clip(x_coords, 0, W - 1)
                 
-                # Extract all strips in batch
+                # Extract all strips in batch (img_gray is already smoothed)
                 all_signals_top, y_tops_top = extract_strips_batch(
                     img_gray, x_coords_clamped, prev_y_top_array, strip_width, band_height
                 )
@@ -560,14 +572,11 @@ def edge_detection_1d_calculation(
                     img_gray, x_coords_clamped, prev_y_bottom_array, strip_width, band_height
                 )
                 
-                # Apply Gaussian smoothing to all signals at once using vectorized operation
-                all_smoothed_top = ndimage.gaussian_filter1d(all_signals_top, sigma=sigma, axis=1, mode='constant')
-                all_smoothed_bottom = ndimage.gaussian_filter1d(all_signals_bottom, sigma=sigma, axis=1, mode='constant')
-                
+                # No per-strip smoothing needed - image is already smoothed
                 # Use Numba-accelerated batch detection if available, otherwise fall back to Python
                 if NUMBA_AVAILABLE:
                     y_top_detected = _detect_edges_batch_numba(
-                        all_smoothed_top,
+                        all_signals_top,
                         y_tops_top.astype(np.float32),
                         polarity_is_dark_to_light=True,
                         smoothing_factor=smoothing_factor,
@@ -575,7 +584,7 @@ def edge_detection_1d_calculation(
                     )
                     
                     y_bottom_detected = _detect_edges_batch_numba(
-                        all_smoothed_bottom,
+                        all_signals_bottom,
                         y_tops_bottom.astype(np.float32),
                         polarity_is_dark_to_light=False,
                         smoothing_factor=smoothing_factor,
@@ -588,7 +597,7 @@ def edge_detection_1d_calculation(
                     
                     for i in range(n_coords):
                         # Top edge: dark to light
-                        signal_top = all_smoothed_top[i]
+                        signal_top = all_signals_top[i]
                         y_top = y_tops_top[i]
                         signal_center_idx = prev_y_top_array[i] - y_top
                         signal_center_idx = max(0, min(len(signal_top) - 1, signal_center_idx))
@@ -601,7 +610,7 @@ def edge_detection_1d_calculation(
                             y_top_detected[i] = prev_y_top_array[i]
                         
                         # Bottom edge: light to dark
-                        signal_bottom = all_smoothed_bottom[i]
+                        signal_bottom = all_signals_bottom[i]
                         y_bottom = y_tops_bottom[i]
                         signal_center_idx = prev_y_bottom_array[i] - y_bottom
                         signal_center_idx = max(0, min(len(signal_bottom) - 1, signal_center_idx))
@@ -639,7 +648,7 @@ def edge_detection_1d_calculation(
         # First frame: use starting point detection
         try:
             y_top, y_bottom, x_mid = starting_point_detection(frame=frame)
-        except Exception as e:
+        except Exception:
             raise
         
         if y_top < 0 or y_bottom < 0:
