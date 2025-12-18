@@ -127,25 +127,6 @@ def extract_strips_batch(
     return all_signals, y_tops
 
 
-def smooth_signal(
-    signal: np.ndarray,
-    sigma: float,
-) -> np.ndarray:
-    """Smooth a 1D signal using Gaussian blur.
-    
-    DEPRECATED: This function is no longer used. Smoothing is now done
-    on the whole image using OpenCV before strip extraction.
-    
-    Args:
-        signal: 1D input signal.
-        sigma: Gaussian sigma parameter.
-    
-    Returns:
-        Smoothed signal (same length as input).
-    """
-    return ndimage.gaussian_filter1d(signal, sigma=sigma)
-
-
 @njit(cache=True)
 def _compute_gradient_1d(signal: np.ndarray) -> np.ndarray:
     """Compute gradient of 1D signal (Numba-accelerated).
