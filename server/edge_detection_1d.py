@@ -4,7 +4,6 @@ import math
 
 import cv2
 import numpy as np
-from scipy import ndimage
 
 from .edge_utils import interpolate_path_to_array, starting_point_detection
 
@@ -297,6 +296,100 @@ def _find_edge_gradient_numba(
 
 
 @njit(cache=True)
+def _find_edge_midpoint_numba(
+    signal: np.ndarray,
+    polarity_is_dark_to_light: bool,
+    expected_center: float,
+    plateau_samples: int = 5,
+    window_size: int = 10,
+) -> float:
+    """Numba-accelerated midpoint crossing edge detection.
+    
+    Fast method that estimates plateaus and finds the midpoint crossing.
+    No gradient computation needed - works well for sigmoid-like edges.
+    
+    Args:
+        signal: 1D smoothed signal.
+        polarity_is_dark_to_light: True for dark_to_light, False for light_to_dark.
+        expected_center: Rough estimate of edge center (index in signal).
+        plateau_samples: Number of samples to use for plateau estimation.
+        window_size: Search window size around expected center.
+    
+    Returns:
+        Edge position (index in signal).
+    """
+    n = len(signal)
+    if n < 3:
+        return expected_center
+    
+    # 1. Estimate plateaus from signal boundaries
+    k = min(plateau_samples, n // 4)
+    if k < 1:
+        k = 1
+    
+    top_plateau = 0.0
+    bottom_plateau = 0.0
+    for i in range(k):
+        top_plateau += signal[i]
+        bottom_plateau += signal[n - 1 - i]
+    top_plateau /= float(k)
+    bottom_plateau /= float(k)
+    
+    # 2. Handle polarity (dark_to_light: signal goes low->high)
+    if polarity_is_dark_to_light:
+        # top of signal is dark (low), bottom is light (high)
+        dark_level = top_plateau
+        light_level = bottom_plateau
+    else:
+        # top of signal is light (high), bottom is dark (low)
+        dark_level = bottom_plateau
+        light_level = top_plateau
+    
+    mid = (dark_level + light_level) / 2.0
+    
+    # 3. Scan window for crossing
+    center_idx = int(expected_center)
+    start = max(0, center_idx - window_size)
+    end = min(n - 1, center_idx + window_size)
+    
+    # Find first crossing (where signal crosses mid value)
+    crossing_idx = -1
+    if polarity_is_dark_to_light:
+        # Looking for signal to go from below mid to above mid
+        for i in range(start, end):
+            if signal[i] <= mid < signal[i + 1]:
+                crossing_idx = i
+                break
+    else:
+        # Looking for signal to go from above mid to below mid
+        for i in range(start, end):
+            if signal[i] >= mid > signal[i + 1]:
+                crossing_idx = i
+                break
+    
+    if crossing_idx < 0:
+        return expected_center
+    
+    # 4. Linear interpolation for sub-pixel precision
+    y0 = signal[crossing_idx]
+    y1 = signal[crossing_idx + 1]
+    diff = y1 - y0
+    if abs(diff) > 1e-10:
+        t = (mid - y0) / diff
+        edge_center = float(crossing_idx) + t
+    else:
+        edge_center = float(crossing_idx)
+    
+    # Clamp to valid range
+    if edge_center < 0.0:
+        edge_center = 0.0
+    elif edge_center >= n:
+        edge_center = float(n - 1)
+    
+    return edge_center
+
+
+@njit(cache=True)
 def _detect_edges_batch_numba(
     all_smoothed: np.ndarray,
     y_tops: np.ndarray,
@@ -331,8 +424,8 @@ def _detect_edges_batch_numba(
         elif signal_center_idx >= len(signal):
             signal_center_idx = len(signal) - 1
         
-        # Find edge using gradient
-        edge_idx = _find_edge_gradient_numba(
+        # Find edge using midpoint crossing (faster than gradient)
+        edge_idx = _find_edge_midpoint_numba(
             signal, polarity_is_dark_to_light, float(signal_center_idx)
         )
         
@@ -412,6 +505,92 @@ def find_edge_gradient(
     return edge_center
 
 
+def find_edge_midpoint(
+    signal: np.ndarray,
+    polarity: str,
+    y_center_rough: float,
+    plateau_samples: int = 5,
+    window_size: int = 10,
+) -> float | None:
+    """Find edge center using midpoint crossing method.
+    
+    Fast method that estimates plateaus and finds the midpoint crossing.
+    No gradient computation needed - works well for sigmoid-like edges.
+    
+    Args:
+        signal: 1D smoothed signal.
+        polarity: "dark_to_light" or "light_to_dark".
+        y_center_rough: Rough estimate of edge center (for search window).
+        plateau_samples: Number of samples to use for plateau estimation.
+        window_size: Search window size around expected center.
+    
+    Returns:
+        Edge position (index in signal), or None if detection fails.
+    """
+    n = len(signal)
+    if n < 3:
+        return None
+    
+    # 1. Estimate plateaus from signal boundaries
+    k = min(plateau_samples, n // 4)
+    if k < 1:
+        k = 1
+    
+    top_plateau = np.mean(signal[:k])
+    bottom_plateau = np.mean(signal[-k:])
+    
+    # 2. Handle polarity (dark_to_light: signal goes low->high)
+    polarity_is_dark_to_light = polarity == "dark_to_light"
+    if polarity_is_dark_to_light:
+        # top of signal is dark (low), bottom is light (high)
+        dark_level = top_plateau
+        light_level = bottom_plateau
+    else:
+        # top of signal is light (high), bottom is dark (low)
+        dark_level = bottom_plateau
+        light_level = top_plateau
+    
+    mid = (dark_level + light_level) / 2.0
+    
+    # 3. Scan window for crossing
+    center_idx = int(y_center_rough)
+    start = max(0, center_idx - window_size)
+    end = min(n - 1, center_idx + window_size)
+    
+    # Find first crossing (where signal crosses mid value)
+    crossing_idx = -1
+    if polarity_is_dark_to_light:
+        # Looking for signal to go from below mid to above mid
+        for i in range(start, end):
+            if signal[i] <= mid < signal[i + 1]:
+                crossing_idx = i
+                break
+    else:
+        # Looking for signal to go from above mid to below mid
+        for i in range(start, end):
+            if signal[i] >= mid > signal[i + 1]:
+                crossing_idx = i
+                break
+    
+    if crossing_idx < 0:
+        return None
+    
+    # 4. Linear interpolation for sub-pixel precision
+    y0 = signal[crossing_idx]
+    y1 = signal[crossing_idx + 1]
+    diff = y1 - y0
+    if abs(diff) > 1e-10:
+        t = (mid - y0) / diff
+        edge_center = float(crossing_idx) + t
+    else:
+        edge_center = float(crossing_idx)
+    
+    # Clamp to valid range
+    edge_center = max(0.0, min(len(signal) - 1, edge_center))
+    
+    return edge_center
+
+
 def detect_edge_1d(
     frame: np.ndarray,
     y_center: float,
@@ -446,14 +625,14 @@ def detect_edge_1d(
     if len(signal_1d) == 0:
         return y_center
     
-    # Step 2: Find edge center using gradient peak (no smoothing needed, already done on image)
+    # Step 2: Find edge center using midpoint crossing (no smoothing needed, already done on image)
     # Calculate rough edge position relative to signal
     half_height = band_height // 2
     y_top = max(0, int(y_center) - half_height)
     signal_center_idx = int(y_center) - y_top
     signal_center_idx = max(0, min(len(signal_1d) - 1, signal_center_idx))
     
-    edge_idx = find_edge_gradient(signal_1d, polarity, signal_center_idx)
+    edge_idx = find_edge_midpoint(signal_1d, polarity, signal_center_idx)
     
     if edge_idx is None:
         # Fallback to center if detection fails
@@ -654,7 +833,7 @@ def edge_detection_1d_calculation(
                         signal_center_idx = prev_y_top_array[i] - y_top
                         signal_center_idx = max(0, min(len(signal_top) - 1, signal_center_idx))
                         
-                        edge_idx = find_edge_gradient(signal_top, "dark_to_light", signal_center_idx)
+                        edge_idx = find_edge_midpoint(signal_top, "dark_to_light", signal_center_idx)
                         if edge_idx is not None:
                             edge_y = y_top + edge_idx
                             y_top_detected[i] = smoothing_factor * prev_y_top_array[i] + (1 - smoothing_factor) * edge_y
@@ -667,7 +846,7 @@ def edge_detection_1d_calculation(
                         signal_center_idx = prev_y_bottom_array[i] - y_bottom
                         signal_center_idx = max(0, min(len(signal_bottom) - 1, signal_center_idx))
                         
-                        edge_idx = find_edge_gradient(signal_bottom, "light_to_dark", signal_center_idx)
+                        edge_idx = find_edge_midpoint(signal_bottom, "light_to_dark", signal_center_idx)
                         if edge_idx is not None:
                             edge_y = y_bottom + edge_idx
                             y_bottom_detected[i] = smoothing_factor * prev_y_bottom_array[i] + (1 - smoothing_factor) * edge_y
