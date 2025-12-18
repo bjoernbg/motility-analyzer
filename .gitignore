@@ -34,4 +34,4 @@ client/*.sln
 client/*.sw?
 client/*.tsbuildinfo
 client/.eslintcache
-server/ffmpeg_bin/
+
