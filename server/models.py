@@ -30,9 +30,9 @@ class VideoMetadata(BaseModel):
 class AnalysisParameters(BaseModel):
     """Analysis parameters."""
     # Edge detection method selection
-    edge_detection_method: Literal["costmap", "signal_1d"] = Field(
+    edge_detection_method: Literal["costmap", "signal_1d", "canny"] = Field(
         default="costmap",
-        description="Edge detection method: 'costmap' (original) or 'signal_1d' (1D signal-based)"
+        description="Edge detection method: 'costmap' (original), 'signal_1d' (1D signal-based), or 'canny' (Canny edge detection)"
     )
     # Costmap parameters (only used when edge_detection_method="costmap")
     alpha: float = Field(default=1.5, ge=0.0, le=5.0, description="Contrast enhancement factor for costmap")
@@ -46,6 +46,10 @@ class AnalysisParameters(BaseModel):
     strip_width: int = Field(default=5, ge=1, le=20, description="Width of horizontal strip for 1D signal method (pixels)")
     band_height: int = Field(default=30, ge=10, le=100, description="Height of vertical band for 1D signal method (pixels)")
     sigma: float = Field(default=2.0, ge=0.5, le=10.0, description="Gaussian sigma parameter for 1D signal smoothing")
+    # Canny method parameters (only used when edge_detection_method="canny")
+    canny_threshold1: float = Field(default=50.0, ge=0.0, le=255.0, description="Lower threshold for Canny edge detection")
+    canny_threshold2: float = Field(default=150.0, ge=0.0, le=255.0, description="Upper threshold for Canny edge detection")
+    canny_aperture_size: int = Field(default=3, ge=3, le=7, description="Aperture size for Canny edge detection (must be 3, 5, or 7)")
     # Horizontal window parameters
     horizontal_window_x_left: Optional[int] = Field(default=None, description="Left x-coordinate for horizontal window (pixels)")
     horizontal_window_x_right: Optional[int] = Field(default=None, description="Right x-coordinate for horizontal window (pixels)")

@@ -10,6 +10,7 @@ import numpy as np
 
 from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
+from .edge_detection_canny import edge_detection_canny_calculation
 from .metadata import get_video_metadata
 from .models import AnalysisParameters, AnalysisResult, FrameData
 from .storage import VideoStorage
@@ -654,6 +655,18 @@ async def process_video(
                     strip_width=parameters.strip_width,
                     band_height=parameters.band_height,
                     sigma=parameters.sigma,
+                    smoothing_factor=parameters.smoothing_factor,
+                    horizontal_window_x_left=parameters.horizontal_window_x_left,
+                    horizontal_window_x_right=parameters.horizontal_window_x_right,
+                    prev_path_top=prev_path_top,
+                    prev_path_bottom=prev_path_bottom,
+                )
+            elif parameters.edge_detection_method == "canny":
+                path_top, path_bottom = edge_detection_canny_calculation(
+                    frame=frame_np,
+                    canny_threshold1=parameters.canny_threshold1,
+                    canny_threshold2=parameters.canny_threshold2,
+                    canny_aperture_size=parameters.canny_aperture_size,
                     smoothing_factor=parameters.smoothing_factor,
                     horizontal_window_x_left=parameters.horizontal_window_x_left,
                     horizontal_window_x_right=parameters.horizontal_window_x_right,

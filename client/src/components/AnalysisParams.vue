@@ -13,7 +13,7 @@ import { Label } from './ui/label';
 const store = useAnalysisStore();
 
 // Edge detection method
-const edgeDetectionMethod = ref<"costmap" | "signal_1d">("costmap");
+const edgeDetectionMethod = ref<"costmap" | "signal_1d" | "canny">("costmap");
 
 // Costmap parameters (only used when edge_detection_method="costmap")
 const alpha = ref(1.5);
@@ -27,6 +27,11 @@ const smoothingFactor = ref(0.2);
 const stripWidth = ref(5);
 const bandHeight = ref(30);
 const sigma = ref(2.0);
+
+// Canny method parameters (only used when edge_detection_method="canny")
+const cannyThreshold1 = ref(50.0);
+const cannyThreshold2 = ref(150.0);
+const cannyApertureSize = ref(3);
 
 // Measurement configuration parameters
 const numTrackingPoints = ref(30);
@@ -75,6 +80,21 @@ const sigmaModel = computed({
   set: (value: number[]) => { sigma.value = value[0] ?? 2.0; }
 });
 
+const cannyThreshold1Model = computed({
+  get: () => [cannyThreshold1.value],
+  set: (value: number[]) => { cannyThreshold1.value = value[0] ?? 50.0; }
+});
+
+const cannyThreshold2Model = computed({
+  get: () => [cannyThreshold2.value],
+  set: (value: number[]) => { cannyThreshold2.value = value[0] ?? 150.0; }
+});
+
+const cannyApertureSizeModel = computed({
+  get: () => [cannyApertureSize.value],
+  set: (value: number[]) => { cannyApertureSize.value = value[0] ?? 3; }
+});
+
 // Function to sync local refs with store parameters
 function syncParamsFromStore() {
   const params = store.currentParameters;
@@ -87,6 +107,9 @@ function syncParamsFromStore() {
     stripWidth.value = params.strip_width ?? 5;
     bandHeight.value = params.band_height ?? 30;
     sigma.value = params.sigma ?? 2.0;
+    cannyThreshold1.value = params.canny_threshold1 ?? 50.0;
+    cannyThreshold2.value = params.canny_threshold2 ?? 150.0;
+    cannyApertureSize.value = params.canny_aperture_size ?? 3;
     numTrackingPoints.value = params.num_tracking_points ?? 30;
     distributionMethod.value = params.distribution_method ?? "center_line_projection";
   } else {
@@ -99,6 +122,9 @@ function syncParamsFromStore() {
     stripWidth.value = 5;
     bandHeight.value = 30;
     sigma.value = 2.0;
+    cannyThreshold1.value = 50.0;
+    cannyThreshold2.value = 150.0;
+    cannyApertureSize.value = 3;
     numTrackingPoints.value = 30;
     distributionMethod.value = "center_line_projection";
   }
@@ -148,6 +174,9 @@ watch(
     stripWidth,
     bandHeight,
     sigma,
+    cannyThreshold1,
+    cannyThreshold2,
+    cannyApertureSize,
     numTrackingPoints,
     distributionMethod,
   ],
@@ -174,6 +203,9 @@ function getCurrentParameters(): AnalysisParameters {
     strip_width: stripWidth.value,
     band_height: bandHeight.value,
     sigma: sigma.value,
+    canny_threshold1: cannyThreshold1.value,
+    canny_threshold2: cannyThreshold2.value,
+    canny_aperture_size: cannyApertureSize.value,
     horizontal_window_x_left: currentParams?.horizontal_window_x_left ?? null,
     horizontal_window_x_right: currentParams?.horizontal_window_x_right ?? null,
     num_tracking_points: numTrackingPoints.value,
@@ -488,6 +520,7 @@ const canRerunAnalysis = computed(() => {
               <div>
                 <div><strong>Costmap:</strong> Original gradient-based method using costmap</div>
                 <div><strong>1D Signal:</strong> Alternative method using 1D signal analysis with median collapse and edge center detection</div>
+                <div><strong>Canny:</strong> OpenCV Canny edge detection algorithm for robust edge detection</div>
               </div>
             </PopoverContent>
           </Popover>
@@ -500,6 +533,10 @@ const canRerunAnalysis = computed(() => {
           <div class="radio-option">
             <RadioGroupItem value="signal_1d" id="signal-1d" />
             <Label for="signal-1d" class="radio-label">1D Signal</Label>
+          </div>
+          <div class="radio-option">
+            <RadioGroupItem value="canny" id="canny" />
+            <Label for="canny" class="radio-label">Canny</Label>
           </div>
         </RadioGroup>
       </div>
@@ -598,6 +635,54 @@ const canRerunAnalysis = computed(() => {
             </Popover>
           </label>
           <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+      </template>
+
+      <!-- Canny method parameters -->
+      <template v-if="edgeDetectionMethod === 'canny'">
+        <div class="param-group">
+          <label for="canny-threshold1">
+            Canny Threshold 1: {{ cannyThreshold1.toFixed(1) }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Lower threshold for Canny edge detection (0.0 - 255.0)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="cannyThreshold1Model" :min="0" :max="255" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+
+        <div class="param-group">
+          <label for="canny-threshold2">
+            Canny Threshold 2: {{ cannyThreshold2.toFixed(1) }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Upper threshold for Canny edge detection (0.0 - 255.0)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="cannyThreshold2Model" :min="0" :max="255" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+        </div>
+
+        <div class="param-group">
+          <label for="canny-aperture-size">
+            Canny Aperture Size: {{ cannyApertureSize }}
+            <Popover>
+              <PopoverTrigger class="float-right">
+                <Icon name="mdi:information-outline" />
+              </PopoverTrigger>
+              <PopoverContent>
+                <div>Aperture size for Canny edge detection (3, 5, or 7)</div>
+              </PopoverContent>
+            </Popover>
+          </label>
+          <Slider v-model="cannyApertureSizeModel" :min="3" :max="7" :step="2" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
         </div>
       </template>
 

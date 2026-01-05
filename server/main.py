@@ -16,6 +16,7 @@ from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .config import MAX_UPLOAD_SIZE
 from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
+from .edge_detection_canny import edge_detection_canny_calculation
 from .database import init_database
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -661,6 +662,16 @@ async def analyze_frame(video_id: str, frame_number: int, parameters: AnalysisPa
                 strip_width=parameters.strip_width,
                 band_height=parameters.band_height,
                 sigma=parameters.sigma,
+                smoothing_factor=parameters.smoothing_factor,
+                horizontal_window_x_left=parameters.horizontal_window_x_left,
+                horizontal_window_x_right=parameters.horizontal_window_x_right,
+            )
+        elif parameters.edge_detection_method == "canny":
+            path_top, path_bottom = edge_detection_canny_calculation(
+                frame=frame_np,
+                canny_threshold1=parameters.canny_threshold1,
+                canny_threshold2=parameters.canny_threshold2,
+                canny_aperture_size=parameters.canny_aperture_size,
                 smoothing_factor=parameters.smoothing_factor,
                 horizontal_window_x_left=parameters.horizontal_window_x_left,
                 horizontal_window_x_right=parameters.horizontal_window_x_right,

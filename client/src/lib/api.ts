@@ -52,7 +52,7 @@ export interface Video {
 
 export interface AnalysisParameters {
   // Edge detection method selection
-  edge_detection_method?: "costmap" | "signal_1d";
+  edge_detection_method?: "costmap" | "signal_1d" | "canny";
   // Costmap parameters (only used when edge_detection_method="costmap")
   alpha?: number;
   band?: number;
@@ -64,6 +64,10 @@ export interface AnalysisParameters {
   strip_width?: number;
   band_height?: number;
   sigma?: number;
+  // Canny method parameters (only used when edge_detection_method="canny")
+  canny_threshold1?: number;
+  canny_threshold2?: number;
+  canny_aperture_size?: number;
   // Horizontal window parameters
   horizontal_window_x_left?: number | null;
   horizontal_window_x_right?: number | null;
