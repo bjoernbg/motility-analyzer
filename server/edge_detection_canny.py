@@ -96,7 +96,6 @@ def follow_path_canny(
     Returns:
         List of (x, y) tuples representing the path.
     """
-    logger.info(f"follow_path_canny: y_start={y_start}, x_start={x_start}, band={band}, smoothing_factor={smoothing_factor}, polarity={polarity}, x_step={x_step}, x_end={x_end}")
     H, W = edges.shape
     Xs = range(x_start, x_end + x_step, x_step * 3)
     X_list = list(Xs)
@@ -154,7 +153,6 @@ def edge_detection_canny_calculation(
     Returns:
         Tuple of (path_top, path_bottom) where paths are lists of (x, y) tuples.
     """
-    logger.info(f"edge_detection_canny_calculation: canny_threshold1={canny_threshold1}, canny_threshold2={canny_threshold2}, canny_aperture_size={canny_aperture_size}, smoothing_factor={smoothing_factor}, horizontal_window_x_left={horizontal_window_x_left}, horizontal_window_x_right={horizontal_window_x_right}, prev_path_top={prev_path_top}, prev_path_bottom={prev_path_bottom}")
     if frame is None or not isinstance(frame, np.ndarray):
         raise TypeError("'frame' must be a numpy ndarray")
     
@@ -211,7 +209,7 @@ def edge_detection_canny_calculation(
     use_previous_paths = prev_path_top is not None and prev_path_bottom is not None
     
     # Use a search band for path following (similar to costmap method)
-    band = 100
+    band = 40
     
     if use_previous_paths:
         # Use optimized detection for subsequent frames
