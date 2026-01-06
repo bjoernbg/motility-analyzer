@@ -163,12 +163,28 @@ def edge_detection_silhouette_calculation(
     if x_end < x_start:
         return [], []
 
-    # ROI optimization: only process the horizontal window region (plus margins)
-    # This significantly speeds up morphology and connected components operations
+    # ROI optimization: use previous paths to determine vertical bounds if available
     roi_width = x_end - x_start + 1
+    
+    if prev_path_top is not None and prev_path_bottom is not None and len(prev_path_top) > 0 and len(prev_path_bottom) > 0:
+        # Calculate vertical bounds from previous paths
+        y_min_top = min(y for _, y in prev_path_top)
+        y_max_bottom = max(y for _, y in prev_path_bottom)
+        
+        # Add padding (use band parameter as padding distance)
+        vertical_padding = band
+        y0_roi = max(0, y_min_top - vertical_padding)
+        y1_roi = min(H, y_max_bottom + vertical_padding + 1)
+        roi_height = y1_roi - y0_roi
+        
+        roi = (x_start, y0_roi, roi_width, roi_height)
+    else:
+        # Fallback to horizontal-only ROI optimization
+        roi = (x_start, 0, roi_width, H) if roi_width < W else None
+    
     mask, _ = make_object_mask(
         img_gray,
-        roi=(x_start, 0, roi_width, H) if roi_width < W else None,
+        roi=roi,
         blur_ksize=blur_ksize,
         blur_sigma=blur_sigma,
         close_k=close_k,
@@ -184,6 +200,7 @@ def edge_detection_silhouette_calculation(
     y_bot = np.full(n, np.nan, np.float32)
 
     use_prev = prev_path_top is not None and prev_path_bottom is not None
+    # use_prev = False
 
     # Vectorized column extraction: extract all needed columns at once
     # This avoids repeated Python function call overhead

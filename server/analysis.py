@@ -231,80 +231,39 @@ def calculate_center_path(
     horizontal_window_x_left: int | None = None,
     horizontal_window_x_right: int | None = None,
 ) -> list[tuple[int, int]]:
-    """Calculate the center path between top and bottom paths using perpendicular projection.
+    """Calculate the center path between top and bottom paths using midpoint and smoothing.
     
     Args:
         path_top: List of (x, y) tuples for the top path
         path_bottom: List of (x, y) tuples for the bottom path
         smoothing_window: Window size for moving average smoothing (default: 15)
-        horizontal_window_x_left: Left boundary of horizontal window (for projection range)
-        horizontal_window_x_right: Right boundary of horizontal window (for projection range)
+        horizontal_window_x_left: Left boundary of horizontal window (unused, kept for API compatibility)
+        horizontal_window_x_right: Right boundary of horizontal window (unused, kept for API compatibility)
     
     Returns:
         List of (x, y) tuples for the center path
     """
-    t_func_start = time.perf_counter()
-    
     if not path_top or not path_bottom:
         return []
     
-    # Pre-convert paths to NumPy arrays for efficient processing
-    path_top_np = np.array(path_top, dtype=np.int32)
-    path_bottom_np = np.array(path_bottom, dtype=np.int32)
-    
-    # Step 1: Calculate initial center path using simple midpoint
+    # Step 1: Calculate center path using simple midpoint
     # Create dictionary mapping x to y for bottom path
     bottom_dict = {x: y for x, y in path_bottom}
     
-    # Calculate initial center path by finding midpoint for each x-coordinate
+    # Calculate center path by finding midpoint for each x-coordinate
     # We'll use the x-coordinates from the top path as the base
-    initial_center_path = []
+    center_path = []
     for x, y_top in path_top:
         if x in bottom_dict:
             y_bottom = bottom_dict[x]
             # Calculate midpoint
             y_center = (y_top + y_bottom) / 2.0
-            initial_center_path.append((x, y_center))
+            center_path.append((x, y_center))
         else:
             # If x not in bottom path, use top path y as fallback (shouldn't happen normally)
-            initial_center_path.append((x, float(y_top)))
+            center_path.append((x, float(y_top)))
     
-    # center_path already has float y values, no need for redundant conversion
-    center_path = initial_center_path
-    
-    # Step 2: Apply perpendicular projection for points within horizontal window
-    t_proj_start = time.perf_counter()
-    if horizontal_window_x_left is not None and horizontal_window_x_right is not None:
-        # Convert center_path to numpy array for efficient tangent calculation
-        # (it's currently a list of tuples with float y values)
-        center_path_np = np.array([(x, int(round(y))) for x, y in center_path], dtype=np.int32)
-        
-        # Process each point in the center path
-        projection_count = 0
-        for i, (x, y_center) in enumerate(center_path):
-            # Only apply perpendicular projection within horizontal window
-            if horizontal_window_x_left <= x <= horizontal_window_x_right:
-                projection_count += 1
-                # Project perpendicularly onto top and bottom paths
-                center_point = (int(x), int(round(y_center)))
-                
-                # Use numpy arrays directly (no conversion needed)
-                top_projected = project_perpendicular(
-                    center_point, center_path_np, i, path_top_np
-                )
-                bottom_projected = project_perpendicular(
-                    center_point, center_path_np, i, path_bottom_np
-                )
-                
-                if top_projected is not None and bottom_projected is not None:
-                    # Update center path as midpoint of projected points
-                    y_top_proj = top_projected[1]
-                    y_bottom_proj = bottom_projected[1]
-                    y_center_new = (y_top_proj + y_bottom_proj) / 2.0
-                    center_path[i] = (x, y_center_new)
-    t_proj_end = time.perf_counter()
-    
-    # Step 3: Apply smoothing using vectorized moving average with proper edge handling
+    # Step 2: Apply smoothing using vectorized moving average with proper edge handling
     if len(center_path) < smoothing_window:
         # If path is shorter than window, return as-is
         return [(x, int(round(y))) for x, y in center_path]
@@ -344,22 +303,16 @@ def calculate_center_path(
         for (x, _), y_smooth in zip(center_path, smoothed_y)
     ]
     
-    t_total_end = time.perf_counter()
-    
-    logger.info(
-        f"calculate_center_path: "
-        f"perpendicular_proj={1000*(t_proj_end-t_proj_start):.2f}ms (count={projection_count if 'projection_count' in locals() else 0}), "
-        f"total={1000*(t_total_end-t_func_start):.2f}ms"
-    )
-    
     return smoothed_path
 
 
 def get_y_from_path_at_x(path: list[tuple[int, int]], x: float) -> float | None:
     """Get y coordinate from path at a given x coordinate using interpolation.
     
+    Uses binary search for O(log n) performance since paths are sorted by x-coordinate.
+    
     Args:
-        path: List of (x, y) tuples representing the path
+        path: List of (x, y) tuples representing the path (must be sorted by x)
         x: X coordinate to find y for
     
     Returns:
@@ -368,29 +321,39 @@ def get_y_from_path_at_x(path: list[tuple[int, int]], x: float) -> float | None:
     if not path:
         return None
     
-    # Find the two points that bracket x
-    for i in range(len(path) - 1):
-        x1, y1 = path[i]
-        x2, y2 = path[i + 1]
-        
-        # Check if x is between these two points (or equal to one of them)
-        if x1 <= x <= x2 or x2 <= x <= x1:
-            # If x matches exactly, return that y
-            if x == x1:
-                return float(y1)
-            if x == x2:
-                return float(y2)
-            
-            # Linear interpolation
-            if x2 != x1:  # Avoid division by zero
-                t = (x - x1) / (x2 - x1)
-                y = y1 + t * (y2 - y1)
-                return float(y)
-            else:
-                return float(y1)
+    # Convert to numpy array for efficient binary search
+    path_np = np.array(path, dtype=np.float32)
+    x_coords = path_np[:, 0]
     
-    # If x is outside the path range, return None
-    return None
+    # Check if x is outside path range
+    if x < x_coords[0] or x > x_coords[-1]:
+        return None
+    
+    # Use binary search to find insertion point
+    # searchsorted returns the index where x would be inserted to maintain sorted order
+    idx = np.searchsorted(x_coords, x, side='left')
+    
+    # Handle exact matches
+    if idx < len(x_coords) and x_coords[idx] == x:
+        return float(path_np[idx, 1])
+    
+    # If x is at the beginning or end, return the endpoint
+    if idx == 0:
+        return float(path_np[0, 1])
+    if idx >= len(x_coords):
+        return float(path_np[-1, 1])
+    
+    # Interpolate between the point before and at the insertion index
+    x1, y1 = path_np[idx - 1, 0], path_np[idx - 1, 1]
+    x2, y2 = path_np[idx, 0], path_np[idx, 1]
+    
+    # Linear interpolation
+    if x2 != x1:  # Avoid division by zero
+        t = (x - x1) / (x2 - x1)
+        y = y1 + t * (y2 - y1)
+        return float(y)
+    else:
+        return float(y1)
 
 
 def calculate_path_arc_length(path: list[tuple[int, int]], start_idx: int = 0, end_idx: int | None = None) -> float:
@@ -513,15 +476,11 @@ def calculate_measurement_point_pairs(
             center_in_window = selected_center_points
         
         # Pre-convert paths to numpy arrays for efficient projection
-        t_conv_start = time.perf_counter()
         path_center_np = np.array(path_center, dtype=np.int32)
         path_top_np = np.array(path_top, dtype=np.int32)
         path_bottom_np = np.array(path_bottom, dtype=np.int32)
-        t_conv_end = time.perf_counter()
         
         # For each center point, project perpendicularly to top and bottom paths
-        t_proj_start = time.perf_counter()
-        projection_count = 0
         for center_point in center_in_window:
             # Find the index of this point in the original center path
             # Optimize: use vectorized search instead of loop
@@ -537,7 +496,6 @@ def calculate_measurement_point_pairs(
                 center_idx = int(np.argmin(dists_sq))
             
             # Project to top and bottom paths using pre-converted numpy arrays
-            projection_count += 1
             top_projected = project_perpendicular(center_point, path_center_np, center_idx, path_top_np)
             bottom_projected = project_perpendicular(center_point, path_center_np, center_idx, path_bottom_np)
             
@@ -557,15 +515,6 @@ def calculate_measurement_point_pairs(
                     float(bottom_projected[1]),
                     float(distance),
                 ])
-        t_proj_total_end = time.perf_counter()
-        
-        if distribution_method == "center_line_projection":
-            logger.info(
-                f"calculate_measurement_point_pairs: "
-                f"conversions={1000*(t_conv_end-t_conv_start):.2f}ms, "
-                f"projections={1000*(t_proj_total_end-t_proj_start):.2f}ms (count={projection_count}), "
-                f"total={1000*(t_proj_total_end-t_conv_start):.2f}ms"
-            )
     
     elif distribution_method == "x_axis_even":
         # Method b: Distribute points evenly along x-axis within horizontal window
