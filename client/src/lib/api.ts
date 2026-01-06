@@ -52,7 +52,7 @@ export interface Video {
 
 export interface AnalysisParameters {
   // Edge detection method selection
-  edge_detection_method?: "costmap" | "signal_1d" | "canny";
+  edge_detection_method?: "costmap" | "signal_1d" | "canny" | "silhouette";
   // Costmap parameters (only used when edge_detection_method="costmap")
   alpha?: number;
   band?: number;
@@ -68,6 +68,14 @@ export interface AnalysisParameters {
   canny_threshold1?: number;
   canny_threshold2?: number;
   canny_aperture_size?: number;
+  // Silhouette method parameters (only used when edge_detection_method="silhouette")
+  silhouette_blur_ksize_x?: number;
+  silhouette_blur_ksize_y?: number;
+  silhouette_blur_sigma?: number;
+  silhouette_close_k?: number;
+  silhouette_x_step?: number;
+  silhouette_band?: number;
+  silhouette_median_k?: number;
   // Horizontal window parameters
   horizontal_window_x_left?: number | null;
   horizontal_window_x_right?: number | null;

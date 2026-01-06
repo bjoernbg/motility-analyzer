@@ -5,7 +5,7 @@ from typing import Dict
 
 from .analysis import process_video
 from .models import Analysis, AnalysisParameters, FrameData
-from .storage import AnalysisStorage, ResultsStorage
+from .storage import AnalysisStorage, ResultsStorage, clear_heatmap_cache
 
 
 class TaskManager:
@@ -185,6 +185,9 @@ class TaskManager:
             
             # Finalize results with global_data calculation (this also updates status and completed_at)
             self.results_storage.finalize_results(analysis_id, results)
+            
+            # Clear cached heatmap data to force regeneration with complete results
+            clear_heatmap_cache(analysis_id, video_id)
             
         except asyncio.CancelledError:
             # Task was cancelled

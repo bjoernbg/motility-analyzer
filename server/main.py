@@ -17,6 +17,7 @@ from .config import MAX_UPLOAD_SIZE
 from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
 from .edge_detection_canny import edge_detection_canny_calculation
+from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .database import init_database
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -675,6 +676,19 @@ async def analyze_frame(video_id: str, frame_number: int, parameters: AnalysisPa
                 smoothing_factor=parameters.smoothing_factor,
                 horizontal_window_x_left=parameters.horizontal_window_x_left,
                 horizontal_window_x_right=parameters.horizontal_window_x_right,
+            )
+        elif parameters.edge_detection_method == "silhouette":
+            path_top, path_bottom = edge_detection_silhouette_calculation(
+                frame=frame_np,
+                smoothing_factor=parameters.smoothing_factor,
+                horizontal_window_x_left=parameters.horizontal_window_x_left,
+                horizontal_window_x_right=parameters.horizontal_window_x_right,
+                blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
+                blur_sigma=parameters.silhouette_blur_sigma,
+                close_k=parameters.silhouette_close_k,
+                x_step=parameters.silhouette_x_step,
+                band=parameters.silhouette_band,
+                median_k=parameters.silhouette_median_k,
             )
         else:
             # Default to costmap method

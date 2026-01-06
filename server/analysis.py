@@ -11,40 +11,54 @@ import numpy as np
 from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
 from .edge_detection_canny import edge_detection_canny_calculation
+from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .metadata import get_video_metadata
 from .models import AnalysisParameters, AnalysisResult, FrameData
 from .storage import VideoStorage
 
-logger = logging.getLogger()
+logger = logging.getLogger('uvicorn.error')
 
 def calculate_path_tangent(
-    path: list[tuple[int, int]],
+    path: list[tuple[int, int]] | np.ndarray,
     point_idx: int,
     look_ahead: int = 30,
 ) -> tuple[float, float] | None:
     """Calculate the tangent direction (normalized) at a point on a path.
     
     Args:
-        path: List of (x, y) tuples representing the path
+        path: List of (x, y) tuples or NumPy array representing the path
         point_idx: Index of the point to calculate tangent for
         look_ahead: Number of points to look ahead/behind for tangent calculation
     
     Returns:
         Normalized tangent vector (dx, dy) as tuple, or None if calculation fails
     """
-    if not path or point_idx < 0 or point_idx >= len(path):
-        return None
-    
-    # Use neighboring points to estimate tangent
-    # Look ahead and behind, but don't go beyond path boundaries
-    idx_start = max(0, point_idx - look_ahead)
-    idx_end = min(len(path) - 1, point_idx + look_ahead)
-    
-    if idx_start >= idx_end:
-        return None
-    
-    x_start, y_start = path[idx_start]
-    x_end, y_end = path[idx_end]
+    if isinstance(path, np.ndarray):
+        if len(path) == 0 or point_idx < 0 or point_idx >= len(path):
+            return None
+        
+        # Use neighboring points to estimate tangent
+        idx_start = max(0, point_idx - look_ahead)
+        idx_end = min(len(path) - 1, point_idx + look_ahead)
+        
+        if idx_start >= idx_end:
+            return None
+        
+        x_start, y_start = float(path[idx_start, 0]), float(path[idx_start, 1])
+        x_end, y_end = float(path[idx_end, 0]), float(path[idx_end, 1])
+    else:
+        if not path or point_idx < 0 or point_idx >= len(path):
+            return None
+        
+        # Use neighboring points to estimate tangent
+        idx_start = max(0, point_idx - look_ahead)
+        idx_end = min(len(path) - 1, point_idx + look_ahead)
+        
+        if idx_start >= idx_end:
+            return None
+        
+        x_start, y_start = path[idx_start]
+        x_end, y_end = path[idx_end]
     
     # Calculate direction vector
     dx = float(x_end - x_start)
@@ -191,19 +205,14 @@ def project_perpendicular(
     Returns:
         Projected point on target path as (x, y) tuple, or None if calculation fails
     """
-    # Convert target_path to NumPy array if it's a list
+    # Convert target_path to NumPy array if it's a list (cache this if called in loop)
     if isinstance(target_path, list):
         target_path_np = np.array(target_path, dtype=np.int32)
     else:
         target_path_np = target_path
     
-    # Calculate tangent at center point (center_path can be list or array)
-    if isinstance(center_path, np.ndarray):
-        center_path_list = [(int(center_path[i, 0]), int(center_path[i, 1])) for i in range(len(center_path))]
-    else:
-        center_path_list = center_path
-    
-    tangent = calculate_path_tangent(center_path_list, center_point_idx)
+    # Calculate tangent at center point (now works directly with numpy arrays)
+    tangent = calculate_path_tangent(center_path, center_point_idx)
     if tangent is None:
         # Fallback: use simple nearest point (vectorized)
         return find_nearest_point_on_path_vectorized(target_path_np, center_point)
@@ -234,6 +243,8 @@ def calculate_center_path(
     Returns:
         List of (x, y) tuples for the center path
     """
+    t_func_start = time.perf_counter()
+    
     if not path_top or not path_bottom:
         return []
     
@@ -262,19 +273,27 @@ def calculate_center_path(
     center_path = initial_center_path
     
     # Step 2: Apply perpendicular projection for points within horizontal window
+    t_proj_start = time.perf_counter()
     if horizontal_window_x_left is not None and horizontal_window_x_right is not None:
+        # Convert center_path to numpy array for efficient tangent calculation
+        # (it's currently a list of tuples with float y values)
+        center_path_np = np.array([(x, int(round(y))) for x, y in center_path], dtype=np.int32)
+        
         # Process each point in the center path
+        projection_count = 0
         for i, (x, y_center) in enumerate(center_path):
             # Only apply perpendicular projection within horizontal window
             if horizontal_window_x_left <= x <= horizontal_window_x_right:
+                projection_count += 1
                 # Project perpendicularly onto top and bottom paths
                 center_point = (int(x), int(round(y_center)))
                 
+                # Use numpy arrays directly (no conversion needed)
                 top_projected = project_perpendicular(
-                    center_point, center_path, i, path_top_np
+                    center_point, center_path_np, i, path_top_np
                 )
                 bottom_projected = project_perpendicular(
-                    center_point, center_path, i, path_bottom_np
+                    center_point, center_path_np, i, path_bottom_np
                 )
                 
                 if top_projected is not None and bottom_projected is not None:
@@ -283,6 +302,7 @@ def calculate_center_path(
                     y_bottom_proj = bottom_projected[1]
                     y_center_new = (y_top_proj + y_bottom_proj) / 2.0
                     center_path[i] = (x, y_center_new)
+    t_proj_end = time.perf_counter()
     
     # Step 3: Apply smoothing using vectorized moving average with proper edge handling
     if len(center_path) < smoothing_window:
@@ -323,6 +343,14 @@ def calculate_center_path(
         (x, int(round(y_smooth)))
         for (x, _), y_smooth in zip(center_path, smoothed_y)
     ]
+    
+    t_total_end = time.perf_counter()
+    
+    logger.info(
+        f"calculate_center_path: "
+        f"perpendicular_proj={1000*(t_proj_end-t_proj_start):.2f}ms (count={projection_count if 'projection_count' in locals() else 0}), "
+        f"total={1000*(t_total_end-t_func_start):.2f}ms"
+    )
     
     return smoothed_path
 
@@ -484,45 +512,60 @@ def calculate_measurement_point_pairs(
             
             center_in_window = selected_center_points
         
+        # Pre-convert paths to numpy arrays for efficient projection
+        t_conv_start = time.perf_counter()
+        path_center_np = np.array(path_center, dtype=np.int32)
+        path_top_np = np.array(path_top, dtype=np.int32)
+        path_bottom_np = np.array(path_bottom, dtype=np.int32)
+        t_conv_end = time.perf_counter()
+        
         # For each center point, project perpendicularly to top and bottom paths
+        t_proj_start = time.perf_counter()
+        projection_count = 0
         for center_point in center_in_window:
             # Find the index of this point in the original center path
-            center_idx = None
-            for i, (x, y) in enumerate(path_center):
-                if abs(x - center_point[0]) < 2 and abs(y - center_point[1]) < 2:
-                    center_idx = i
-                    break
+            # Optimize: use vectorized search instead of loop
+            center_point_np = np.array([center_point[0], center_point[1]], dtype=np.int32)
+            dists_sq = (path_center_np[:, 0] - center_point_np[0]) ** 2 + (path_center_np[:, 1] - center_point_np[1]) ** 2
             
-            if center_idx is None:
+            # First try exact match (within 2 pixels)
+            close_mask = dists_sq <= 4  # 2^2 = 4
+            if np.any(close_mask):
+                center_idx = int(np.argmax(close_mask))  # Get first match
+            else:
                 # If not found, use nearest point
-                min_dist = float('inf')
-                for i, (x, y) in enumerate(path_center):
-                    dist = np.sqrt((x - center_point[0]) ** 2 + (y - center_point[1]) ** 2)
-                    if dist < min_dist:
-                        min_dist = dist
-                        center_idx = i
+                center_idx = int(np.argmin(dists_sq))
             
-            if center_idx is not None:
-                # Project to top and bottom paths
-                top_projected = project_perpendicular(center_point, path_center, center_idx, path_top)
-                bottom_projected = project_perpendicular(center_point, path_center, center_idx, path_bottom)
+            # Project to top and bottom paths using pre-converted numpy arrays
+            projection_count += 1
+            top_projected = project_perpendicular(center_point, path_center_np, center_idx, path_top_np)
+            bottom_projected = project_perpendicular(center_point, path_center_np, center_idx, path_bottom_np)
+            
+            if top_projected is not None and bottom_projected is not None:
+                # Calculate distance between top and bottom points
+                dx = top_projected[0] - bottom_projected[0]
+                dy = top_projected[1] - bottom_projected[1]
+                distance = np.sqrt(dx * dx + dy * dy)
                 
-                if top_projected is not None and bottom_projected is not None:
-                    # Calculate distance between top and bottom points
-                    dx = top_projected[0] - bottom_projected[0]
-                    dy = top_projected[1] - bottom_projected[1]
-                    distance = np.sqrt(dx * dx + dy * dy)
-                    
-                    # Format: [cx, cy, tx, ty, bx, by, distance]
-                    point_pairs.append([
-                        float(center_point[0]),
-                        float(center_point[1]),
-                        float(top_projected[0]),
-                        float(top_projected[1]),
-                        float(bottom_projected[0]),
-                        float(bottom_projected[1]),
-                        float(distance),
-                    ])
+                # Format: [cx, cy, tx, ty, bx, by, distance]
+                point_pairs.append([
+                    float(center_point[0]),
+                    float(center_point[1]),
+                    float(top_projected[0]),
+                    float(top_projected[1]),
+                    float(bottom_projected[0]),
+                    float(bottom_projected[1]),
+                    float(distance),
+                ])
+        t_proj_total_end = time.perf_counter()
+        
+        if distribution_method == "center_line_projection":
+            logger.info(
+                f"calculate_measurement_point_pairs: "
+                f"conversions={1000*(t_conv_end-t_conv_start):.2f}ms, "
+                f"projections={1000*(t_proj_total_end-t_proj_start):.2f}ms (count={projection_count}), "
+                f"total={1000*(t_proj_total_end-t_conv_start):.2f}ms"
+            )
     
     elif distribution_method == "x_axis_even":
         # Method b: Distribute points evenly along x-axis within horizontal window
@@ -672,6 +715,21 @@ async def process_video(
                     horizontal_window_x_right=parameters.horizontal_window_x_right,
                     prev_path_top=prev_path_top,
                     prev_path_bottom=prev_path_bottom,
+                )
+            elif parameters.edge_detection_method == "silhouette":
+                path_top, path_bottom = edge_detection_silhouette_calculation(
+                    frame=frame_np,
+                    smoothing_factor=parameters.smoothing_factor,
+                    horizontal_window_x_left=parameters.horizontal_window_x_left,
+                    horizontal_window_x_right=parameters.horizontal_window_x_right,
+                    prev_path_top=prev_path_top,
+                    prev_path_bottom=prev_path_bottom,
+                    blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
+                    blur_sigma=parameters.silhouette_blur_sigma,
+                    close_k=parameters.silhouette_close_k,
+                    x_step=parameters.silhouette_x_step,
+                    band=parameters.silhouette_band,
+                    median_k=parameters.silhouette_median_k,
                 )
             else:
                 # Default to costmap method

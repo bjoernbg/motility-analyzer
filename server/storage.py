@@ -144,3 +144,30 @@ class AnalysisStorage:
         """Clear all results for an analysis."""
         self.db.clear_analysis_frames(analysis_id)
 
+
+def clear_heatmap_cache(analysis_id: str, video_id: str) -> None:
+    """Clear cached heatmap files for an analysis.
+    
+    Args:
+        analysis_id: ID of the analysis
+        video_id: ID of the video associated with the analysis
+    """
+    video_path = VideoStorage.get_video_path(video_id)
+    if not video_path or not video_path.exists():
+        return
+    
+    # Clear all three cache files
+    cache_files = [
+        video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_meta.json",
+        video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_raw.bin",
+        video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_raw_meta.json",
+    ]
+    
+    for cache_file in cache_files:
+        try:
+            if cache_file.exists():
+                cache_file.unlink()
+        except (IOError, OSError):
+            # If deletion fails, continue (cache will be regenerated on next request)
+            pass
+

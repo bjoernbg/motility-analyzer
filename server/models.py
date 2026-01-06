@@ -30,9 +30,9 @@ class VideoMetadata(BaseModel):
 class AnalysisParameters(BaseModel):
     """Analysis parameters."""
     # Edge detection method selection
-    edge_detection_method: Literal["costmap", "signal_1d", "canny"] = Field(
+    edge_detection_method: Literal["costmap", "signal_1d", "canny", "silhouette"] = Field(
         default="costmap",
-        description="Edge detection method: 'costmap' (original), 'signal_1d' (1D signal-based), or 'canny' (Canny edge detection)"
+        description="Edge detection method: 'costmap' (original), 'signal_1d' (1D signal-based), 'canny' (Canny edge detection), or 'silhouette' (mask-based segmentation)"
     )
     # Costmap parameters (only used when edge_detection_method="costmap")
     alpha: float = Field(default=1.5, ge=0.0, le=5.0, description="Contrast enhancement factor for costmap")
@@ -50,6 +50,14 @@ class AnalysisParameters(BaseModel):
     canny_threshold1: float = Field(default=50.0, ge=0.0, le=255.0, description="Lower threshold for Canny edge detection")
     canny_threshold2: float = Field(default=150.0, ge=0.0, le=255.0, description="Upper threshold for Canny edge detection")
     canny_aperture_size: int = Field(default=3, ge=3, le=7, description="Aperture size for Canny edge detection (must be 3, 5, or 7)")
+    # Silhouette method parameters (only used when edge_detection_method="silhouette")
+    silhouette_blur_ksize_x: int = Field(default=7, ge=1, le=50, description="Gaussian blur kernel width for silhouette method")
+    silhouette_blur_ksize_y: int = Field(default=7, ge=1, le=50, description="Gaussian blur kernel height for silhouette method")
+    silhouette_blur_sigma: float = Field(default=1.5, ge=0.1, le=10.0, description="Gaussian blur sigma for silhouette method")
+    silhouette_close_k: int = Field(default=5, ge=1, le=50, description="Morphology kernel size for silhouette method")
+    silhouette_x_step: int = Field(default=3, ge=1, le=20, description="Step size for x-coordinate sampling in silhouette method")
+    silhouette_band: int = Field(default=40, ge=1, le=200, description="Vertical band width around previous paths for silhouette method")
+    silhouette_median_k: int = Field(default=31, ge=3, le=101, description="Median filter kernel size for 1D smoothing in silhouette method (must be odd)")
     # Horizontal window parameters
     horizontal_window_x_left: Optional[int] = Field(default=None, description="Left x-coordinate for horizontal window (pixels)")
     horizontal_window_x_right: Optional[int] = Field(default=None, description="Right x-coordinate for horizontal window (pixels)")
