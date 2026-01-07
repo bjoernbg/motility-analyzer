@@ -1,6 +1,6 @@
 /** Pinia store for video analysis state. */
 import { defineStore } from 'pinia';
-import { ref, computed, shallowRef } from 'vue';
+import { ref, computed, shallowRef, watch } from 'vue';
 import type {
   Video,
   Analysis,
@@ -62,7 +62,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const waveEvents = ref<WaveEvent[]>([]);
   const isDetectingWaves = ref(false);
   const waveDetectionError = ref<string | null>(null);
-  
+  // Track if user is actively seeking (dragging slider, etc.) to prevent auto-seek conflicts
+  const isUserSeeking = ref(false);
+
   // Simple LRU cache for frame data (max 20 frames)
   interface FrameCacheEntry {
     data: FrameData;
@@ -774,6 +776,28 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  function setUserSeeking(seeking: boolean) {
+    isUserSeeking.value = seeking;
+  }
+
+  async function seekToFrame(frame: number) {
+    // Clamp to valid range
+    const totalFrames = currentVideo.value?.metadata?.total_frames;
+    if (totalFrames) {
+      frame = Math.max(0, Math.min(frame, totalFrames - 1));
+    } else {
+      // At least ensure non-negative
+      frame = Math.max(0, frame);
+    }
+
+    currentFrame.value = frame;
+
+    // Auto-trigger analysis if parameters exist and not switching
+    if (currentVideo.value && currentParameters.value && !isAnalysisSwitching.value) {
+      await analyzeCurrentFrame(currentParameters.value);
+    }
+  }
+
   function reset() {
     currentVideo.value = null;
     currentAnalysis.value = null;
@@ -787,8 +811,16 @@ export const useAnalysisStore = defineStore('analysis', () => {
     currentParameters.value = null;
     waveEvents.value = [];
     waveDetectionError.value = null;
+    isUserSeeking.value = false;
     stopPolling();
   }
+
+  // Watch for lastFrameWithData and auto-seek during processing (unless user is actively seeking)
+  watch(() => lastFrameWithData.value, (frame) => {
+    if (frame !== null && isProcessing.value && !isUserSeeking.value) {
+      currentFrame.value = frame;
+    }
+  });
 
   return {
     // State
@@ -810,6 +842,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     waveEvents,
     isDetectingWaves,
     waveDetectionError,
+    isUserSeeking,
     // Computed
     isProcessing,
     isCompleted,
@@ -835,6 +868,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     detectWavesForAnalysis,
     loadWaveEvents,
     clearWaveEventsForAnalysis,
+    setUserSeeking,
+    seekToFrame,
     reset,
   };
 });

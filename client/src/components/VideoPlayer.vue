@@ -21,45 +21,7 @@ const imageRef = ref<HTMLImageElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
 const videoFps = computed(() => store.currentVideo?.metadata?.fps ?? 30);
-const lastAnalyzedFrame = ref<number | null>(null);
 const currentParameters = ref<AnalysisParameters | null>(null);
-
-// Get the current frame number
-const currentFrameNumber = ref(0);
-
-// Helper function to clamp frame number to valid range
-function clampFrameNumber(frame: number): number {
-  const totalFrames = store.currentVideo?.metadata?.total_frames;
-  if (totalFrames === undefined || totalFrames === null) {
-    return Math.max(0, frame); // At least ensure non-negative
-  }
-  return Math.max(0, Math.min(frame, totalFrames - 1));
-}
-
-// Watch for frame changes and trigger analysis
-watch(currentFrameNumber, async (newFrame, oldFrame) => {
-  if (newFrame === null || !store.currentVideo || store.isProcessing) {
-    return;
-  }
-
-  // Clamp frame number to valid range
-  const clampedFrame = clampFrameNumber(newFrame);
-  if (clampedFrame !== newFrame) {
-    // Frame was out of bounds, update to clamped value
-    currentFrameNumber.value = clampedFrame;
-    store.currentFrame = clampedFrame;
-    return; // Don't trigger analysis for invalid frame
-  }
-
-  // Update store's currentFrame
-  store.currentFrame = newFrame;
-
-  // Trigger analysis if frame changed (user sought) and we have parameters
-  if (newFrame !== oldFrame && newFrame !== lastAnalyzedFrame.value && currentParameters.value) {
-    lastAnalyzedFrame.value = newFrame;
-    await store.analyzeCurrentFrame(currentParameters.value);
-  }
-}, { immediate: false });
 
 // Debounced analysis function for parameter changes
 const debouncedAnalyzeParams = debounce(async (params: AnalysisParameters) => {
@@ -68,8 +30,7 @@ const debouncedAnalyzeParams = debounce(async (params: AnalysisParameters) => {
   }
 
   // Trigger analysis for current frame
-  if (currentFrameNumber.value !== null) {
-    lastAnalyzedFrame.value = currentFrameNumber.value;
+  if (store.currentFrame !== null) {
     await store.analyzeCurrentFrame(params);
   }
 }, 500); // 500ms debounce delay
@@ -169,10 +130,9 @@ async function analyzeCurrentFrameIfReady() {
   }
 
   // Analyze frame 0 (initial frame) when video loads
-  const frameNum = currentFrameNumber.value ?? 0;
+  const frameNum = store.currentFrame ?? 0;
   if (frameNum !== null) {
     store.currentFrame = frameNum;
-    lastAnalyzedFrame.value = frameNum;
     await store.analyzeCurrentFrame(params);
   }
 }
@@ -202,11 +162,13 @@ watch(() => store.currentVideo, async (newVideo, oldVideo) => {
   if (store.isAnalysisSwitching) {
     return;
   }
-  
-  // Reset to frame 0 when video changes
-  currentFrameNumber.value = 0;
-  store.currentFrame = 0;
-  
+
+  // Only reset to frame 0 if we're actually switching videos (not on initial mount)
+  // On initial mount, oldVideo will be undefined, so we should preserve the current frame
+  if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id) {
+    store.currentFrame = 0;
+  }
+
   // Automatically analyze when video is ready (has metadata)
   await analyzeCurrentFrameIfReady();
 }, { immediate: true });
@@ -222,24 +184,10 @@ watch(() => store.currentVideo?.metadata, async (newMetadata, oldMetadata) => {
   if (store.isAnalysisSwitching) {
     return;
   }
-  
+
   // Automatically analyze when metadata is available
   await analyzeCurrentFrameIfReady();
 }, { immediate: true });
-
-// Watch analysis progress and auto-seek to frames that have data
-watch(() => store.lastFrameWithData, (lastFrameWithData) => {
-  if (lastFrameWithData === null || !store.currentVideo) {
-    return;
-  }
-
-  // Clamp frame to valid range and update if different
-  const clampedFrame = clampFrameNumber(lastFrameWithData);
-  if (clampedFrame !== currentFrameNumber.value) {
-    currentFrameNumber.value = clampedFrame;
-    store.currentFrame = clampedFrame;
-  }
-});
 
 function startUpdateCanvasLoop() {
   updateCanvas();
@@ -323,8 +271,7 @@ function updateCanvas() {
     }
   } else if (!props.overlay) {
     // Normal mode: draw all overlays if we have frame data for current frame
-    // Use currentFrameNumber which is synced with video position
-    const frameNum = currentFrameNumber.value;
+    const frameNum = store.currentFrame;
     if (frameNum !== null) {
       const frameData = store.liveFrameData.get(frameNum);
       if (frameData) {
@@ -469,10 +416,10 @@ function updateCanvas() {
 
 // Computed property for frame image URL
 const frameImageUrl = computed(() => {
-  if (!store.currentVideo || currentFrameNumber.value === null) {
+  if (!store.currentVideo || store.currentFrame === null) {
     return null;
   }
-  return getFrameImageUrl(store.currentVideo.id, currentFrameNumber.value);
+  return getFrameImageUrl(store.currentVideo.id, store.currentFrame);
 });
 
 // Computed property for aspect ratio from video metadata
@@ -596,20 +543,6 @@ async function detectWindow() {
     isDetectingWindow.value = false;
   }
 }
-
-
-// Expose seekToFrame method for external control
-function seekToFrame(frame: number) {
-  if (!store.currentVideo) return;
-  
-  const clampedFrame = clampFrameNumber(frame);
-  currentFrameNumber.value = clampedFrame;
-  store.currentFrame = clampedFrame;
-}
-
-defineExpose({
-  seekToFrame,
-});
 </script>
 
 <template>
@@ -632,17 +565,17 @@ defineExpose({
     </div>
     <div v-else class="player-container">
       <div class="video-wrapper">
-        <img 
+        <img
           v-if="frameImageUrl"
           ref="imageRef"
-          :src="frameImageUrl" 
-          :alt="`Frame ${currentFrameNumber}`"
+          :src="frameImageUrl"
+          :alt="`Frame ${store.currentFrame}`"
           class="frame-image"
           @load="onFrameLoaded"
         />
         <canvas v-if="showCanvasOverlay" ref="canvasRef" class="overlay-canvas" />
         <!-- Badge showing when no analysis data is available for current frame -->
-        <div v-if="!hasFrameData && currentFrameNumber !== null && store.currentVideo" class="no-data-badge">
+        <div v-if="!hasFrameData && store.currentFrame !== null && store.currentVideo" class="no-data-badge">
           No analysis data for this frame
         </div>
       </div>

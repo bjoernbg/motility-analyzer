@@ -23,7 +23,6 @@
         <!-- Use v-show to keep video loaded when switching views -->
         <VideoPlayer
           v-show="viewMode === 'video'"
-          ref="videoPlayerRef"
         />
         <HeatmapViewer
           v-if="viewMode === 'heatmap' && store.currentAnalysis"
@@ -52,7 +51,6 @@
           <!-- Mini Video when viewing heatmap -->
           <div v-else-if="viewMode === 'heatmap' && store.currentVideo" class="mini-video-wrapper">
             <VideoPlayer
-              ref="miniVideoPlayerRef"
               overlay
               :highlight-frame="highlightedPoint?.frame ?? null"
               :highlight-point-index="highlightedPoint?.pointIndex ?? null"
@@ -73,8 +71,6 @@ import HeatmapViewer from './HeatmapViewer.vue';
 const store = useAnalysisStore();
 
 const viewMode = ref<'video' | 'heatmap'>('video');
-const videoPlayerRef = ref<InstanceType<typeof VideoPlayer> | null>(null);
-const miniVideoPlayerRef = ref<InstanceType<typeof VideoPlayer> | null>(null);
 const highlightedPoint = ref<{ frame: number; pointIndex: number } | null>(null);
 
 const showOverlay = computed(() => {
@@ -88,32 +84,10 @@ const showOverlay = computed(() => {
 function handleFrameClick(frame: number, pointIndex: number) {
   // Store the highlighted point for the mini video overlay
   highlightedPoint.value = { frame, pointIndex };
-  
-  // Seek the main video player to the clicked frame (when in video mode)
-  if (viewMode.value === 'video' && videoPlayerRef.value && 'seekToFrame' in videoPlayerRef.value) {
-    (videoPlayerRef.value as any).seekToFrame(frame);
-  }
-  // Seek the mini video when in heatmap mode (overlay video)
-  if (viewMode.value === 'heatmap' && miniVideoPlayerRef.value && 'seekToFrame' in miniVideoPlayerRef.value) {
-    (miniVideoPlayerRef.value as any).seekToFrame(frame);
-  }
-}
 
-// Expose seekToFrame method for external control (e.g., from MediaController)
-function seekToFrame(frame: number) {
-  // Seek the main video player if in video mode
-  if (viewMode.value === 'video' && videoPlayerRef.value && 'seekToFrame' in videoPlayerRef.value) {
-    (videoPlayerRef.value as any).seekToFrame(frame);
-  }
-  // Also seek mini video if in heatmap mode
-  if (viewMode.value === 'heatmap' && miniVideoPlayerRef.value && 'seekToFrame' in miniVideoPlayerRef.value) {
-    (miniVideoPlayerRef.value as any).seekToFrame(frame);
-  }
+  // Seek to frame using centralized store action
+  store.seekToFrame(frame);
 }
-
-defineExpose({
-  seekToFrame,
-});
 </script>
 
 <style scoped>

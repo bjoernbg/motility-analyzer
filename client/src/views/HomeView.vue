@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue';
+import { onUnmounted } from 'vue';
 import VideoSelector from '../components/VideoSelector.vue';
 import AnalysisParams from '../components/AnalysisParams.vue';
 import MediaViewer from '../components/MediaViewer.vue';
@@ -8,12 +8,9 @@ import AnalysisResults from '../components/AnalysisResults.vue';
 import { useAnalysisStore } from '../stores/analysis';
 
 const store = useAnalysisStore();
-const mediaViewerRef = ref<InstanceType<typeof MediaViewer> | null>(null);
 
 function handleSeek(frame: number) {
-  if (mediaViewerRef.value && 'seekToFrame' in mediaViewerRef.value) {
-    (mediaViewerRef.value as any).seekToFrame(frame);
-  }
+  store.seekToFrame(frame);
 }
 
 onUnmounted(() => {
@@ -34,7 +31,7 @@ onUnmounted(() => {
         </div>
         
         <div class="right-panel">
-          <MediaViewer ref="mediaViewerRef" />
+          <MediaViewer />
           <MediaController @seek="handleSeek" />
           <AnalysisResults />
         </div>

@@ -45,10 +45,23 @@ function handleTimelineChange() {
   }
 }
 
+// Handle pointer down to start seeking
+function handlePointerDown() {
+  isDragging.value = true;
+  store.setUserSeeking(true);
+}
+
 // Handle pointer up to finalize seek
 function handlePointerUp() {
   isDragging.value = false;
+  store.setUserSeeking(false);
   handleTimelineChange();
+}
+
+// Handle pointer cancel (e.g., pointer leaves while dragging)
+function handlePointerCancel() {
+  isDragging.value = false;
+  store.setUserSeeking(false);
 }
 
 // Frame stepping functions
@@ -143,8 +156,8 @@ const totalTimeDisplay = computed(() => {
         <div class="slider-container">
           <!-- Timeline slider -->
           <Slider v-model="timelineValue" :min="0" :max="Math.max(0, totalFrames - 1)" :step="1" class="timeline-slider"
-            :disabled="!store.currentVideo || totalFrames <= 1" @pointerdown="isDragging = true"
-            @pointerup="handlePointerUp" @pointercancel="() => { isDragging = false; }">
+            :disabled="!store.currentVideo || totalFrames <= 1" @pointerdown="handlePointerDown"
+            @pointerup="handlePointerUp" @pointercancel="handlePointerCancel">
             <!-- Analysis progress overlay (only during analysis) -->
             <template #progress>
               <div v-if="showAnalysisProgress" class="progress-overlay" :class="{
