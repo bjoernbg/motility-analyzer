@@ -3,5 +3,9 @@
     "allow": [
       "Bash(ls:*)"
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
   }
 }
