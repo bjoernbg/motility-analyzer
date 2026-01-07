@@ -9,11 +9,13 @@ import type {
   WaveDetectionParameters,
   WaveDetectionResult,
   WaveEvent,
+  ReencodeStatistics,
 } from '../lib/api';
 import {
   uploadVideo,
   listVideos,
   getVideoMetadata,
+  reencodeVideo,
   startAnalysis,
   getAnalysisStatus,
   listAnalyses,
@@ -259,6 +261,50 @@ export const useAnalysisStore = defineStore('analysis', () => {
       throw err;
     } finally {
       isLoadingMetadata.value = false;
+    }
+  }
+
+  async function reencodeCurrentVideo(): Promise<ReencodeStatistics> {
+    if (!currentVideo.value) {
+      throw new Error('No video selected');
+    }
+
+    try {
+      isLoading.value = true;
+      error.value = null;
+
+      // Call re-encode API (blocking operation)
+      const result = await reencodeVideo(currentVideo.value.id);
+
+      // Clear analysis state
+      currentAnalysis.value = null;
+      availableAnalyses.value = [];
+      liveFrameData.value.clear();
+      frameDataCache.value.clear();
+      progress.value = 0;
+      progressStatus.value = 'pending';
+      waveEvents.value = [];
+
+      // Fetch updated metadata
+      const metadata = await getVideoMetadata(result.video.id);
+      result.video.metadata = metadata;
+
+      // Update current video with new metadata
+      currentVideo.value = result.video;
+
+      // Update in videos list
+      const videoIndex = videos.value.findIndex(v => v.id === result.video.id);
+      if (videoIndex !== -1) {
+        videos.value[videoIndex] = result.video;
+      }
+
+      return result.statistics;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to re-encode video';
+      console.error('Failed to re-encode video:', err);
+      throw err;
+    } finally {
+      isLoading.value = false;
     }
   }
 
@@ -851,6 +897,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     loadVideos,
     handleVideoUpload,
     selectVideo,
+    reencodeCurrentVideo,
     runAnalysis,
     startPolling,
     stopPolling,

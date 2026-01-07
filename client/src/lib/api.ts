@@ -40,6 +40,21 @@ export interface VideoMetadata {
   duration: number;
   file_size: number;
   codec: string | null;
+  needs_reencoding?: () => boolean;  // Method to check if reencoding is needed
+}
+
+export interface ReencodeStatistics {
+  duration_seconds: number;
+  original_size_bytes: number;
+  new_size_bytes: number;
+  size_reduction_percent: number;
+  original_codec: string | null;
+  new_codec: string;
+}
+
+export interface ReencodeResult {
+  video: Video;
+  statistics: ReencodeStatistics;
 }
 
 export interface Video {
@@ -194,6 +209,27 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
   return fetchJson<VideoMetadata>(`/api/videos/${encodeURIComponent(videoId)}/metadata`, {
     endpointKey: `metadata:${videoId}`,
   });
+}
+
+export async function reencodeVideo(videoId: string): Promise<ReencodeResult> {
+  return fetchJson<ReencodeResult>(`/api/videos/${encodeURIComponent(videoId)}/reencode`, {
+    method: 'POST',
+    endpointKey: `reencode:${videoId}`,
+  });
+}
+
+export function videoNeedsReencoding(metadata: VideoMetadata | undefined): boolean {
+  if (!metadata || !metadata.codec) {
+    return true;  // Unknown codec, assume it needs re-encoding
+  }
+
+  const codecLower = metadata.codec.toLowerCase().trim();
+  // Check if already using AV1
+  if (codecLower.includes('av1') || codecLower.includes('av01')) {
+    return false;
+  }
+
+  return true;
 }
 
 export async function startAnalysis(
@@ -366,18 +402,37 @@ export interface HeatmapMeta {
 }
 
 export async function getHeatmapMeta(analysisId: string): Promise<HeatmapMeta> {
-  return fetchJson<HeatmapMeta>(`/api/analysis/${encodeURIComponent(analysisId)}/heatmap/meta`);
+  return fetchJson<HeatmapMeta>(`/api/analysis/${encodeURIComponent(analysisId)}/heatmap/meta`, {
+    endpointKey: `heatmap-meta:${analysisId}`,
+  });
 }
 
 export async function getHeatmapRaw(analysisId: string): Promise<ArrayBuffer> {
-  const response = await fetch(`${API_BASE_URL}/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`);
+  const endpointKey = `heatmap-raw:${analysisId}`;
+  const controller = getAbortController(endpointKey);
   
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`, {
+      signal: controller.signal,
+    });
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    
+    cleanupAbortController(endpointKey);
+    return response.arrayBuffer();
+  } catch (error) {
+    cleanupAbortController(endpointKey);
+    
+    // Re-throw AbortError so it can be handled by the caller
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error;
+    }
+    
+    throw error;
   }
-  
-  return response.arrayBuffer();
 }
 
 export interface WaveDetectionParameters {

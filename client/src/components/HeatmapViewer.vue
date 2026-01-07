@@ -226,6 +226,12 @@ async function loadData() {
     await new Promise(resolve => setTimeout(resolve, 0));
     calculateInitialScale();
   } catch (err) {
+    // Don't set error if request was aborted (e.g., user switched analyses)
+    if (err instanceof Error && err.name === 'AbortError') {
+      // Silently ignore abort errors - they're expected when switching analyses
+      return;
+    }
+    
     // Only set error if we're still loading this analysis
     if (props.analysisId === analysisId) {
       error.value = err instanceof Error ? err.message : "Failed to load heatmap data";

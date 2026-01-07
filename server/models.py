@@ -26,6 +26,36 @@ class VideoMetadata(BaseModel):
     file_size: int = Field(description="File size in bytes")
     codec: Optional[str] = Field(None, description="Video codec")
 
+    def needs_reencoding(self) -> bool:
+        """Check if video needs re-encoding based on codec and format."""
+        # Re-encode if codec is not AV1 (libsvtav1, av1, etc.)
+        # Common codecs that should be re-encoded: h264, h265, mpeg4, etc.
+        if not self.codec:
+            return True  # Unknown codec, assume it needs re-encoding
+
+        codec_lower = self.codec.lower().strip()
+        # Check if already using AV1
+        if 'av1' in codec_lower or 'av01' in codec_lower:
+            return False
+
+        return True
+
+
+class ReencodeStatistics(BaseModel):
+    """Statistics from video re-encoding operation."""
+    duration_seconds: float = Field(description="Time taken to re-encode in seconds")
+    original_size_bytes: int = Field(description="Original file size in bytes")
+    new_size_bytes: int = Field(description="New file size in bytes")
+    size_reduction_percent: float = Field(description="Percentage reduction in file size")
+    original_codec: Optional[str] = Field(None, description="Original video codec")
+    new_codec: str = Field(default="libsvtav1", description="New video codec")
+
+
+class ReencodeResult(BaseModel):
+    """Result of video re-encoding operation."""
+    video: Video = Field(description="Updated video object")
+    statistics: ReencodeStatistics = Field(description="Re-encoding statistics")
+
 
 class AnalysisParameters(BaseModel):
     """Analysis parameters."""

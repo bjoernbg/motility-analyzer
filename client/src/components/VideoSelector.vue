@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useAnalysisStore } from '../stores/analysis';
-import type { Video } from '../lib/api';
+import type { Video, ReencodeStatistics } from '../lib/api';
+import { videoNeedsReencoding } from '../lib/api';
 
 const store = useAnalysisStore();
 const router = useRouter();
@@ -11,6 +12,15 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const isUploading = ref(false);
 const selectingVideoId = ref<string | null>(null);
 const showModal = ref(false);
+const isReencoding = ref(false);
+const showSuccessModal = ref(false);
+const encodeStats = ref<ReencodeStatistics | null>(null);
+
+// Check if current video needs re-encoding
+const needsReencoding = computed(() => {
+  if (!store.currentVideo?.metadata) return false;
+  return videoNeedsReencoding(store.currentVideo.metadata);
+});
 
 // Function to load video from URL
 async function loadVideoFromUrl() {
@@ -121,7 +131,7 @@ async function selectVideo(video: Video) {
   if (selectingVideoId.value === video.id || store.isLoadingMetadata) {
     return; // Already selecting this video or metadata is loading
   }
-  
+
   selectingVideoId.value = video.id;
   try {
     await store.selectVideo(video);
@@ -133,6 +143,58 @@ async function selectVideo(video: Video) {
   } finally {
     selectingVideoId.value = null;
   }
+}
+
+async function handleReencode() {
+  if (!store.currentVideo || isReencoding.value) {
+    return;
+  }
+
+  const filename = store.currentVideo.filename;
+
+  const confirmed = confirm(
+    `Re-encode "${filename}"?\n\n` +
+    'This will:\n' +
+    '• Replace the original video file\n' +
+    '• Delete all analyses for this video\n' +
+    '• Clear all cached data\n\n' +
+    'This operation cannot be undone and may take several minutes.'
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  isReencoding.value = true;
+  try {
+    const stats = await store.reencodeCurrentVideo();
+    encodeStats.value = stats;
+    showSuccessModal.value = true;
+  } catch (error) {
+    console.error('Re-encode failed:', error);
+    alert(`Failed to re-encode "${filename}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+    isReencoding.value = false;
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${minutes}m ${secs}s`;
+}
+
+function closeSuccessModal() {
+  showSuccessModal.value = false;
+  encodeStats.value = null;
 }
 </script>
 
@@ -151,13 +213,97 @@ async function selectVideo(video: Video) {
       <div v-else class="no-video-placeholder">
         No video selected
       </div>
-      <button class="change-button" @click="openModal" :disabled="store.isLoadingMetadata" title="Select or upload video">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-        </svg>
-      </button>
+      <div class="button-group">
+        <button
+          v-if="store.currentVideo && needsReencoding"
+          class="reencode-button"
+          @click="handleReencode"
+          :disabled="store.isLoading || store.isLoadingMetadata || isReencoding"
+          :title="`Re-encode: ${store.currentVideo.filename}`"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+            <line x1="7" y1="2" x2="7" y2="22"></line>
+            <line x1="17" y1="2" x2="17" y2="22"></line>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <line x1="2" y1="7" x2="7" y2="7"></line>
+            <line x1="2" y1="17" x2="7" y2="17"></line>
+            <line x1="17" y1="17" x2="22" y2="17"></line>
+            <line x1="17" y1="7" x2="22" y2="7"></line>
+          </svg>
+        </button>
+        <button class="change-button" @click="openModal" :disabled="store.isLoadingMetadata" title="Select or upload video">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+          </svg>
+        </button>
+      </div>
     </div>
+
+    <!-- Encoding Progress Overlay -->
+    <Teleport to="body">
+      <div v-if="isReencoding" class="encoding-overlay">
+        <div class="encoding-modal">
+          <div class="encoding-spinner">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="spinner-icon">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 6v6l4 2"></path>
+            </svg>
+          </div>
+          <h2>Re-encoding Video</h2>
+          <p class="encoding-message">
+            Please wait while the video is being re-encoded.<br>
+            This may take several minutes depending on the video size.
+          </p>
+          <p class="encoding-warning">Do not close this window or navigate away.</p>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Success Statistics Modal -->
+    <Teleport to="body">
+      <div v-if="showSuccessModal && encodeStats" class="encoding-overlay" @click.self="closeSuccessModal">
+        <div class="success-modal">
+          <div class="success-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+          </div>
+          <h2>Re-encoding Complete!</h2>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <div class="stat-label">Duration</div>
+              <div class="stat-value">{{ formatDuration(encodeStats.duration_seconds) }}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">Original Size</div>
+              <div class="stat-value">{{ formatFileSize(encodeStats.original_size_bytes) }}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">New Size</div>
+              <div class="stat-value">{{ formatFileSize(encodeStats.new_size_bytes) }}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">Size Reduction</div>
+              <div class="stat-value" :class="{ positive: encodeStats.size_reduction_percent > 0 }">
+                {{ encodeStats.size_reduction_percent > 0 ? '-' : '+' }}{{ Math.abs(encodeStats.size_reduction_percent).toFixed(1) }}%
+              </div>
+            </div>
+            <div class="stat-item" v-if="encodeStats.original_codec">
+              <div class="stat-label">Original Codec</div>
+              <div class="stat-value">{{ encodeStats.original_codec }}</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-label">New Codec</div>
+              <div class="stat-value">{{ encodeStats.new_codec }}</div>
+            </div>
+          </div>
+          <button class="dismiss-button" @click="closeSuccessModal">Done</button>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Modal Overlay -->
     <Teleport to="body">
@@ -271,8 +417,15 @@ async function selectVideo(video: Video) {
   font-size: 0.9rem;
 }
 
-.change-button {
+.button-group {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.change-button,
+.reencode-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -293,7 +446,14 @@ async function selectVideo(video: Video) {
   color: var(--color-success-500);
 }
 
-.change-button:disabled {
+.reencode-button:hover:not(:disabled) {
+  background: var(--color-neutral-200);
+  border-color: #f97316;
+  color: #f97316;
+}
+
+.change-button:disabled,
+.reencode-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -493,6 +653,153 @@ h3 {
   border: 1px solid var(--color-error-200);
 }
 
+/* Encoding Overlay */
+.encoding-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: color-mix(in oklch, var(--color-neutral-900) 95%, transparent);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.encoding-modal {
+  background: var(--bg-primary);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 2.5rem;
+  max-width: 500px;
+  width: 90%;
+  text-align: center;
+  animation: slideUp 0.3s ease-out;
+}
+
+.encoding-spinner {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.spinner-icon {
+  color: #f97316;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.encoding-modal h2 {
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.encoding-message {
+  margin: 0 0 1rem 0;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.encoding-warning {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #f97316;
+  font-weight: 500;
+}
+
+/* Success Modal */
+.success-modal {
+  background: var(--bg-primary);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 2.5rem;
+  max-width: 600px;
+  width: 90%;
+  text-align: center;
+  animation: slideUp 0.3s ease-out;
+}
+
+.success-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.success-icon svg {
+  color: #10b981;
+}
+
+.success-modal h2 {
+  margin: 0 0 2rem 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  text-align: left;
+}
+
+.stat-item {
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.stat-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+}
+
+.stat-value.positive {
+  color: #10b981;
+}
+
+.dismiss-button {
+  width: 100%;
+  padding: 0.875rem 2rem;
+  background: var(--color-success-500);
+  color: var(--text-inverted);
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.dismiss-button:hover {
+  background: var(--color-success-600);
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   .modal-container {
@@ -503,6 +810,20 @@ h3 {
   .modal-header,
   .modal-content {
     padding: 1rem;
+  }
+
+  .encoding-modal,
+  .success-modal {
+    padding: 2rem 1.5rem;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  .success-modal h2 {
+    font-size: 1.5rem;
   }
 }
 </style>

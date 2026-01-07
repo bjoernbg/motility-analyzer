@@ -19,6 +19,7 @@ from .edge_detection_1d import edge_detection_1d_calculation
 from .edge_detection_canny import edge_detection_canny_calculation
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .database import init_database
+from .encoder import reencode_video
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
 from .models import (
@@ -26,6 +27,8 @@ from .models import (
     AnalysisParameters,
     FrameData,
     HeatmapMeta,
+    ReencodeResult,
+    ReencodeStatistics,
     Video,
     VideoMetadata,
     WaveDetectionParameters,
@@ -33,7 +36,7 @@ from .models import (
     WaveEvent,
     WaveEventLineFit,
 )
-from .storage import AnalysisStorage, ResultsStorage, VideoStorage
+from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_all_video_caches
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
 from .wave_detection import detect_waves, calculate_physical_spacing
@@ -152,13 +155,101 @@ def get_video_metadata_endpoint(video_id: str):
     video_path = VideoStorage.get_video_path(video_id)
     if not video_path or not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
-    
+
     try:
         # Use the metadata module which automatically loads from cache or generates
         metadata = get_video_metadata(video_path)
         return metadata
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/videos/{video_id}/reencode", response_model=ReencodeResult)
+async def reencode_video_endpoint(video_id: str):
+    """
+    Re-encode a video with optimized settings and replace the original.
+
+    This operation:
+    1. Deletes all analyses associated with the video
+    2. Clears all cached metadata and heatmap files
+    3. Re-encodes the video using libsvtav1 codec with optimized settings
+    4. Replaces the original video file (converts to .mp4)
+    5. Regenerates video metadata
+
+    The operation is blocking and may take several minutes for large videos.
+
+    Args:
+        video_id: ID of the video to re-encode
+
+    Returns:
+        Updated Video object with new metadata
+
+    Raises:
+        404: Video not found
+        500: Re-encoding failed (original video is preserved)
+    """
+    # Validate video exists
+    video = VideoStorage.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path = VideoStorage.get_video_path(video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    try:
+        # Get all analyses for this video
+        analysis_storage = AnalysisStorage()
+        analyses = analysis_storage.list_analyses(video_id=video_id, limit=1000)
+        analysis_ids = [analysis.id for analysis in analyses]
+
+        # Get original metadata for codec info
+        original_metadata = get_video_metadata(video_path)
+        original_codec = original_metadata.codec
+
+        # Delete all analyses
+        for analysis in analyses:
+            try:
+                analysis_storage.delete_analysis(analysis.id)
+            except Exception as e:
+                # Log but continue if deletion fails
+                print(f"Warning: Failed to delete analysis {analysis.id}: {e}")
+
+        # Clear all caches (metadata, heatmaps)
+        clear_all_video_caches(video_id, analysis_ids)
+
+        # Re-encode the video (this may take minutes and is blocking)
+        new_video_path, stats = reencode_video(video_path)
+
+        # Force-regenerate metadata
+        metadata = get_video_metadata(new_video_path, force_regenerate=True)
+
+        # Create updated Video object
+        # Note: video_id is based on stem, which remains the same even if extension changed
+        updated_video = Video(
+            id=new_video_path.stem,
+            filename=new_video_path.name,
+            file_path=str(new_video_path),
+        )
+
+        # Create statistics object
+        statistics = ReencodeStatistics(
+            duration_seconds=stats["duration_seconds"],
+            original_size_bytes=stats["original_size_bytes"],
+            new_size_bytes=stats["new_size_bytes"],
+            size_reduction_percent=stats["size_reduction_percent"],
+            original_codec=original_codec,
+            new_codec="libsvtav1",
+        )
+
+        return ReencodeResult(video=updated_video, statistics=statistics)
+
+    except RuntimeError as e:
+        # Re-encoding failed, original video is preserved
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        # Unexpected error
+        raise HTTPException(status_code=500, detail=f"Re-encoding failed: {str(e)}")
 
 
 @app.post("/api/analysis/start", response_model=Analysis)
