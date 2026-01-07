@@ -31,7 +31,18 @@
       Frame: {{ hoverInfo.frame }}<br />
       Time: {{ hoverInfo.time.toFixed(2) }}s<br />
       Point: {{ hoverInfo.index }}<br />
-      Distance: {{ hoverInfo.value.toFixed(3) }}
+      Distance: {{ hoverInfo.value.toFixed(3) }} px<br />
+      Distance: {{ hoverInfo.valueMm.toFixed(3) }} mm
+    </div>
+    <div v-if="!isLoading && !error && !compact" class="color-scale-info">
+      <div class="color-scale-label">Color Scale:</div>
+      <div class="color-scale-range">
+        <span class="color-indicator red"></span>
+        <span>1 mm</span>
+        <span class="color-indicator violet"></span>
+        <span>7 mm</span>
+      </div>
+      <div class="conversion-factor">Conversion: 1 mm = 11 px</div>
     </div>
   </div>
 </template>
@@ -76,8 +87,16 @@ const offsetX = ref(0);
 const offsetY = ref(0);
 
 // Hover info
-const hoverInfo = ref<{ frame: number; time: number; index: number; value: number } | null>(null);
+const hoverInfo = ref<{ frame: number; time: number; index: number; value: number; valueMm: number } | null>(null);
 const mousePos = ref<{ x: number; y: number } | null>(null);
+
+// Fixed color scale constants
+// TODO
+const PIXEL_TO_MM_FACTOR = 11; // pixels per mm
+const MIN_MM = 3; // Red color = 3mm
+const MAX_MM = 30; // Violet color = 30mm
+const MIN_PX = MIN_MM * PIXEL_TO_MM_FACTOR; // 11 pixels
+const MAX_PX = MAX_MM * PIXEL_TO_MM_FACTOR; // 77 pixels
 
 const tooltipStyle = computed(() => {
   if (!mousePos.value) return {};
@@ -322,7 +341,7 @@ function renderHeatmap() {
   const containerWidth = Math.max(1, container.value.clientWidth - axisWidth);
   const containerHeight = Math.max(1, container.value.clientHeight - axisHeight);
 
-  const { width, height, min, max } = meta.value;
+  const { width, height } = meta.value;
   const values = data.value;
 
   // We create an offscreen canvas at data resolution
@@ -336,19 +355,25 @@ function renderHeatmap() {
   const imageData = offCtx.createImageData(width, height);
   const pixels = imageData.data; // Uint8ClampedArray
 
-  const valueRange = max - min || 1;
+  // Fixed scale: Red = 1mm (11px), Violet = 7mm (77px)
+  // Convert pixel distances to mm and map to fixed scale
+  const mmRange = MAX_MM - MIN_MM;
 
   // Note: We'll treat x = frame, y = index
   // Flatten index = x * height + y (because values are [frame][index])
   for (let x = 0; x < width; x++) {
     for (let y = 0; y < height; y++) {
       const dataIndex = x * height + y;
-      const v = values[dataIndex] ?? 0;
+      const vPx = values[dataIndex] ?? 0; // value in pixels
 
-      // Normalize to 0..255
-      let t = (v - min) / valueRange;
-      if (t < 0) t = 0;
-      if (t > 1) t = 1;
+      // Convert to mm
+      const vMm = vPx / PIXEL_TO_MM_FACTOR;
+
+      // Map to fixed scale
+      // Clamp values outside the range
+      let t = (vMm - MIN_MM) / mmRange;
+      if (t < 0) t = 0; // Values < 1mm map to red
+      if (t > 1) t = 1; // Values > 7mm map to violet
       const ci = Math.floor(t * 255);
 
       const r = colormap[ci * 3 + 0] ?? 0;
@@ -695,9 +720,10 @@ function setupMouseMove() {
     const { frame, index } = result;
     const dataIndex = frame * meta.value.height + index;
     const value = data.value[dataIndex] ?? 0;
+    const valueMm = value / PIXEL_TO_MM_FACTOR;
     const timeInSeconds = frame / meta.value.fps;
 
-    hoverInfo.value = { frame, time: timeInSeconds, index, value };
+    hoverInfo.value = { frame, time: timeInSeconds, index, value, valueMm };
   });
   
   // Add click handler to emit frame-click event
@@ -821,6 +847,55 @@ function setupMouseMove() {
   background: var(--color-error-100);
   border-radius: 4px;
   margin: 1rem;
+}
+
+.color-scale-info {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 11px;
+  z-index: 100;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.color-scale-label {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.color-scale-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+
+.color-indicator {
+  display: inline-block;
+  width: 16px;
+  height: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 2px;
+}
+
+.color-indicator.red {
+  background: rgb(255, 0, 0);
+}
+
+.color-indicator.violet {
+  background: rgb(148, 0, 211);
+}
+
+.conversion-factor {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-style: italic;
 }
 </style>
 
