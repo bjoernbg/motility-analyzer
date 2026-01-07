@@ -113,3 +113,45 @@ class HeatmapMeta(BaseModel):
     max: float = Field(description="Maximum distance value")
     fps: float = Field(description="Frames per second for time conversion")
 
+
+class WaveDetectionParameters(BaseModel):
+    """Parameters for wave detection algorithm."""
+    smooth_sigma_y: float = Field(default=1.0, ge=0.0, description="Gaussian smoothing sigma for y-axis (point-pair index)")
+    smooth_sigma_t: float = Field(default=1.0, ge=0.0, description="Gaussian smoothing sigma for t-axis (frame index)")
+    threshold_percentile: float = Field(default=10.0, ge=0.0, le=100.0, description="Percentile for automatic threshold (0-100)")
+    threshold: Optional[float] = Field(default=None, description="Manual threshold override (if None, uses percentile)")
+    open_iters: int = Field(default=1, ge=0, description="Binary opening iterations (removes speckles)")
+    close_iters: int = Field(default=2, ge=0, description="Binary closing iterations (fills holes)")
+    min_pixels: int = Field(default=200, ge=1, description="Minimum pixels per event to keep")
+    dy: Optional[float] = Field(default=None, ge=0.0, description="Physical spacing between point pairs in mm (auto-calculated if None)")
+
+
+class WaveEventLineFit(BaseModel):
+    """Line fit parameters for a wave event."""
+    a_idx_per_frame: float = Field(description="Slope in y-indices per frame")
+    b: float = Field(description="Intercept in y-indices")
+
+
+class WaveEvent(BaseModel):
+    """Single wave event result."""
+    id: str = Field(description="Unique event ID")
+    label: int = Field(description="Component label from connected components")
+    n_pixels: int = Field(description="Number of pixels in the event")
+    threshold_used: float = Field(description="Threshold value used for detection")
+    t_range_frames: tuple[int, int] = Field(description="Frame range (start, end)")
+    y_range_idx: tuple[int, int] = Field(description="Point-pair index range (start, end)")
+    duration_s: float = Field(description="Duration in seconds")
+    height_phys: float = Field(description="Height in physical units (mm)")
+    velocity_phys_per_s: float = Field(description="Velocity in mm/s (positive = moving to higher y)")
+    line_fit: WaveEventLineFit = Field(description="Fitted line parameters")
+    area_exact: float = Field(description="Exact area below threshold in mm²·s")
+    area_triangle: float = Field(description="Triangle approximation area in mm²·s")
+    created_at: str = Field(description="Creation timestamp")
+
+
+class WaveDetectionResult(BaseModel):
+    """Wave detection result with all events."""
+    events: List[WaveEvent] = Field(description="List of detected wave events")
+    parameters_used: WaveDetectionParameters = Field(description="Parameters used for detection")
+    total_events: int = Field(description="Total number of events detected")
+

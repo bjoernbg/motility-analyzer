@@ -4,8 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 from .analysis import process_video
-from .models import Analysis, AnalysisParameters, FrameData
-from .storage import AnalysisStorage, ResultsStorage, clear_heatmap_cache
+from .models import Analysis, AnalysisParameters, FrameData, WaveDetectionParameters
+from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_heatmap_cache
+from .wave_detection import detect_waves, calculate_physical_spacing
+from .metadata import get_video_metadata
+import logging
+
+logger = logging.getLogger('uvicorn.error')
 
 
 class TaskManager:
@@ -188,6 +193,55 @@ class TaskManager:
             
             # Clear cached heatmap data to force regeneration with complete results
             clear_heatmap_cache(analysis_id, video_id)
+            
+            # Auto-run wave detection with default parameters
+            try:
+                logger.info(f"Auto-running wave detection for analysis {analysis_id}...")
+                # Check if heatmap data exists
+                db = self.results_storage.db
+                matrix, _, _ = db.build_heatmap_matrix(analysis_id)
+                
+                if matrix.size > 0:
+                    logger.info(f"Heatmap matrix shape: {matrix.shape}")
+                    # Get video metadata for FPS
+                    video_path = VideoStorage.get_video_path(video_id)
+                    if video_path and video_path.exists():
+                        try:
+                            video_metadata = get_video_metadata(video_path)
+                            fps = video_metadata.fps
+                            dt = 1.0 / fps if fps > 0 else 1.0
+                            
+                            # Transpose matrix: (frames, points) -> (points, frames)
+                            thickness = matrix.T
+                            
+                            # Calculate physical spacing
+                            dy = calculate_physical_spacing(analysis_id, self.results_storage)
+                            
+                            # Run wave detection with default parameters
+                            default_params = WaveDetectionParameters()
+                            events, _, _ = detect_waves(
+                                thickness=thickness,
+                                dt=dt,
+                                dy=dy,
+                                thr=default_params.threshold,
+                                percentile=default_params.threshold_percentile,
+                                smooth_sigma=(default_params.smooth_sigma_y, default_params.smooth_sigma_t),
+                                min_pixels=default_params.min_pixels,
+                                open_iters=default_params.open_iters,
+                                close_iters=default_params.close_iters,
+                            )
+                            
+                            # Store events in database
+                            db.save_wave_events(analysis_id, events)
+                            logger.info(f"Auto-detected {len(events)} wave events for analysis {analysis_id}")
+                        except Exception as e:
+                            # Log error but don't fail the analysis
+                            logger.warning(f"Auto wave detection failed for analysis {analysis_id}: {str(e)}")
+                else:
+                    logger.info(f"No heatmap data available for analysis {analysis_id}, skipping wave detection")
+            except Exception as e:
+                # Log error but don't fail the analysis
+                logger.warning(f"Auto wave detection check failed for analysis {analysis_id}: {str(e)}")
             
         except asyncio.CancelledError:
             # Task was cancelled

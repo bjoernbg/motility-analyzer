@@ -6,6 +6,9 @@ import type {
   Analysis,
   AnalysisParameters,
   FrameData,
+  WaveDetectionParameters,
+  WaveDetectionResult,
+  WaveEvent,
 } from '../lib/api';
 import {
   uploadVideo,
@@ -22,6 +25,9 @@ import {
   getVideoSettings,
   saveVideoSettings,
   deleteAnalysis,
+  detectWaves,
+  getWaveEvents,
+  clearWaveEvents,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
@@ -52,6 +58,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const availableAnalyses = ref<Analysis[]>([]);
   // Flag to track when analysis switch is in progress (skip unnecessary work)
   const isAnalysisSwitching = ref(false);
+  // Wave detection state
+  const waveEvents = ref<WaveEvent[]>([]);
+  const isDetectingWaves = ref(false);
+  const waveDetectionError = ref<string | null>(null);
   
   // Simple LRU cache for frame data (max 20 frames)
   interface FrameCacheEntry {
@@ -235,6 +245,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
           await selectAnalysis(newestAnalysis.id);
         }
       }
+      
+      // Auto-load wave events for selected analysis
+      if (currentAnalysis.value && currentAnalysis.value.status === 'completed') {
+        await loadWaveEvents(currentAnalysis.value.id);
+      }
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to load video metadata';
       console.error('Failed to fetch video metadata:', err);
@@ -415,6 +430,13 @@ export const useAnalysisStore = defineStore('analysis', () => {
       }
       for (const key of keysToDelete) {
         frameDataCache.value.delete(key);
+      }
+      
+      // Load wave events if analysis is completed
+      if (analysis.status === 'completed') {
+        await loadWaveEvents(analysisId);
+      } else {
+        waveEvents.value = [];
       }
       
       // Start polling if analysis is still running
@@ -708,6 +730,50 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function detectWavesForAnalysis(analysisId: string, parameters?: WaveDetectionParameters) {
+    try {
+      isDetectingWaves.value = true;
+      waveDetectionError.value = null;
+      
+      const result = await detectWaves(analysisId, parameters);
+      waveEvents.value = result.events;
+      
+      return result;
+    } catch (err) {
+      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to detect waves';
+      throw err;
+    } finally {
+      isDetectingWaves.value = false;
+    }
+  }
+
+  async function loadWaveEvents(analysisId: string) {
+    try {
+      waveDetectionError.value = null;
+      const result = await getWaveEvents(analysisId);
+      waveEvents.value = result.events;
+    } catch (err) {
+      // Don't set error if wave detection hasn't been run (404 is expected)
+      if (err instanceof Error && err.message.includes('404')) {
+        waveEvents.value = [];
+        return;
+      }
+      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to load wave events';
+      waveEvents.value = [];
+    }
+  }
+
+  async function clearWaveEventsForAnalysis(analysisId: string) {
+    try {
+      await clearWaveEvents(analysisId);
+      waveEvents.value = [];
+      waveDetectionError.value = null;
+    } catch (err) {
+      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to clear wave events';
+      throw err;
+    }
+  }
+
   function reset() {
     currentVideo.value = null;
     currentAnalysis.value = null;
@@ -719,6 +785,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     totalFrames.value = null;
     error.value = null;
     currentParameters.value = null;
+    waveEvents.value = [];
+    waveDetectionError.value = null;
     stopPolling();
   }
 
@@ -739,6 +807,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     liveFrameData,
     currentParameters,
     availableAnalyses,
+    waveEvents,
+    isDetectingWaves,
+    waveDetectionError,
     // Computed
     isProcessing,
     isCompleted,
@@ -761,6 +832,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     restartAnalysisById,
     findMatchingAnalysis,
     deleteAnalysisById,
+    detectWavesForAnalysis,
+    loadWaveEvents,
+    clearWaveEventsForAnalysis,
     reset,
   };
 });

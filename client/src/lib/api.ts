@@ -380,4 +380,71 @@ export async function getHeatmapRaw(analysisId: string): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
+export interface WaveDetectionParameters {
+  smooth_sigma_y?: number;
+  smooth_sigma_t?: number;
+  threshold_percentile?: number;
+  threshold?: number | null;
+  open_iters?: number;
+  close_iters?: number;
+  min_pixels?: number;
+  dy?: number | null;
+}
+
+export interface WaveEventLineFit {
+  a_idx_per_frame: number;
+  b: number;
+}
+
+export interface WaveEvent {
+  id: string;
+  label: number;
+  n_pixels: number;
+  threshold_used: number;
+  t_range_frames: [number, number];
+  y_range_idx: [number, number];
+  duration_s: number;
+  height_phys: number;
+  velocity_phys_per_s: number;
+  line_fit: WaveEventLineFit;
+  area_exact: number;
+  area_triangle: number;
+  created_at: string;
+}
+
+export interface WaveDetectionResult {
+  events: WaveEvent[];
+  parameters_used: WaveDetectionParameters;
+  total_events: number;
+}
+
+export async function detectWaves(
+  analysisId: string,
+  parameters?: WaveDetectionParameters
+): Promise<WaveDetectionResult> {
+  return fetchJson<WaveDetectionResult>(
+    `/api/analysis/${encodeURIComponent(analysisId)}/detect-waves`,
+    {
+      method: 'POST',
+      body: parameters ? JSON.stringify(parameters) : undefined,
+      endpointKey: `detectWaves:${analysisId}`,
+    }
+  );
+}
+
+export async function getWaveEvents(analysisId: string): Promise<WaveDetectionResult> {
+  return fetchJson<WaveDetectionResult>(
+    `/api/analysis/${encodeURIComponent(analysisId)}/waves`,
+    {
+      endpointKey: `waveEvents:${analysisId}`,
+    }
+  );
+}
+
+export async function clearWaveEvents(analysisId: string): Promise<void> {
+  await fetchJson(`/api/analysis/${encodeURIComponent(analysisId)}/waves`, {
+    method: 'DELETE',
+  });
+}
+
 

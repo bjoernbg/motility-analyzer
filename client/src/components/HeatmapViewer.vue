@@ -40,12 +40,16 @@
 import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { getHeatmapMeta, getHeatmapRaw, type HeatmapMeta } from "../lib/api";
 import { useHeatmapCache } from "../composables/useHeatmapCache";
+import { useAnalysisStore } from "../stores/analysis";
 
 const props = defineProps<{
   analysisId: string;
   currentFrame?: number | null;
   compact?: boolean;
+  showWaveOverlays?: boolean;
 }>();
+
+const store = useAnalysisStore();
 
 const emit = defineEmits<{
   'frame-click': [frame: number, pointIndex: number];
@@ -124,6 +128,13 @@ watch(() => props.analysisId, async (newId, oldId) => {
     await loadData();
   }
 }, { immediate: false });
+
+// Re-render when wave overlays toggle or wave events change
+watch(() => [props.showWaveOverlays, store.waveEvents], () => {
+  if (meta.value && data.value) {
+    renderHeatmap();
+  }
+}, { deep: true });
 
 const resizeObserver = ref<ResizeObserver | null>(null);
 
@@ -379,6 +390,65 @@ function renderHeatmap() {
   ctx.imageSmoothingEnabled = false; // keep pixel crispness
   // Draw the offscreen canvas at the scaled size
   ctx.drawImage(offCanvas, 0, 0, scaledDataWidth, scaledDataHeight);
+  
+  // Draw wave event overlays if enabled
+  if (props.showWaveOverlays && store.waveEvents.length > 0 && meta.value) {
+    const fps = meta.value.fps;
+    const numPoints = meta.value.height;
+    
+    for (const event of store.waveEvents) {
+      const [tStart, tEnd] = event.t_range_frames;
+      const [yStart, yEnd] = event.y_range_idx;
+      
+      // Calculate positions in canvas coordinates
+      const xStart = tStart * scale.value;
+      const xEnd = tEnd * scale.value;
+      const yStartPx = (yStart / numPoints) * scaledDataHeight;
+      const yEndPx = (yEnd / numPoints) * scaledDataHeight;
+      
+      // Draw bounding box
+      ctx.strokeStyle = 'rgba(255, 255, 0, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.strokeRect(xStart, yStartPx, xEnd - xStart, yEndPx - yStartPx);
+      
+      // Draw fitted line
+      const { a_idx_per_frame, b } = event.line_fit;
+      ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      
+      // Calculate line endpoints
+      const yAtStart = a_idx_per_frame * tStart + b;
+      const yAtEnd = a_idx_per_frame * tEnd + b;
+      
+      const yAtStartPx = (yAtStart / numPoints) * scaledDataHeight;
+      const yAtEndPx = (yAtEnd / numPoints) * scaledDataHeight;
+      
+      ctx.moveTo(xStart, yAtStartPx);
+      ctx.lineTo(xEnd, yAtEndPx);
+      ctx.stroke();
+      
+      // Draw direction arrow
+      const arrowLength = 20;
+      const arrowX = xEnd;
+      const arrowY = yAtEndPx;
+      const angle = Math.atan2(yAtEndPx - yAtStartPx, xEnd - xStart);
+      
+      ctx.beginPath();
+      ctx.moveTo(arrowX, arrowY);
+      ctx.lineTo(
+        arrowX - arrowLength * Math.cos(angle - Math.PI / 6),
+        arrowY - arrowLength * Math.sin(angle - Math.PI / 6)
+      );
+      ctx.moveTo(arrowX, arrowY);
+      ctx.lineTo(
+        arrowX - arrowLength * Math.cos(angle + Math.PI / 6),
+        arrowY - arrowLength * Math.sin(angle + Math.PI / 6)
+      );
+      ctx.stroke();
+    }
+  }
   
   // Draw current frame marker if provided
   if (props.currentFrame !== null && props.currentFrame !== undefined && props.currentFrame >= 0 && props.currentFrame < width) {

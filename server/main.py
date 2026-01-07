@@ -4,10 +4,10 @@ from pathlib import Path
 
 import cv2
 import json
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile, Request
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from brotli_asgi import BrotliMiddleware
 
 import numpy as np
@@ -21,10 +21,22 @@ from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .database import init_database
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
-from .models import Analysis, AnalysisParameters, FrameData, HeatmapMeta, Video, VideoMetadata
+from .models import (
+    Analysis,
+    AnalysisParameters,
+    FrameData,
+    HeatmapMeta,
+    Video,
+    VideoMetadata,
+    WaveDetectionParameters,
+    WaveDetectionResult,
+    WaveEvent,
+    WaveEventLineFit,
+)
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
+from .wave_detection import detect_waves, calculate_physical_spacing
 
 # Initialize database on startup
 init_database()
@@ -132,85 +144,6 @@ async def upload_video(file: UploadFile = File(...)):
 def list_videos():
     """List all available videos."""
     return VideoStorage.list_videos()
-
-
-@app.get("/api/videos/{video_id}/file")
-async def get_video_file(video_id: str, request: Request):
-    """Serve video file with optimized range request support."""
-    video_path = VideoStorage.get_video_path(video_id)
-    if not video_path or not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video not found")
-    
-    file_size = video_path.stat().st_size
-    range_header = request.headers.get("range")
-    
-    # If no range header, serve the entire file
-    if not range_header:
-        return FileResponse(
-            video_path,
-            media_type="video/mp4",
-            filename=video_path.name,
-            headers={
-                "Accept-Ranges": "bytes",
-                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
-            },
-        )
-    
-    # Parse range header (e.g., "bytes=0-1023" or "bytes=1024-")
-    try:
-        range_match = range_header.replace("bytes=", "").split("-")
-        start = int(range_match[0]) if range_match[0] else 0
-        end = int(range_match[1]) if range_match[1] else file_size - 1
-    except (ValueError, IndexError):
-        raise HTTPException(status_code=416, detail="Invalid range header")
-    
-    # Validate range
-    if start < 0 or start >= file_size or end < start:
-        raise HTTPException(
-            status_code=416,
-            detail="Range Not Satisfiable",
-            headers={"Content-Range": f"bytes */{file_size}"},
-        )
-    
-    # Clamp end to file size
-    end = min(end, file_size - 1)
-    content_length = end - start + 1
-    
-    # Async generator to stream file chunks efficiently
-    async def generate():
-        chunk_size = 2 * 1024 * 1024  # 2MB chunks for efficient streaming (larger = fewer file opens)
-        # Use thread pool for file I/O to avoid blocking the event loop
-        def read_chunk(file_path, offset, size):
-            with open(file_path, "rb") as f:
-                f.seek(offset)
-                return f.read(size)
-        
-        remaining = content_length
-        current_offset = start
-        while remaining > 0:
-            read_size = min(chunk_size, remaining)
-            # Run file I/O in thread pool to keep event loop responsive
-            # OS file cache will make subsequent opens fast
-            chunk = await asyncio.to_thread(read_chunk, video_path, current_offset, read_size)
-            if not chunk:
-                break
-            yield chunk
-            remaining -= len(chunk)
-            current_offset += len(chunk)
-    
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Content-Type": "video/mp4",
-        "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
-    }
-    
-    return StreamingResponse(
-        generate(),
-        status_code=206,
-        headers=headers,
-    )
 
 
 @app.get("/api/videos/{video_id}/metadata", response_model=VideoMetadata)
@@ -868,6 +801,192 @@ def save_video_settings(video_id: str, settings: dict):
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
 
 
+@app.post("/api/analysis/{analysis_id}/detect-waves", response_model=WaveDetectionResult)
+async def detect_waves_endpoint(
+    analysis_id: str,
+    parameters: WaveDetectionParameters | None = Body(None),
+):
+    """Trigger wave detection for a completed analysis."""
+    import logging
+    logger = logging.getLogger('uvicorn.error')
+    
+    logger.info(f"Wave detection requested for analysis {analysis_id}")
+    
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Check if analysis is completed
+    if analysis.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analysis must be completed to detect waves. Current status: {analysis.status}"
+        )
+    
+    # Use provided parameters or defaults
+    if parameters is None:
+        parameters = WaveDetectionParameters()
+        logger.info("Using default wave detection parameters")
+    else:
+        logger.info(f"Using custom parameters: sigma=({parameters.smooth_sigma_y}, {parameters.smooth_sigma_t}), "
+                   f"percentile={parameters.threshold_percentile}, min_pixels={parameters.min_pixels}")
+    
+    # Get video metadata for FPS
+    video_path = VideoStorage.get_video_path(analysis.video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    try:
+        video_metadata = get_video_metadata(video_path)
+        fps = video_metadata.fps
+        dt = 1.0 / fps if fps > 0 else 1.0
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get video metadata: {str(e)}")
+    
+    # Build heatmap matrix
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    matrix, _, _ = db.build_heatmap_matrix(analysis_id)
+    
+    if matrix.size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No heatmap data available. Analysis must have measurement point pairs (mpp) data."
+        )
+    
+    # Transpose matrix: build_heatmap_matrix returns (frames, points), but detect_waves expects (points, frames)
+    # Actually, looking at the code, build_heatmap_matrix returns (num_frames, num_points)
+    # But detect_waves expects (Y, T) where Y is point-pair index and T is frame index
+    # So we need to transpose: (frames, points) -> (points, frames)
+    thickness = matrix.T  # Shape: (num_points, num_frames)
+    
+    # Calculate physical spacing if not provided
+    dy = parameters.dy
+    if dy is None:
+        dy = calculate_physical_spacing(analysis_id, results_storage)
+    
+    # Run wave detection
+    try:
+        events, mask_c, lbl = detect_waves(
+            thickness=thickness,
+            dt=dt,
+            dy=dy,
+            thr=parameters.threshold,
+            percentile=parameters.threshold_percentile,
+            smooth_sigma=(parameters.smooth_sigma_y, parameters.smooth_sigma_t),
+            min_pixels=parameters.min_pixels,
+            open_iters=parameters.open_iters,
+            close_iters=parameters.close_iters,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Wave detection failed: {str(e)}")
+    
+    # Store events in database
+    try:
+        db.save_wave_events(analysis_id, events)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save wave events: {str(e)}")
+    
+    # Retrieve events from database to get proper IDs
+    events_dict = db.get_wave_events(analysis_id)
+    
+    # Convert events to WaveEvent models
+    wave_events = []
+    for event in events_dict:
+        wave_events.append(WaveEvent(
+            id=event["id"],
+            label=event["label"],
+            n_pixels=event["n_pixels"],
+            threshold_used=event["threshold_used"],
+            t_range_frames=event["t_range_frames"],
+            y_range_idx=event["y_range_idx"],
+            duration_s=event["duration_s"],
+            height_phys=event["height_phys"],
+            velocity_phys_per_s=event["velocity_phys_per_s"],
+            line_fit=WaveEventLineFit(
+                a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
+                b=event["line_fit"]["b"],
+            ),
+            area_exact=event["area_exact"],
+            area_triangle=event["area_triangle"],
+            created_at=event["created_at"],
+        ))
+    
+    return WaveDetectionResult(
+        events=wave_events,
+        parameters_used=parameters,
+        total_events=len(wave_events),
+    )
+
+
+@app.get("/api/analysis/{analysis_id}/waves", response_model=WaveDetectionResult)
+def get_wave_events(analysis_id: str):
+    """Get wave detection results for an analysis."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Check if wave events exist
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    
+    if not db.wave_events_exist(analysis_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Wave detection has not been run for this analysis. Use POST /api/analysis/{analysis_id}/detect-waves to run detection."
+        )
+    
+    # Get events from database
+    events_dict = db.get_wave_events(analysis_id)
+    
+    # Convert to WaveEvent models
+    wave_events = []
+    for event in events_dict:
+        wave_events.append(WaveEvent(
+            id=event["id"],
+            label=event["label"],
+            n_pixels=event["n_pixels"],
+            threshold_used=event["threshold_used"],
+            t_range_frames=event["t_range_frames"],
+            y_range_idx=event["y_range_idx"],
+            duration_s=event["duration_s"],
+            height_phys=event["height_phys"],
+            velocity_phys_per_s=event["velocity_phys_per_s"],
+            line_fit=WaveEventLineFit(
+                a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
+                b=event["line_fit"]["b"],
+            ),
+            area_exact=event["area_exact"],
+            area_triangle=event["area_triangle"],
+            created_at=event["created_at"],
+        ))
+    
+    # For parameters_used, we'll use defaults since we don't store them
+    # In a production system, you might want to store parameters with events
+    parameters_used = WaveDetectionParameters()
+    
+    return WaveDetectionResult(
+        events=wave_events,
+        parameters_used=parameters_used,
+        total_events=len(wave_events),
+    )
+
+
+@app.delete("/api/analysis/{analysis_id}/waves")
+def clear_wave_events(analysis_id: str):
+    """Clear wave detection results for an analysis."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    
+    db.clear_wave_events(analysis_id)
+    
+    return {"message": "Wave events cleared successfully"}
+
+
 @app.delete("/api/analysis/{analysis_id}")
 async def delete_analysis(analysis_id: str):
     """Delete an analysis and its results."""
@@ -879,7 +998,7 @@ async def delete_analysis(analysis_id: str):
     if analysis.status == "processing":
         await task_manager.stop_analysis(analysis_id)
     
-    # Delete from database (this will cascade delete frames)
+    # Delete from database (this will cascade delete frames and wave_events)
     analysis_storage = AnalysisStorage()
     analysis_storage.delete_analysis(analysis_id)
     

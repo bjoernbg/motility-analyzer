@@ -47,11 +47,36 @@ def init_database() -> None:
         )
     """)
     
+    # Create wave_events table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS wave_events (
+            id TEXT PRIMARY KEY,
+            analysis_id TEXT NOT NULL,
+            event_label INTEGER NOT NULL,
+            n_pixels INTEGER NOT NULL,
+            threshold_used REAL NOT NULL,
+            t_range_start INTEGER NOT NULL,
+            t_range_end INTEGER NOT NULL,
+            y_range_start INTEGER NOT NULL,
+            y_range_end INTEGER NOT NULL,
+            duration_s REAL NOT NULL,
+            height_phys REAL NOT NULL,
+            velocity_phys_per_s REAL NOT NULL,
+            line_fit_a REAL NOT NULL,
+            line_fit_b REAL NOT NULL,
+            area_exact REAL NOT NULL,
+            area_triangle REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+        )
+    """)
+    
     # Create indexes for efficient queries
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_id ON analyses(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON analyses(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON analyses(created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_frames_analysis_id ON frames(analysis_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wave_events_analysis_id ON wave_events(analysis_id)")
     
     conn.commit()
     conn.close()
@@ -595,6 +620,121 @@ class AnalysisDB:
                 max_val = 0.0
             
             return matrix, min_val, max_val
+        finally:
+            conn.close()
+    
+    def save_wave_events(self, analysis_id: str, events: list[dict]) -> None:
+        """Store wave events for an analysis."""
+        from uuid import uuid4
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Clear existing events for this analysis
+            cursor.execute("DELETE FROM wave_events WHERE analysis_id = ?", (analysis_id,))
+            
+            # Insert new events
+            created_at = datetime.now().isoformat()
+            for event in events:
+                event_id = str(uuid4())
+                t_range = event.get("t_range_frames", (0, 0))
+                y_range = event.get("y_range_idx", (0, 0))
+                line_fit = event.get("line_fit", {})
+                
+                cursor.execute("""
+                    INSERT INTO wave_events (
+                        id, analysis_id, event_label, n_pixels, threshold_used,
+                        t_range_start, t_range_end, y_range_start, y_range_end,
+                        duration_s, height_phys, velocity_phys_per_s,
+                        line_fit_a, line_fit_b, area_exact, area_triangle, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    event_id,
+                    analysis_id,
+                    event.get("label", 0),
+                    event.get("n_pixels", 0),
+                    event.get("threshold_used", 0.0),
+                    t_range[0],
+                    t_range[1],
+                    y_range[0],
+                    y_range[1],
+                    event.get("duration_s", 0.0),
+                    event.get("height_phys", 0.0),
+                    event.get("velocity_phys_per_s", 0.0),
+                    line_fit.get("a_idx_per_frame", 0.0),
+                    line_fit.get("b", 0.0),
+                    event.get("area_exact", 0.0),
+                    event.get("area_triangle", 0.0),
+                    created_at,
+                ))
+            
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def get_wave_events(self, analysis_id: str) -> list[dict]:
+        """Retrieve wave events for an analysis."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT 
+                    id, event_label, n_pixels, threshold_used,
+                    t_range_start, t_range_end, y_range_start, y_range_end,
+                    duration_s, height_phys, velocity_phys_per_s,
+                    line_fit_a, line_fit_b, area_exact, area_triangle, created_at
+                FROM wave_events
+                WHERE analysis_id = ?
+                ORDER BY t_range_start
+            """, (analysis_id,))
+            
+            rows = cursor.fetchall()
+            events = []
+            for row in rows:
+                events.append({
+                    "id": row["id"],
+                    "label": int(row["event_label"]),
+                    "n_pixels": int(row["n_pixels"]),
+                    "threshold_used": float(row["threshold_used"]),
+                    "t_range_frames": (int(row["t_range_start"]), int(row["t_range_end"])),
+                    "y_range_idx": (int(row["y_range_start"]), int(row["y_range_end"])),
+                    "duration_s": float(row["duration_s"]),
+                    "height_phys": float(row["height_phys"]),
+                    "velocity_phys_per_s": float(row["velocity_phys_per_s"]),
+                    "line_fit": {
+                        "a_idx_per_frame": float(row["line_fit_a"]),
+                        "b": float(row["line_fit_b"]),
+                    },
+                    "area_exact": float(row["area_exact"]),
+                    "area_triangle": float(row["area_triangle"]),
+                    "created_at": row["created_at"],
+                })
+            
+            return events
+        finally:
+            conn.close()
+    
+    def clear_wave_events(self, analysis_id: str) -> None:
+        """Clear wave events for an analysis."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("DELETE FROM wave_events WHERE analysis_id = ?", (analysis_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    
+    def wave_events_exist(self, analysis_id: str) -> bool:
+        """Check if wave events exist for an analysis."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("SELECT 1 FROM wave_events WHERE analysis_id = ? LIMIT 1", (analysis_id,))
+            return cursor.fetchone() is not None
         finally:
             conn.close()
 

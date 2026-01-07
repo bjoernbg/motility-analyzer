@@ -1,36 +1,89 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
+import WaveDetectionControls from './WaveDetectionControls.vue';
+import WaveEventsList from './WaveEventsList.vue';
+import HeatmapViewer from './HeatmapViewer.vue';
 
 const store = useAnalysisStore();
 
-const globalData = computed(() => {
-  return store.currentAnalysis?.global_data || null;
+const showWaveOverlays = ref(false);
+
+// Computed statistics
+const videoDuration = computed(() => {
+  return store.currentVideo?.metadata?.duration ?? null;
 });
 
-const hasGlobalData = computed(() => {
-  return globalData.value !== null && Object.keys(globalData.value).length > 0;
+const videoFrames = computed(() => {
+  return store.currentVideo?.metadata?.total_frames ?? null;
 });
 
-function formatKey(key: string): string {
-  return key
-    .split('_')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
+const numTrackingPointPairs = computed(() => {
+  return store.currentAnalysis?.parameters?.num_tracking_points ?? null;
+});
 
-function formatValue(value: unknown): string {
-  if (typeof value === 'number') {
-    if (Number.isInteger(value)) {
-      return value.toString();
-    }
-    return value.toFixed(2);
+const totalContractionEvents = computed(() => {
+  return store.waveEvents.length;
+});
+
+const videoFps = computed(() => {
+  return store.currentVideo?.metadata?.fps ?? null;
+});
+
+// Calculate events per minute with deviations
+const eventsPerMinuteWithDeviation = computed(() => {
+  const duration = videoDuration.value;
+  const fps = videoFps.value;
+  const events = store.waveEvents;
+  
+  if (duration === null || fps === null || events.length === 0 || duration <= 0) {
+    return null;
   }
-  if (typeof value === 'object' && value !== null) {
-    return JSON.stringify(value, null, 2);
+  
+  // Calculate overall events per minute
+  const durationMinutes = duration / 60;
+  const overallEventsPerMinute = events.length / durationMinutes;
+  
+  // Calculate deviations by dividing video into 1-minute windows
+  const windowSizeMinutes = 1.0;
+  const numWindows = Math.max(1, Math.ceil(durationMinutes / windowSizeMinutes));
+  const eventsPerWindow: number[] = [];
+  
+  // Initialize window counts
+  for (let i = 0; i < numWindows; i++) {
+    eventsPerWindow.push(0);
   }
-  return String(value);
-}
+  
+  // Count events in each window based on their start time
+  for (const event of events) {
+    const [startFrame] = event.t_range_frames;
+    const startTimeSeconds = startFrame / fps;
+    const windowIndex = Math.min(
+      Math.floor(startTimeSeconds / (windowSizeMinutes * 60)),
+      numWindows - 1
+    );
+    eventsPerWindow[windowIndex]++;
+  }
+  
+  // Convert to events per minute for each window
+  const eventsPerMinutePerWindow = eventsPerWindow.map(count => count / windowSizeMinutes);
+  
+  // Calculate mean and standard deviation from per-window rates
+  const mean = eventsPerMinutePerWindow.reduce((sum, val) => sum + val, 0) / eventsPerMinutePerWindow.length;
+  const variance = eventsPerMinutePerWindow.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / eventsPerMinutePerWindow.length;
+  const stdDev = Math.sqrt(variance);
+  
+  // Use overall rate as the mean (more accurate for short videos with few windows)
+  // The overall rate is the true mean: total events / total time
+  return {
+    mean: overallEventsPerMinute,
+    stdDev: stdDev,
+  };
+});
+
+const hasResults = computed(() => {
+  return store.currentAnalysis !== null;
+});
 </script>
 
 <template>
@@ -55,20 +108,40 @@ function formatValue(value: unknown): string {
       Analysis was cancelled.
     </div>
     
-    <div v-else-if="!hasGlobalData" class="no-results">
+    <div v-else-if="!hasResults" class="no-results">
       No results available yet.
     </div>
     
     <div v-else class="results-content">
       <h3>Global Statistics</h3>
       <div class="stats-grid">
-        <div
-          v-for="(value, key) in globalData"
-          :key="key"
-          class="stat-item"
-        >
-          <div class="stat-label">{{ formatKey(key) }}</div>
-          <div class="stat-value">{{ formatValue(value) }}</div>
+        <div v-if="videoDuration !== null || videoFrames !== null" class="stat-item">
+          <div class="stat-label">Video Duration & Frames</div>
+          <div class="stat-value">
+            <span v-if="videoDuration !== null">{{ videoDuration.toFixed(2) }}s</span>
+            <span v-if="videoDuration !== null && videoFrames !== null"> / </span>
+            <span v-if="videoFrames !== null">{{ videoFrames }} frames</span>
+          </div>
+        </div>
+        
+        <div v-if="numTrackingPointPairs !== null" class="stat-item">
+          <div class="stat-label">Number of Tracking Point Pairs</div>
+          <div class="stat-value">{{ numTrackingPointPairs }}</div>
+        </div>
+        
+        <div class="stat-item">
+          <div class="stat-label">Total Number of Contraction Events</div>
+          <div class="stat-value">{{ totalContractionEvents }}</div>
+        </div>
+        
+        <div class="stat-item">
+          <div class="stat-label">Contraction Events per Minute (incl. error bars)</div>
+          <div class="stat-value">
+            <span v-if="eventsPerMinuteWithDeviation !== null">
+              {{ eventsPerMinuteWithDeviation.mean.toFixed(2) }} ± {{ eventsPerMinuteWithDeviation.stdDev.toFixed(2) }}
+            </span>
+            <span v-else>N/A</span>
+          </div>
         </div>
       </div>
       
@@ -78,6 +151,31 @@ function formatValue(value: unknown): string {
           {{ store.currentAnalysis.processed_frames || store.liveFrameData.size || 0 }} frames analyzed.
           View overlays on the video player.
         </p>
+      </div>
+      
+      <div v-if="store.currentAnalysis" class="wave-detection-section">
+        <WaveDetectionControls />
+        <div class="mt-4">
+          <WaveEventsList />
+        </div>
+      </div>
+      
+      <div v-if="store.currentAnalysis" class="heatmap-section">
+        <h3>Thickness Heatmap</h3>
+        <div class="mb-2">
+          <label class="flex items-center gap-2">
+            <input
+              v-model="showWaveOverlays"
+              type="checkbox"
+              class="mr-1"
+            />
+            Show wave overlays
+          </label>
+        </div>
+        <HeatmapViewer
+          :analysis-id="store.currentAnalysis.id"
+          :show-wave-overlays="showWaveOverlays"
+        />
       </div>
     </div>
   </div>
@@ -173,6 +271,18 @@ h3 {
 .frame-info p {
   margin: 0;
   color: var(--text-secondary);
+}
+
+.wave-detection-section {
+  margin-top: 2rem;
+}
+
+.heatmap-section {
+  margin-top: 2rem;
+}
+
+.heatmap-section h3 {
+  margin-bottom: 0.5rem;
 }
 </style>
 
