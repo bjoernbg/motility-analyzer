@@ -15,6 +15,30 @@
           Heatmap
         </button>
       </div>
+      <div v-if="viewMode === 'video' && hasFrameData" class="overlay-toggle">
+        <ButtonGroup>
+          <Button
+            :variant="showCanvasOverlay ? 'default' : 'outline'"
+            @click="showCanvasOverlay = !showCanvasOverlay"
+            size="sm"
+            title="Display detected paths"
+          >
+            <Icon name="lucide:chart-scatter" size="1.1em" />
+          </Button>
+        </ButtonGroup>
+      </div>
+      <div v-if="viewMode === 'heatmap' && store.contractionEvents.length > 0" class="contraction-overlay-toggle">
+        <ButtonGroup>
+          <Button
+            :variant="showContractionOverlays ? 'default' : 'outline'"
+            @click="showContractionOverlays = !showContractionOverlays"
+            size="sm"
+            title="Display detected contraction waves"
+          >
+            <Icon name="lucide:chart-scatter" size="1.1em" />
+          </Button>
+        </ButtonGroup>
+      </div>
     </div>
 
     <div class="main-view-container">
@@ -23,12 +47,14 @@
         <!-- Use v-show to keep video loaded when switching views -->
         <VideoPlayer
           v-show="viewMode === 'video'"
+          v-model:show-canvas-overlay="showCanvasOverlay"
         />
         <HeatmapViewer
           v-if="viewMode === 'heatmap' && store.currentAnalysis"
           :key="`main-heatmap-${store.currentAnalysis.id}`"
           :analysis-id="store.currentAnalysis.id"
           :current-frame="store.currentFrame"
+          :show-contraction-overlays="showContractionOverlays"
           @frame-click="handleFrameClick"
         />
         <div v-else-if="viewMode === 'heatmap' && !store.currentAnalysis" class="no-heatmap">
@@ -67,11 +93,18 @@ import { ref, computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import VideoPlayer from './VideoPlayer.vue';
 import HeatmapViewer from './HeatmapViewer.vue';
+import { ButtonGroup } from './ui/button-group';
+import { Button } from './ui/button';
+import { Icon } from './ui/icon';
 
 const store = useAnalysisStore();
 
 const viewMode = ref<'video' | 'heatmap'>('video');
 const highlightedPoint = ref<{ frame: number; pointIndex: number } | null>(null);
+const showContractionOverlays = ref(false);
+const showCanvasOverlay = ref(true);
+
+const hasFrameData = computed(() => store.liveFrameData.size > 0);
 
 const showOverlay = computed(() => {
   if (viewMode.value === 'video') {
@@ -81,9 +114,14 @@ const showOverlay = computed(() => {
   }
 });
 
-function handleFrameClick(frame: number, pointIndex: number) {
+async function handleFrameClick(frame: number, pointIndex: number) {
   // Store the highlighted point for the mini video overlay
   highlightedPoint.value = { frame, pointIndex };
+
+  // Ensure frame data is loaded for the highlighted frame (needed for overlay visualization)
+  if (store.currentAnalysis) {
+    await store.getFrameData(frame);
+  }
 
   // Seek to frame using centralized store action
   store.seekToFrame(frame);
@@ -99,7 +137,8 @@ function handleFrameClick(frame: number, pointIndex: number) {
 
 .view-toggle-container {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
   padding: 0.5rem;
 }
 
@@ -127,6 +166,12 @@ function handleFrameClick(frame: number, pointIndex: number) {
   background: var(--color-primary-600);
   color: white;
   border-color: var(--color-primary-600);
+}
+
+.contraction-overlay-toggle,
+.overlay-toggle {
+  display: flex;
+  align-items: center;
 }
 
 .main-view-container {

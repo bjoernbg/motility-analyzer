@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Motility Analyzer is a full-stack video analysis application for detecting and tracking biological motility patterns in microscopy videos. The system processes videos frame-by-frame to detect edges, track movement, generate heatmaps, and detect wave-like patterns in the data.
+Motility Analyzer is a full-stack video analysis application for detecting and tracking biological motility patterns in microscopy videos. The system processes videos frame-by-frame to detect edges, track movement, generate heatmaps, and detect contraction patterns in the data.
 
 **Tech Stack:**
 - **Backend:** FastAPI (Python 3.12+), OpenCV, NumPy, SciPy, Numba
 - **Frontend:** Vue 3 + TypeScript, Vite, Pinia, TailwindCSS
-- **Database:** SQLite (for analysis metadata, frame results, wave events)
+- **Database:** SQLite (for analysis metadata, frame results, contraction events)
 - **Storage:** File-based storage for videos and cached results
 
 ## Development Commands
@@ -76,11 +76,11 @@ The backend is a monolithic FastAPI application (`server/main.py`) with domain-s
    - `edge_detection_silhouette.py` - Mask-based segmentation
    - `edge_utils.py` - Shared utilities (path smoothing, clipping)
 5. **Path calculation** → `analysis.py` (center path, measurement point pairs)
-6. **Data storage** → `database.py` (SQLite: analyses, frames, wave_events)
-7. **Wave detection** → `wave_detection.py` (spatiotemporal pattern detection on heatmaps)
+6. **Data storage** → `database.py` (SQLite: analyses, frames, contraction_events)
+7. **Contraction detection** → `contraction_detection.py` (spatiotemporal pattern detection on heatmaps)
 
 **Key Modules:**
-- `models.py` - Pydantic models for API contracts (Video, Analysis, FrameData, WaveEvent, etc.)
+- `models.py` - Pydantic models for API contracts (Video, Analysis, FrameData, ContractionEvent, etc.)
 - `video_pool.py` - Efficient video frame extraction with handle pooling and caching
 - `horizontal_window_detection.py` - Auto-detection of analysis region boundaries
 - `config.py` - Configuration constants (file paths, size limits)
@@ -91,19 +91,19 @@ The backend is a monolithic FastAPI application (`server/main.py`) with domain-s
 3. Each frame: read → edge detection → path calculation → measurement points → store in DB
 4. Results stored per-frame in SQLite `frames` table (JSON serialized)
 5. Heatmap built on-demand from stored measurement point pairs (mpp data)
-6. Wave detection runs post-analysis on the heatmap matrix
+6. Contraction detection runs post-analysis on the heatmap matrix
 
 **Database Schema:**
 - `analyses` - Analysis metadata (video_id, parameters, status, progress)
 - `frames` - Per-frame results (analysis_id, frame_number, frame_data JSON)
-- `wave_events` - Detected waves (analysis_id, temporal/spatial ranges, velocity, areas)
+- `contraction_events` - Detected contractions (analysis_id, temporal/spatial ranges, velocity, areas)
 
 ### Frontend Structure
 
 Vue 3 application with TypeScript, using Composition API and `<script setup>`:
 
 **State Management (Pinia):**
-- `stores/analysis.ts` - Central store for analysis state, video metadata, frame data, wave events
+- `stores/analysis.ts` - Central store for analysis state, video metadata, frame data, contraction events
 
 **Key Components:**
 - `VideoSelector.vue` - Video upload and selection UI
@@ -111,9 +111,9 @@ Vue 3 application with TypeScript, using Composition API and `<script setup>`:
 - `MediaController.vue` - Playback controls (play/pause/seek)
 - `AnalysisParams.vue` - Large form for edge detection parameters (method-specific fields)
 - `AnalysisResults.vue` - Analysis progress, controls (start/stop/resume/restart)
-- `HeatmapViewer.vue` - Heatmap visualization with wave overlays
-- `WaveDetectionControls.vue` - Wave detection parameter controls
-- `WaveEventsList.vue` - List of detected wave events with statistics
+- `HeatmapViewer.vue` - Heatmap visualization with contraction overlays
+- `ContractionDetectionControls.vue` - Contraction detection parameter controls
+- `ContractionEventsList.vue` - List of detected contraction events with statistics
 
 **Data Flow:**
 1. User selects video → metadata fetched → stored in Pinia
@@ -121,7 +121,7 @@ Vue 3 application with TypeScript, using Composition API and `<script setup>`:
 3. Start analysis → poll status endpoint for progress updates
 4. View results → fetch frame data in chunks, render overlays on video
 5. Generate heatmap → fetch binary heatmap data, render with Canvas
-6. Detect waves → POST to wave detection endpoint, overlay events on heatmap
+6. Detect contractions → POST to contraction detection endpoint, overlay events on heatmap
 
 **API Client:**
 - `lib/api.ts` - Typed API wrapper with request cancellation (AbortController)
@@ -136,8 +136,8 @@ Vue 3 application with TypeScript, using Composition API and `<script setup>`:
 - `/api/videos/*` - Video management (upload, list, stream, metadata)
 - `/api/analysis/*` - Analysis lifecycle (start, stop, resume, restart, status, frames)
 - `/api/analysis/{id}/heatmap/*` - Heatmap data (metadata, raw binary Float32Array)
-- `/api/analysis/{id}/detect-waves` - POST to trigger wave detection
-- `/api/analysis/{id}/waves` - GET wave detection results
+- `/api/analysis/{id}/detect-contractions` - POST to trigger contraction detection
+- `/api/analysis/{id}/contractions` - GET contraction detection results
 - `/api/videos/{id}/settings` - GET/PUT saved analysis parameters per video
 
 **CORS Configuration:**
@@ -236,7 +236,7 @@ Analysis parameters are saved per-video in JSON files alongside videos:
 - Structure: `{"parameters": {...}, "metadata": {"frame_multiplier": 1.0}}`
 - `frame_multiplier` accounts for downsampled videos (seek frame N → actual frame N*multiplier)
 
-### Wave Detection Algorithm
+### Contraction Detection Algorithm
 
 Post-analysis feature that operates on heatmap data:
 1. Build heatmap matrix from stored measurement point pairs
@@ -248,7 +248,7 @@ Post-analysis feature that operates on heatmap data:
 7. Filter by minimum pixel count
 8. Calculate statistics: velocity, duration, height, area (exact + triangle approximation)
 9. Fit line to each event (slope = velocity)
-10. Store in `wave_events` table with foreign key to analysis
+10. Store in `contraction_events` table with foreign key to analysis
 
 ## Common Tasks
 

@@ -2,12 +2,12 @@
 import { ref, computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import { Button } from './ui/button';
-import type { WaveDetectionParameters } from '../lib/api';
+import type { ContractionDetectionParameters } from '../lib/api';
 
 const store = useAnalysisStore();
 
 const showAdvanced = ref(false);
-const parameters = ref<WaveDetectionParameters>({
+const parameters = ref<ContractionDetectionParameters>({
   smooth_sigma_y: 1.0,
   smooth_sigma_t: 1.0,
   threshold_percentile: 10.0,
@@ -16,72 +16,72 @@ const parameters = ref<WaveDetectionParameters>({
   min_pixels: 200,
 });
 
-const canDetectWaves = computed(() => {
-  return store.currentAnalysis?.status === 'completed' && !store.isDetectingWaves;
+const canDetectContractions = computed(() => {
+  return store.currentAnalysis?.status === 'completed' && !store.isDetectingContractions;
 });
 
-const hasWaveEvents = computed(() => {
-  return store.waveEvents.length > 0;
+const hasContractionEvents = computed(() => {
+  return store.contractionEvents.length > 0;
 });
 
-async function handleDetectWaves() {
+async function handleDetectContractions() {
   if (!store.currentAnalysis) return;
   
   try {
-    await store.detectWavesForAnalysis(store.currentAnalysis.id, parameters.value);
+    await store.detectContractionsForAnalysis(store.currentAnalysis.id, parameters.value);
   } catch (err) {
-    console.error('Failed to detect waves:', err);
+    console.error('Failed to detect contractions:', err);
   }
 }
 
-async function handleClearWaves() {
+async function handleClearContractions() {
   if (!store.currentAnalysis) return;
   
-  if (confirm('Clear all wave detection results?')) {
+  if (confirm('Clear all contraction detection results?')) {
     try {
-      await store.clearWaveEventsForAnalysis(store.currentAnalysis.id);
+      await store.clearContractionEventsForAnalysis(store.currentAnalysis.id);
     } catch (err) {
-      console.error('Failed to clear wave events:', err);
+      console.error('Failed to clear contraction events:', err);
     }
   }
 }
 </script>
 
 <template>
-  <div class="wave-detection-controls">
+  <div class="contraction-detection-controls">
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-lg font-semibold">Wave Detection</h3>
+      <h3 class="text-lg font-semibold">Contraction Detection</h3>
       <div class="flex gap-2">
         <Button
-          v-if="hasWaveEvents"
+          v-if="hasContractionEvents"
           variant="outline"
           size="sm"
-          @click="handleClearWaves"
+          @click="handleClearContractions"
         >
           Clear Results
         </Button>
         <Button
-          :disabled="!canDetectWaves"
-          @click="handleDetectWaves"
+          :disabled="!canDetectContractions"
+          @click="handleDetectContractions"
         >
-          {{ hasWaveEvents ? 'Re-detect Waves' : 'Detect Waves' }}
+          {{ hasContractionEvents ? 'Re-detect Contractions' : 'Detect Contractions' }}
         </Button>
       </div>
     </div>
 
-    <div v-if="store.isDetectingWaves" class="text-sm text-muted-foreground mb-4">
-      Detecting waves...
+    <div v-if="store.isDetectingContractions" class="text-sm text-muted-foreground mb-4">
+      Detecting contractions...
     </div>
 
-    <div v-if="store.waveDetectionError" class="text-sm text-destructive mb-4">
-      Error: {{ store.waveDetectionError }}
+    <div v-if="store.contractionDetectionError" class="text-sm text-destructive mb-4">
+      Error: {{ store.contractionDetectionError }}
     </div>
 
-    <div v-if="hasWaveEvents" class="text-sm text-muted-foreground mb-4">
-      Detected {{ store.waveEvents.length }} wave event(s)
+    <div v-if="hasContractionEvents" class="text-sm text-muted-foreground mb-4">
+      Detected {{ store.contractionEvents.length }} contraction event(s)
     </div>
 
-    <details v-if="!hasWaveEvents || showAdvanced" class="mb-4">
+    <details v-if="!hasContractionEvents || showAdvanced" class="mb-4">
       <summary class="cursor-pointer text-sm font-medium mb-2">
         Advanced Parameters
       </summary>
@@ -135,7 +135,7 @@ async function handleClearWaves() {
 </template>
 
 <style scoped>
-.wave-detection-controls {
+.contraction-detection-controls {
   padding: 1rem;
   border: 1px solid hsl(var(--border));
   border-radius: 0.5rem;

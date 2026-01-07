@@ -13,6 +13,11 @@ const props = defineProps<{
   overlay?: boolean;
   highlightFrame?: number | null;
   highlightPointIndex?: number | null;
+  showCanvasOverlay?: boolean;
+}>();
+
+const emit = defineEmits<{
+  'update:showCanvasOverlay': [value: boolean];
 }>();
 
 const store = useAnalysisStore();
@@ -80,6 +85,16 @@ watch([() => props.highlightFrame, () => props.highlightPointIndex], () => {
     // Canvas will update on next animation frame
   }
 });
+
+// Watch for frame data to become available for the highlighted frame
+watch(() => {
+  if (props.overlay && props.highlightFrame !== null && props.highlightFrame !== undefined) {
+    return store.liveFrameData.get(props.highlightFrame);
+  }
+  return null;
+}, () => {
+  // Canvas will update on next animation frame when frame data becomes available
+}, { immediate: true });
 
 onMounted(() => {
   startUpdateCanvasLoop();
@@ -443,7 +458,10 @@ const aspectRatio = computed(() => {
 
 const hasFrameData = computed(() => { return store.liveFrameData.size > 0; });
 const isDetectingWindow = ref(false); // horizontal window detection
-const showCanvasOverlay = ref(true); // Toggle for canvas overlay (default: on)
+const showCanvasOverlay = computed({
+  get: () => props.showCanvasOverlay ?? true,
+  set: (value: boolean) => emit('update:showCanvasOverlay', value),
+});
 
 // Debounced function to save settings when window changes
 const debouncedSaveSettings = debounce(async () => {
@@ -580,15 +598,6 @@ async function detectWindow() {
         </div>
       </div>
 
-      <!-- Toolbar with overlay controls (hidden in overlay mode) -->
-      <div v-if="!overlay" class="overlay-toolbar">
-        <ButtonGroup>
-          <Button :variant="showCanvasOverlay ? 'default' : 'outline'" @click="showCanvasOverlay = !showCanvasOverlay"
-            size="sm" title="Display detected paths">
-            <Icon name="lucide:chart-scatter" size="1.1em" />
-          </Button>
-        </ButtonGroup>
-      </div>
     </div>
   </div>
 </template>

@@ -435,7 +435,7 @@ export async function getHeatmapRaw(analysisId: string): Promise<ArrayBuffer> {
   }
 }
 
-export interface WaveDetectionParameters {
+export interface ContractionDetectionParameters {
   smooth_sigma_y?: number;
   smooth_sigma_t?: number;
   threshold_percentile?: number;
@@ -446,12 +446,12 @@ export interface WaveDetectionParameters {
   dy?: number | null;
 }
 
-export interface WaveEventLineFit {
+export interface ContractionEventLineFit {
   a_idx_per_frame: number;
   b: number;
 }
 
-export interface WaveEvent {
+export interface ContractionEvent {
   id: string;
   label: number;
   n_pixels: number;
@@ -461,43 +461,43 @@ export interface WaveEvent {
   duration_s: number;
   height_phys: number;
   velocity_phys_per_s: number;
-  line_fit: WaveEventLineFit;
+  line_fit: ContractionEventLineFit;
   area_exact: number;
   area_triangle: number;
   created_at: string;
 }
 
-export interface WaveDetectionResult {
-  events: WaveEvent[];
-  parameters_used: WaveDetectionParameters;
+export interface ContractionDetectionResult {
+  events: ContractionEvent[];
+  parameters_used: ContractionDetectionParameters;
   total_events: number;
 }
 
-export async function detectWaves(
+export async function detectContractions(
   analysisId: string,
-  parameters?: WaveDetectionParameters
-): Promise<WaveDetectionResult> {
-  return fetchJson<WaveDetectionResult>(
-    `/api/analysis/${encodeURIComponent(analysisId)}/detect-waves`,
+  parameters?: ContractionDetectionParameters
+): Promise<ContractionDetectionResult> {
+  return fetchJson<ContractionDetectionResult>(
+    `/api/analysis/${encodeURIComponent(analysisId)}/detect-contractions`,
     {
       method: 'POST',
       body: parameters ? JSON.stringify(parameters) : undefined,
-      endpointKey: `detectWaves:${analysisId}`,
+      endpointKey: `detectContractions:${analysisId}`,
     }
   );
 }
 
-export async function getWaveEvents(analysisId: string): Promise<WaveDetectionResult> {
-  return fetchJson<WaveDetectionResult>(
-    `/api/analysis/${encodeURIComponent(analysisId)}/waves`,
+export async function getContractionEvents(analysisId: string): Promise<ContractionDetectionResult> {
+  return fetchJson<ContractionDetectionResult>(
+    `/api/analysis/${encodeURIComponent(analysisId)}/contractions`,
     {
-      endpointKey: `waveEvents:${analysisId}`,
+      endpointKey: `contractionEvents:${analysisId}`,
     }
   );
 }
 
-export async function clearWaveEvents(analysisId: string): Promise<void> {
-  await fetchJson(`/api/analysis/${encodeURIComponent(analysisId)}/waves`, {
+export async function clearContractionEvents(analysisId: string): Promise<void> {
+  await fetchJson(`/api/analysis/${encodeURIComponent(analysisId)}/contractions`, {
     method: 'DELETE',
   });
 }

@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import WaveDetectionControls from './WaveDetectionControls.vue';
-import WaveEventsList from './WaveEventsList.vue';
-import HeatmapViewer from './HeatmapViewer.vue';
+import ContractionDetectionControls from './ContractionDetectionControls.vue';
+import ContractionEventsList from './ContractionEventsList.vue';
 
 const store = useAnalysisStore();
-
-const showWaveOverlays = ref(false);
 
 // Computed statistics
 const videoDuration = computed(() => {
@@ -23,7 +20,7 @@ const numTrackingPointPairs = computed(() => {
 });
 
 const totalContractionEvents = computed(() => {
-  return store.waveEvents.length;
+  return store.contractionEvents.length;
 });
 
 const videoFps = computed(() => {
@@ -34,7 +31,7 @@ const videoFps = computed(() => {
 const eventsPerMinuteWithDeviation = computed(() => {
   const duration = videoDuration.value;
   const fps = videoFps.value;
-  const events = store.waveEvents;
+  const events = store.contractionEvents;
   
   if (duration === null || fps === null || events.length === 0 || duration <= 0) {
     return null;
@@ -62,7 +59,9 @@ const eventsPerMinuteWithDeviation = computed(() => {
       Math.floor(startTimeSeconds / (windowSizeMinutes * 60)),
       numWindows - 1
     );
-    eventsPerWindow[windowIndex]++;
+    if (eventsPerWindow[windowIndex] !== undefined) {
+      eventsPerWindow[windowIndex]++;
+    }
   }
   
   // Convert to events per minute for each window
@@ -153,29 +152,11 @@ const hasResults = computed(() => {
         </p>
       </div>
       
-      <div v-if="store.currentAnalysis" class="wave-detection-section">
-        <WaveDetectionControls />
+      <div v-if="store.currentAnalysis" class="contraction-detection-section">
+        <ContractionDetectionControls />
         <div class="mt-4">
-          <WaveEventsList />
+          <ContractionEventsList />
         </div>
-      </div>
-      
-      <div v-if="store.currentAnalysis" class="heatmap-section">
-        <h3>Thickness Heatmap</h3>
-        <div class="mb-2">
-          <label class="flex items-center gap-2">
-            <input
-              v-model="showWaveOverlays"
-              type="checkbox"
-              class="mr-1"
-            />
-            Show wave overlays
-          </label>
-        </div>
-        <HeatmapViewer
-          :analysis-id="store.currentAnalysis.id"
-          :show-wave-overlays="showWaveOverlays"
-        />
       </div>
     </div>
   </div>
@@ -273,16 +254,8 @@ h3 {
   color: var(--text-secondary);
 }
 
-.wave-detection-section {
+.contraction-detection-section {
   margin-top: 2rem;
-}
-
-.heatmap-section {
-  margin-top: 2rem;
-}
-
-.heatmap-section h3 {
-  margin-bottom: 0.5rem;
 }
 </style>
 

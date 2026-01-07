@@ -144,8 +144,8 @@ class HeatmapMeta(BaseModel):
     fps: float = Field(description="Frames per second for time conversion")
 
 
-class WaveDetectionParameters(BaseModel):
-    """Parameters for wave detection algorithm."""
+class ContractionDetectionParameters(BaseModel):
+    """Parameters for contraction detection algorithm."""
     smooth_sigma_y: float = Field(default=1.0, ge=0.0, description="Gaussian smoothing sigma for y-axis (point-pair index)")
     smooth_sigma_t: float = Field(default=1.0, ge=0.0, description="Gaussian smoothing sigma for t-axis (frame index)")
     threshold_percentile: float = Field(default=10.0, ge=0.0, le=100.0, description="Percentile for automatic threshold (0-100)")
@@ -156,14 +156,14 @@ class WaveDetectionParameters(BaseModel):
     dy: Optional[float] = Field(default=None, ge=0.0, description="Physical spacing between point pairs in mm (auto-calculated if None)")
 
 
-class WaveEventLineFit(BaseModel):
-    """Line fit parameters for a wave event."""
+class ContractionEventLineFit(BaseModel):
+    """Line fit parameters for a contraction event."""
     a_idx_per_frame: float = Field(description="Slope in y-indices per frame")
     b: float = Field(description="Intercept in y-indices")
 
 
-class WaveEvent(BaseModel):
-    """Single wave event result."""
+class ContractionEvent(BaseModel):
+    """Single contraction event result."""
     id: str = Field(description="Unique event ID")
     label: int = Field(description="Component label from connected components")
     n_pixels: int = Field(description="Number of pixels in the event")
@@ -173,15 +173,15 @@ class WaveEvent(BaseModel):
     duration_s: float = Field(description="Duration in seconds")
     height_phys: float = Field(description="Height in physical units (mm)")
     velocity_phys_per_s: float = Field(description="Velocity in mm/s (positive = moving to higher y)")
-    line_fit: WaveEventLineFit = Field(description="Fitted line parameters")
+    line_fit: ContractionEventLineFit = Field(description="Fitted line parameters")
     area_exact: float = Field(description="Exact area below threshold in mm²·s")
     area_triangle: float = Field(description="Triangle approximation area in mm²·s")
     created_at: str = Field(description="Creation timestamp")
 
 
-class WaveDetectionResult(BaseModel):
-    """Wave detection result with all events."""
-    events: List[WaveEvent] = Field(description="List of detected wave events")
-    parameters_used: WaveDetectionParameters = Field(description="Parameters used for detection")
+class ContractionDetectionResult(BaseModel):
+    """Contraction detection result with all events."""
+    events: List[ContractionEvent] = Field(description="List of detected contraction events")
+    parameters_used: ContractionDetectionParameters = Field(description="Parameters used for detection")
     total_events: int = Field(description="Total number of events detected")
 

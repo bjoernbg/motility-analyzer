@@ -6,9 +6,9 @@ import type {
   Analysis,
   AnalysisParameters,
   FrameData,
-  WaveDetectionParameters,
-  WaveDetectionResult,
-  WaveEvent,
+  ContractionDetectionParameters,
+  ContractionDetectionResult,
+  ContractionEvent,
   ReencodeStatistics,
 } from '../lib/api';
 import {
@@ -27,9 +27,9 @@ import {
   getVideoSettings,
   saveVideoSettings,
   deleteAnalysis,
-  detectWaves,
-  getWaveEvents,
-  clearWaveEvents,
+  detectContractions,
+  getContractionEvents,
+  clearContractionEvents,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
@@ -60,10 +60,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const availableAnalyses = ref<Analysis[]>([]);
   // Flag to track when analysis switch is in progress (skip unnecessary work)
   const isAnalysisSwitching = ref(false);
-  // Wave detection state
-  const waveEvents = ref<WaveEvent[]>([]);
-  const isDetectingWaves = ref(false);
-  const waveDetectionError = ref<string | null>(null);
+  // Contraction detection state
+  const contractionEvents = ref<ContractionEvent[]>([]);
+  const isDetectingContractions = ref(false);
+  const contractionDetectionError = ref<string | null>(null);
   // Track if user is actively seeking (dragging slider, etc.) to prevent auto-seek conflicts
   const isUserSeeking = ref(false);
 
@@ -250,9 +250,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
         }
       }
       
-      // Auto-load wave events for selected analysis
+      // Auto-load contraction events for selected analysis
       if (currentAnalysis.value && currentAnalysis.value.status === 'completed') {
-        await loadWaveEvents(currentAnalysis.value.id);
+        await loadContractionEvents(currentAnalysis.value.id);
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to load video metadata';
@@ -283,7 +283,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       frameDataCache.value.clear();
       progress.value = 0;
       progressStatus.value = 'pending';
-      waveEvents.value = [];
+      contractionEvents.value = [];
 
       // Fetch updated metadata
       const metadata = await getVideoMetadata(result.video.id);
@@ -480,11 +480,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
         frameDataCache.value.delete(key);
       }
       
-      // Load wave events if analysis is completed
+      // Load contraction events if analysis is completed
       if (analysis.status === 'completed') {
-        await loadWaveEvents(analysisId);
+        await loadContractionEvents(analysisId);
       } else {
-        waveEvents.value = [];
+        contractionEvents.value = [];
       }
       
       // Start polling if analysis is still running
@@ -778,46 +778,46 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
-  async function detectWavesForAnalysis(analysisId: string, parameters?: WaveDetectionParameters) {
+  async function detectContractionsForAnalysis(analysisId: string, parameters?: ContractionDetectionParameters) {
     try {
-      isDetectingWaves.value = true;
-      waveDetectionError.value = null;
+      isDetectingContractions.value = true;
+      contractionDetectionError.value = null;
       
-      const result = await detectWaves(analysisId, parameters);
-      waveEvents.value = result.events;
+      const result = await detectContractions(analysisId, parameters);
+      contractionEvents.value = result.events;
       
       return result;
     } catch (err) {
-      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to detect waves';
+      contractionDetectionError.value = err instanceof Error ? err.message : 'Failed to detect contractions';
       throw err;
     } finally {
-      isDetectingWaves.value = false;
+      isDetectingContractions.value = false;
     }
   }
 
-  async function loadWaveEvents(analysisId: string) {
+  async function loadContractionEvents(analysisId: string) {
     try {
-      waveDetectionError.value = null;
-      const result = await getWaveEvents(analysisId);
-      waveEvents.value = result.events;
+      contractionDetectionError.value = null;
+      const result = await getContractionEvents(analysisId);
+      contractionEvents.value = result.events;
     } catch (err) {
-      // Don't set error if wave detection hasn't been run (404 is expected)
+      // Don't set error if contraction detection hasn't been run (404 is expected)
       if (err instanceof Error && err.message.includes('404')) {
-        waveEvents.value = [];
+        contractionEvents.value = [];
         return;
       }
-      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to load wave events';
-      waveEvents.value = [];
+      contractionDetectionError.value = err instanceof Error ? err.message : 'Failed to load contraction events';
+      contractionEvents.value = [];
     }
   }
 
-  async function clearWaveEventsForAnalysis(analysisId: string) {
+  async function clearContractionEventsForAnalysis(analysisId: string) {
     try {
-      await clearWaveEvents(analysisId);
-      waveEvents.value = [];
-      waveDetectionError.value = null;
+      await clearContractionEvents(analysisId);
+      contractionEvents.value = [];
+      contractionDetectionError.value = null;
     } catch (err) {
-      waveDetectionError.value = err instanceof Error ? err.message : 'Failed to clear wave events';
+      contractionDetectionError.value = err instanceof Error ? err.message : 'Failed to clear contraction events';
       throw err;
     }
   }
@@ -855,8 +855,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     totalFrames.value = null;
     error.value = null;
     currentParameters.value = null;
-    waveEvents.value = [];
-    waveDetectionError.value = null;
+    contractionEvents.value = [];
+    contractionDetectionError.value = null;
     isUserSeeking.value = false;
     stopPolling();
   }
@@ -885,9 +885,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     liveFrameData,
     currentParameters,
     availableAnalyses,
-    waveEvents,
-    isDetectingWaves,
-    waveDetectionError,
+    contractionEvents,
+    isDetectingContractions,
+    contractionDetectionError,
     isUserSeeking,
     // Computed
     isProcessing,
@@ -912,9 +912,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     restartAnalysisById,
     findMatchingAnalysis,
     deleteAnalysisById,
-    detectWavesForAnalysis,
-    loadWaveEvents,
-    clearWaveEventsForAnalysis,
+    detectContractionsForAnalysis,
+    loadContractionEvents,
+    clearContractionEventsForAnalysis,
     setUserSeeking,
     seekToFrame,
     reset,

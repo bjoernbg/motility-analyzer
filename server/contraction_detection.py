@@ -1,4 +1,4 @@
-"""Wave detection algorithm for identifying contraction waves in thickness heatmaps."""
+"""Contraction detection algorithm for identifying contraction waves in thickness heatmaps."""
 import numpy as np
 from scipy.ndimage import (
     gaussian_filter,
@@ -94,7 +94,7 @@ def clean_and_label(
     return m, lbl, n
 
 
-def fit_wave_line(coords_y: np.ndarray, coords_t: np.ndarray) -> tuple[float, float]:
+def fit_contraction_line(coords_y: np.ndarray, coords_t: np.ndarray) -> tuple[float, float]:
     """
     Fit a line y = a*t + b using least squares.
     
@@ -163,7 +163,7 @@ def calculate_physical_spacing(analysis_id: str, results_storage) -> float:
         return 1.0
 
 
-def detect_waves(
+def detect_contractions(
     thickness: np.ndarray,
     dt: float,
     dy: Optional[float] = None,
@@ -192,7 +192,7 @@ def detect_waves(
         Tuple of (events_list, cleaned_mask, labeled_array)
     """
     Y, T = thickness.shape
-    logger.info(f"Starting wave detection: input shape ({Y}, {T}) = {Y} points × {T} frames")
+    logger.info(f"Starting contraction detection: input shape ({Y}, {T}) = {Y} points × {T} frames")
     
     if dy is None:
         dy = 1.0
@@ -224,8 +224,8 @@ def detect_waves(
             filtered_count += 1
             continue
         
-        # Fit wave line
-        a, b = fit_wave_line(yy, tt)
+        # Fit contraction line
+        a, b = fit_contraction_line(yy, tt)
         
         # Bounding box and extents
         t0, t1 = int(tt.min()), int(tt.max())
@@ -264,7 +264,7 @@ def detect_waves(
     # Sort by start time
     events.sort(key=lambda e: e["t_range_frames"][0])
     
-    logger.info(f"Wave detection complete: detected {len(events)} wave event(s)")
+    logger.info(f"Contraction detection complete: detected {len(events)} contraction event(s)")
     
     return events, mask_c, lbl
 

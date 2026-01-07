@@ -57,7 +57,7 @@ const props = defineProps<{
   analysisId: string;
   currentFrame?: number | null;
   compact?: boolean;
-  showWaveOverlays?: boolean;
+  showContractionOverlays?: boolean;
 }>();
 
 const store = useAnalysisStore();
@@ -148,8 +148,8 @@ watch(() => props.analysisId, async (newId, oldId) => {
   }
 }, { immediate: false });
 
-// Re-render when wave overlays toggle or wave events change
-watch(() => [props.showWaveOverlays, store.waveEvents], () => {
+// Re-render when contraction overlays toggle or contraction events change
+watch(() => [props.showContractionOverlays, store.contractionEvents], () => {
   if (meta.value && data.value) {
     renderHeatmap();
   }
@@ -422,12 +422,12 @@ function renderHeatmap() {
   // Draw the offscreen canvas at the scaled size
   ctx.drawImage(offCanvas, 0, 0, scaledDataWidth, scaledDataHeight);
   
-  // Draw wave event overlays if enabled
-  if (props.showWaveOverlays && store.waveEvents.length > 0 && meta.value) {
+  // Draw contraction event overlays if enabled
+  if (props.showContractionOverlays && store.contractionEvents.length > 0 && meta.value) {
     const fps = meta.value.fps;
     const numPoints = meta.value.height;
     
-    for (const event of store.waveEvents) {
+    for (const event of store.contractionEvents) {
       const [tStart, tEnd] = event.t_range_frames;
       const [yStart, yEnd] = event.y_range_idx;
       
@@ -438,8 +438,8 @@ function renderHeatmap() {
       const yEndPx = (yEnd / numPoints) * scaledDataHeight;
       
       // Draw bounding box
-      ctx.strokeStyle = 'rgba(255, 255, 0, 0.6)';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+      ctx.lineWidth = 2;
       ctx.setLineDash([]);
       ctx.strokeRect(xStart, yStartPx, xEnd - xStart, yEndPx - yStartPx);
       
@@ -641,11 +641,17 @@ function onWheel(e: WheelEvent) {
 
 /** Pan with mouse drag */
 let isDragging = false;
+let hasDragged = false; // Track if mouse actually moved during drag
+let mouseDownX = 0;
+let mouseDownY = 0;
 let lastX = 0;
 let lastY = 0;
 
 function onMouseDown(e: MouseEvent) {
+  hasDragged = false; // Reset drag flag on mousedown
   isDragging = true;
+  mouseDownX = e.clientX;
+  mouseDownY = e.clientY;
   lastX = e.clientX;
   lastY = e.clientY;
 
@@ -656,17 +662,32 @@ function onMouseDown(e: MouseEvent) {
 function onMouseMoveDrag(e: MouseEvent) {
   if (!isDragging) return;
   const dx = e.clientX - lastX;
-  // Only allow panning on x-axis
-  lastX = e.clientX;
-  lastY = e.clientY;
+  const dy = e.clientY - lastY;
+  
+  // Check total distance from initial mousedown position
+  const totalDx = e.clientX - mouseDownX;
+  const totalDy = e.clientY - mouseDownY;
+  
+  // Only consider it a drag if mouse moved more than a few pixels from initial position
+  if (Math.abs(totalDx) > 3 || Math.abs(totalDy) > 3) {
+    hasDragged = true;
+    // Only allow panning on x-axis
+    lastX = e.clientX;
+    lastY = e.clientY;
 
-  offsetX.value += dx;
-  // Keep y offset at 0 (no vertical panning)
-  offsetY.value = 0;
+    offsetX.value += dx;
+    // Keep y offset at 0 (no vertical panning)
+    offsetY.value = 0;
+  }
 }
 
 function onMouseUp() {
   isDragging = false;
+  // Don't reset hasDragged here - let the click handler check it
+  // Reset after a short delay to allow click handler to run first
+  setTimeout(() => {
+    hasDragged = false;
+  }, 10);
   window.removeEventListener("mousemove", onMouseMoveDrag);
   window.removeEventListener("mouseup", onMouseUp);
 }
@@ -728,7 +749,12 @@ function setupMouseMove() {
   
   // Add click handler to emit frame-click event
   canvas.value.addEventListener("click", (e: MouseEvent) => {
-    if (!canvas.value || !meta.value || !data.value || !container.value || isDragging) {
+    if (!canvas.value || !meta.value || !data.value || !container.value) {
+      return;
+    }
+    
+    // Don't emit click if user was dragging
+    if (hasDragged) {
       return;
     }
 

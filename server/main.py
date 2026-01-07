@@ -31,15 +31,15 @@ from .models import (
     ReencodeStatistics,
     Video,
     VideoMetadata,
-    WaveDetectionParameters,
-    WaveDetectionResult,
-    WaveEvent,
-    WaveEventLineFit,
+    ContractionDetectionParameters,
+    ContractionDetectionResult,
+    ContractionEvent,
+    ContractionEventLineFit,
 )
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_all_video_caches
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
-from .wave_detection import detect_waves, calculate_physical_spacing
+from .contraction_detection import detect_contractions, calculate_physical_spacing
 
 # Initialize database on startup
 init_database()
@@ -892,16 +892,16 @@ def save_video_settings(video_id: str, settings: dict):
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
 
 
-@app.post("/api/analysis/{analysis_id}/detect-waves", response_model=WaveDetectionResult)
-async def detect_waves_endpoint(
+@app.post("/api/analysis/{analysis_id}/detect-contractions", response_model=ContractionDetectionResult)
+async def detect_contractions_endpoint(
     analysis_id: str,
-    parameters: WaveDetectionParameters | None = Body(None),
+    parameters: ContractionDetectionParameters | None = Body(None),
 ):
-    """Trigger wave detection for a completed analysis."""
+    """Trigger contraction detection for a completed analysis."""
     import logging
     logger = logging.getLogger('uvicorn.error')
     
-    logger.info(f"Wave detection requested for analysis {analysis_id}")
+    logger.info(f"Contraction detection requested for analysis {analysis_id}")
     
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
@@ -911,13 +911,13 @@ async def detect_waves_endpoint(
     if analysis.status != "completed":
         raise HTTPException(
             status_code=400,
-            detail=f"Analysis must be completed to detect waves. Current status: {analysis.status}"
+            detail=f"Analysis must be completed to detect contractions. Current status: {analysis.status}"
         )
     
     # Use provided parameters or defaults
     if parameters is None:
-        parameters = WaveDetectionParameters()
-        logger.info("Using default wave detection parameters")
+        parameters = ContractionDetectionParameters()
+        logger.info("Using default contraction detection parameters")
     else:
         logger.info(f"Using custom parameters: sigma=({parameters.smooth_sigma_y}, {parameters.smooth_sigma_t}), "
                    f"percentile={parameters.threshold_percentile}, min_pixels={parameters.min_pixels}")
@@ -945,9 +945,9 @@ async def detect_waves_endpoint(
             detail="No heatmap data available. Analysis must have measurement point pairs (mpp) data."
         )
     
-    # Transpose matrix: build_heatmap_matrix returns (frames, points), but detect_waves expects (points, frames)
+    # Transpose matrix: build_heatmap_matrix returns (frames, points), but detect_contractions expects (points, frames)
     # Actually, looking at the code, build_heatmap_matrix returns (num_frames, num_points)
-    # But detect_waves expects (Y, T) where Y is point-pair index and T is frame index
+    # But detect_contractions expects (Y, T) where Y is point-pair index and T is frame index
     # So we need to transpose: (frames, points) -> (points, frames)
     thickness = matrix.T  # Shape: (num_points, num_frames)
     
@@ -956,9 +956,9 @@ async def detect_waves_endpoint(
     if dy is None:
         dy = calculate_physical_spacing(analysis_id, results_storage)
     
-    # Run wave detection
+    # Run contraction detection
     try:
-        events, mask_c, lbl = detect_waves(
+        events, mask_c, lbl = detect_contractions(
             thickness=thickness,
             dt=dt,
             dy=dy,
@@ -970,21 +970,21 @@ async def detect_waves_endpoint(
             close_iters=parameters.close_iters,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Wave detection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Contraction detection failed: {str(e)}")
     
     # Store events in database
     try:
-        db.save_wave_events(analysis_id, events)
+        db.save_contraction_events(analysis_id, events)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save wave events: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save contraction events: {str(e)}")
     
     # Retrieve events from database to get proper IDs
-    events_dict = db.get_wave_events(analysis_id)
+    events_dict = db.get_contraction_events(analysis_id)
     
-    # Convert events to WaveEvent models
-    wave_events = []
+    # Convert events to ContractionEvent models
+    contraction_events = []
     for event in events_dict:
-        wave_events.append(WaveEvent(
+        contraction_events.append(ContractionEvent(
             id=event["id"],
             label=event["label"],
             n_pixels=event["n_pixels"],
@@ -994,7 +994,7 @@ async def detect_waves_endpoint(
             duration_s=event["duration_s"],
             height_phys=event["height_phys"],
             velocity_phys_per_s=event["velocity_phys_per_s"],
-            line_fit=WaveEventLineFit(
+            line_fit=ContractionEventLineFit(
                 a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
                 b=event["line_fit"]["b"],
             ),
@@ -1003,37 +1003,37 @@ async def detect_waves_endpoint(
             created_at=event["created_at"],
         ))
     
-    return WaveDetectionResult(
-        events=wave_events,
+    return ContractionDetectionResult(
+        events=contraction_events,
         parameters_used=parameters,
-        total_events=len(wave_events),
+        total_events=len(contraction_events),
     )
 
 
-@app.get("/api/analysis/{analysis_id}/waves", response_model=WaveDetectionResult)
-def get_wave_events(analysis_id: str):
-    """Get wave detection results for an analysis."""
+@app.get("/api/analysis/{analysis_id}/contractions", response_model=ContractionDetectionResult)
+def get_contraction_events(analysis_id: str):
+    """Get contraction detection results for an analysis."""
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    # Check if wave events exist
+    # Check if contraction events exist
     results_storage = ResultsStorage()
     db = results_storage.db
     
-    if not db.wave_events_exist(analysis_id):
+    if not db.contraction_events_exist(analysis_id):
         raise HTTPException(
             status_code=404,
-            detail="Wave detection has not been run for this analysis. Use POST /api/analysis/{analysis_id}/detect-waves to run detection."
+            detail="Contraction detection has not been run for this analysis. Use POST /api/analysis/{analysis_id}/detect-contractions to run detection."
         )
     
     # Get events from database
-    events_dict = db.get_wave_events(analysis_id)
+    events_dict = db.get_contraction_events(analysis_id)
     
-    # Convert to WaveEvent models
-    wave_events = []
+    # Convert to ContractionEvent models
+    contraction_events = []
     for event in events_dict:
-        wave_events.append(WaveEvent(
+        contraction_events.append(ContractionEvent(
             id=event["id"],
             label=event["label"],
             n_pixels=event["n_pixels"],
@@ -1043,7 +1043,7 @@ def get_wave_events(analysis_id: str):
             duration_s=event["duration_s"],
             height_phys=event["height_phys"],
             velocity_phys_per_s=event["velocity_phys_per_s"],
-            line_fit=WaveEventLineFit(
+            line_fit=ContractionEventLineFit(
                 a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
                 b=event["line_fit"]["b"],
             ),
@@ -1054,18 +1054,18 @@ def get_wave_events(analysis_id: str):
     
     # For parameters_used, we'll use defaults since we don't store them
     # In a production system, you might want to store parameters with events
-    parameters_used = WaveDetectionParameters()
+    parameters_used = ContractionDetectionParameters()
     
-    return WaveDetectionResult(
-        events=wave_events,
+    return ContractionDetectionResult(
+        events=contraction_events,
         parameters_used=parameters_used,
-        total_events=len(wave_events),
+        total_events=len(contraction_events),
     )
 
 
-@app.delete("/api/analysis/{analysis_id}/waves")
-def clear_wave_events(analysis_id: str):
-    """Clear wave detection results for an analysis."""
+@app.delete("/api/analysis/{analysis_id}/contractions")
+def clear_contraction_events(analysis_id: str):
+    """Clear contraction detection results for an analysis."""
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
@@ -1073,9 +1073,9 @@ def clear_wave_events(analysis_id: str):
     results_storage = ResultsStorage()
     db = results_storage.db
     
-    db.clear_wave_events(analysis_id)
+    db.clear_contraction_events(analysis_id)
     
-    return {"message": "Wave events cleared successfully"}
+    return {"message": "Contraction events cleared successfully"}
 
 
 @app.delete("/api/analysis/{analysis_id}")
@@ -1089,7 +1089,7 @@ async def delete_analysis(analysis_id: str):
     if analysis.status == "processing":
         await task_manager.stop_analysis(analysis_id)
     
-    # Delete from database (this will cascade delete frames and wave_events)
+    # Delete from database (this will cascade delete frames and contraction_events)
     analysis_storage = AnalysisStorage()
     analysis_storage.delete_analysis(analysis_id)
     

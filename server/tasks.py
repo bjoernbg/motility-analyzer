@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 
 from .analysis import process_video
-from .models import Analysis, AnalysisParameters, FrameData, WaveDetectionParameters
+from .models import Analysis, AnalysisParameters, FrameData, ContractionDetectionParameters
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_heatmap_cache
-from .wave_detection import detect_waves, calculate_physical_spacing
+from .contraction_detection import detect_contractions, calculate_physical_spacing
 from .metadata import get_video_metadata
 import logging
 
@@ -194,9 +194,9 @@ class TaskManager:
             # Clear cached heatmap data to force regeneration with complete results
             clear_heatmap_cache(analysis_id, video_id)
             
-            # Auto-run wave detection with default parameters
+            # Auto-run contraction detection with default parameters
             try:
-                logger.info(f"Auto-running wave detection for analysis {analysis_id}...")
+                logger.info(f"Auto-running contraction detection for analysis {analysis_id}...")
                 # Check if heatmap data exists
                 db = self.results_storage.db
                 matrix, _, _ = db.build_heatmap_matrix(analysis_id)
@@ -217,9 +217,9 @@ class TaskManager:
                             # Calculate physical spacing
                             dy = calculate_physical_spacing(analysis_id, self.results_storage)
                             
-                            # Run wave detection with default parameters
-                            default_params = WaveDetectionParameters()
-                            events, _, _ = detect_waves(
+                            # Run contraction detection with default parameters
+                            default_params = ContractionDetectionParameters()
+                            events, _, _ = detect_contractions(
                                 thickness=thickness,
                                 dt=dt,
                                 dy=dy,
@@ -232,16 +232,16 @@ class TaskManager:
                             )
                             
                             # Store events in database
-                            db.save_wave_events(analysis_id, events)
-                            logger.info(f"Auto-detected {len(events)} wave events for analysis {analysis_id}")
+                            db.save_contraction_events(analysis_id, events)
+                            logger.info(f"Auto-detected {len(events)} contraction events for analysis {analysis_id}")
                         except Exception as e:
                             # Log error but don't fail the analysis
-                            logger.warning(f"Auto wave detection failed for analysis {analysis_id}: {str(e)}")
+                            logger.warning(f"Auto contraction detection failed for analysis {analysis_id}: {str(e)}")
                 else:
-                    logger.info(f"No heatmap data available for analysis {analysis_id}, skipping wave detection")
+                    logger.info(f"No heatmap data available for analysis {analysis_id}, skipping contraction detection")
             except Exception as e:
                 # Log error but don't fail the analysis
-                logger.warning(f"Auto wave detection check failed for analysis {analysis_id}: {str(e)}")
+                logger.warning(f"Auto contraction detection check failed for analysis {analysis_id}: {str(e)}")
             
         except asyncio.CancelledError:
             # Task was cancelled

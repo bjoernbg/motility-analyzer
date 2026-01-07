@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import type { WaveEvent } from '../lib/api';
+import type { ContractionEvent } from '../lib/api';
 
 const store = useAnalysisStore();
 
@@ -9,7 +9,7 @@ const sortBy = ref<'start_time' | 'duration' | 'velocity' | 'area'>('start_time'
 const sortOrder = ref<'asc' | 'desc'>('asc');
 
 const sortedEvents = computed(() => {
-  const events = [...store.waveEvents];
+  const events = [...store.contractionEvents];
   
   events.sort((a, b) => {
     let aVal: number;
@@ -102,18 +102,18 @@ function exportToCSV() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `wave_events_${Date.now()}.csv`;
+  a.download = `contraction_events_${Date.now()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 </script>
 
 <template>
-  <div class="wave-events-list">
+  <div class="contraction-events-list">
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-lg font-semibold">Wave Events ({{ store.waveEvents.length }})</h3>
+      <h3 class="text-lg font-semibold">Contraction Events ({{ store.contractionEvents.length }})</h3>
       <button
-        v-if="store.waveEvents.length > 0"
+        v-if="store.contractionEvents.length > 0"
         @click="exportToCSV"
         class="text-sm px-3 py-1 border rounded hover:bg-muted"
       >
@@ -121,8 +121,8 @@ function exportToCSV() {
       </button>
     </div>
 
-    <div v-if="store.waveEvents.length === 0" class="text-sm text-muted-foreground">
-      No wave events detected. Run wave detection to see results.
+    <div v-if="store.contractionEvents.length === 0" class="text-sm text-muted-foreground">
+      No contraction events detected. Run contraction detection to see results.
     </div>
 
     <div v-else class="overflow-x-auto">
@@ -189,7 +189,7 @@ function exportToCSV() {
 </template>
 
 <style scoped>
-.wave-events-list {
+.contraction-events-list {
   padding: 1rem;
   border: 1px solid hsl(var(--border));
   border-radius: 0.5rem;
