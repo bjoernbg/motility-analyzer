@@ -7,13 +7,14 @@ import { debounce } from '../lib/utils';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
 import { Icon } from './ui/icon';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from './ui/select';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 
 const store = useAnalysisStore();
 
 // Edge detection method
-const edgeDetectionMethod = ref<"costmap" | "signal_1d" | "canny" | "silhouette">("costmap");
+const edgeDetectionMethod = ref<"costmap" | "signal_1d" | "canny" | "silhouette">("silhouette");
 
 // Costmap parameters (only used when edge_detection_method="costmap")
 const alpha = ref(1.5);
@@ -34,13 +35,12 @@ const cannyThreshold2 = ref(150.0);
 const cannyApertureSize = ref(3);
 
 // Silhouette method parameters (only used when edge_detection_method="silhouette")
-const silhouetteBlurKsizeX = ref(7);
-const silhouetteBlurKsizeY = ref(7);
-const silhouetteBlurSigma = ref(1.5);
+const silhouetteBlurKsize = ref(7);
+const silhouetteBlurSigma = ref(1.6);
 const silhouetteCloseK = ref(5);
-const silhouetteXStep = ref(3);
-const silhouetteBand = ref(40);
-const silhouetteMedianK = ref(31);
+const silhouetteXStep = ref(7);
+const silhouetteBand = ref(60);
+const silhouetteMedianK = ref(3);
 
 // Measurement configuration parameters
 const numTrackingPoints = ref(30);
@@ -104,19 +104,14 @@ const cannyApertureSizeModel = computed({
   set: (value: number[]) => { cannyApertureSize.value = value[0] ?? 3; }
 });
 
-const silhouetteBlurKsizeXModel = computed({
-  get: () => [silhouetteBlurKsizeX.value],
-  set: (value: number[]) => { silhouetteBlurKsizeX.value = value[0] ?? 7; }
-});
-
-const silhouetteBlurKsizeYModel = computed({
-  get: () => [silhouetteBlurKsizeY.value],
-  set: (value: number[]) => { silhouetteBlurKsizeY.value = value[0] ?? 7; }
+const silhouetteBlurKsizeModel = computed({
+  get: () => [silhouetteBlurKsize.value],
+  set: (value: number[]) => { silhouetteBlurKsize.value = value[0] ?? 7; }
 });
 
 const silhouetteBlurSigmaModel = computed({
   get: () => [silhouetteBlurSigma.value],
-  set: (value: number[]) => { silhouetteBlurSigma.value = value[0] ?? 1.5; }
+  set: (value: number[]) => { silhouetteBlurSigma.value = value[0] ?? 1.6; }
 });
 
 const silhouetteCloseKModel = computed({
@@ -126,24 +121,24 @@ const silhouetteCloseKModel = computed({
 
 const silhouetteXStepModel = computed({
   get: () => [silhouetteXStep.value],
-  set: (value: number[]) => { silhouetteXStep.value = value[0] ?? 3; }
+  set: (value: number[]) => { silhouetteXStep.value = value[0] ?? 7; }
 });
 
 const silhouetteBandModel = computed({
   get: () => [silhouetteBand.value],
-  set: (value: number[]) => { silhouetteBand.value = value[0] ?? 40; }
+  set: (value: number[]) => { silhouetteBand.value = value[0] ?? 60; }
 });
 
 const silhouetteMedianKModel = computed({
   get: () => [silhouetteMedianK.value],
-  set: (value: number[]) => { silhouetteMedianK.value = value[0] ?? 31; }
+  set: (value: number[]) => { silhouetteMedianK.value = value[0] ?? 3; }
 });
 
 // Function to sync local refs with store parameters
 function syncParamsFromStore() {
   const params = store.currentParameters;
   if (params) {
-    edgeDetectionMethod.value = params.edge_detection_method ?? "costmap";
+    edgeDetectionMethod.value = params.edge_detection_method ?? "silhouette";
     alpha.value = params.alpha ?? 1.5;
     band.value = params.band ?? 20;
     smoothingFactor.value = params.smoothing_factor ?? 0.2;
@@ -154,18 +149,21 @@ function syncParamsFromStore() {
     cannyThreshold1.value = params.canny_threshold1 ?? 50.0;
     cannyThreshold2.value = params.canny_threshold2 ?? 150.0;
     cannyApertureSize.value = params.canny_aperture_size ?? 3;
-    silhouetteBlurKsizeX.value = params.silhouette_blur_ksize_x ?? 7;
-    silhouetteBlurKsizeY.value = params.silhouette_blur_ksize_y ?? 7;
-    silhouetteBlurSigma.value = params.silhouette_blur_sigma ?? 1.5;
+    // Migration logic for blur kernel: if x and y differ, take max
+    silhouetteBlurKsize.value = Math.max(
+      params.silhouette_blur_ksize_x ?? 7,
+      params.silhouette_blur_ksize_y ?? 7
+    );
+    silhouetteBlurSigma.value = params.silhouette_blur_sigma ?? 1.6;
     silhouetteCloseK.value = params.silhouette_close_k ?? 5;
-    silhouetteXStep.value = params.silhouette_x_step ?? 3;
-    silhouetteBand.value = params.silhouette_band ?? 40;
-    silhouetteMedianK.value = params.silhouette_median_k ?? 31;
+    silhouetteXStep.value = params.silhouette_x_step ?? 7;
+    silhouetteBand.value = params.silhouette_band ?? 60;
+    silhouetteMedianK.value = params.silhouette_median_k ?? 3;
     numTrackingPoints.value = params.num_tracking_points ?? 30;
     distributionMethod.value = params.distribution_method ?? "center_line_projection";
   } else {
     // Reset to defaults if no saved settings
-    edgeDetectionMethod.value = "costmap";
+    edgeDetectionMethod.value = "silhouette";
     alpha.value = 1.5;
     band.value = 20;
     smoothingFactor.value = 0.2;
@@ -176,13 +174,12 @@ function syncParamsFromStore() {
     cannyThreshold1.value = 50.0;
     cannyThreshold2.value = 150.0;
     cannyApertureSize.value = 3;
-    silhouetteBlurKsizeX.value = 7;
-    silhouetteBlurKsizeY.value = 7;
-    silhouetteBlurSigma.value = 1.5;
+    silhouetteBlurKsize.value = 7;
+    silhouetteBlurSigma.value = 1.6;
     silhouetteCloseK.value = 5;
-    silhouetteXStep.value = 3;
-    silhouetteBand.value = 40;
-    silhouetteMedianK.value = 31;
+    silhouetteXStep.value = 7;
+    silhouetteBand.value = 60;
+    silhouetteMedianK.value = 3;
     numTrackingPoints.value = 30;
     distributionMethod.value = "center_line_projection";
   }
@@ -235,8 +232,7 @@ watch(
     cannyThreshold1,
     cannyThreshold2,
     cannyApertureSize,
-    silhouetteBlurKsizeX,
-    silhouetteBlurKsizeY,
+    silhouetteBlurKsize,
     silhouetteBlurSigma,
     silhouetteCloseK,
     silhouetteXStep,
@@ -271,8 +267,9 @@ function getCurrentParameters(): AnalysisParameters {
     canny_threshold1: cannyThreshold1.value,
     canny_threshold2: cannyThreshold2.value,
     canny_aperture_size: cannyApertureSize.value,
-    silhouette_blur_ksize_x: silhouetteBlurKsizeX.value,
-    silhouette_blur_ksize_y: silhouetteBlurKsizeY.value,
+    // Sync both x and y to the same value for backwards compatibility
+    silhouette_blur_ksize_x: silhouetteBlurKsize.value,
+    silhouette_blur_ksize_y: silhouetteBlurKsize.value,
     silhouette_blur_sigma: silhouetteBlurSigma.value,
     silhouette_close_k: silhouetteCloseK.value,
     silhouette_x_step: silhouetteXStep.value,
@@ -532,7 +529,8 @@ const canRerunAnalysis = computed(() => {
       <!-- Selected Analysis Actions -->
       <div v-if="store.currentAnalysis" class="selected-analysis-actions">
         <div class="button-group">
-          <Button v-if="store.isProcessing" type="button" variant="destructive" @click="stopAnalysis" :disabled="!store.isProcessing">
+          <Button v-if="store.isProcessing" type="button" variant="destructive" @click="stopAnalysis"
+            :disabled="!store.isProcessing">
             Stop
           </Button>
           <template v-else>
@@ -548,7 +546,8 @@ const canRerunAnalysis = computed(() => {
 
           <Popover v-model:open="deletePopoverOpen[store.currentAnalysis.id]">
             <PopoverTrigger as-child>
-              <Button type="button" variant="destructive" @click="removeSelectedAnalysis" :disabled="isRunning || store.isProcessing">
+              <Button type="button" variant="destructive" @click="removeSelectedAnalysis"
+                :disabled="isRunning || store.isProcessing">
                 <Icon name="mdi:delete" />
               </Button>
             </PopoverTrigger>
@@ -577,315 +576,6 @@ const canRerunAnalysis = computed(() => {
           :disabled="!store.isProcessing">
           Stop
         </button>
-      </div>
-
-      <h3>Edge Detection</h3>
-
-      <div class="param-group">
-        <Label for="edge-detection-method">
-          Edge Detection Method
-          <Popover>
-            <PopoverTrigger class="float-right">
-              <Icon name="mdi:information-outline" />
-            </PopoverTrigger>
-            <PopoverContent>
-              <div>
-                <div><strong>Costmap:</strong> Original gradient-based method using costmap</div>
-                <div><strong>1D Signal:</strong> Alternative method using 1D signal analysis with median collapse and edge center detection</div>
-                <div><strong>Canny:</strong> OpenCV Canny edge detection algorithm for robust edge detection</div>
-                <div><strong>Silhouette:</strong> Mask-based segmentation using Otsu thresholding, morphology, and largest component detection</div>
-              </div>
-            </PopoverContent>
-          </Popover>
-        </Label>
-        <RadioGroup id="edge-detection-method" v-model="edgeDetectionMethod" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
-          <div class="radio-option">
-            <RadioGroupItem value="costmap" id="costmap" />
-            <Label for="costmap" class="radio-label">Costmap</Label>
-          </div>
-          <div class="radio-option">
-            <RadioGroupItem value="signal_1d" id="signal-1d" />
-            <Label for="signal-1d" class="radio-label">1D Signal</Label>
-          </div>
-          <div class="radio-option">
-            <RadioGroupItem value="canny" id="canny" />
-            <Label for="canny" class="radio-label">Canny</Label>
-          </div>
-          <div class="radio-option">
-            <RadioGroupItem value="silhouette" id="silhouette" />
-            <Label for="silhouette" class="radio-label">Silhouette</Label>
-          </div>
-        </RadioGroup>
-      </div>
-
-      <!-- Costmap method parameters -->
-      <template v-if="edgeDetectionMethod === 'costmap'">
-        <div class="param-group">
-          <label for="alpha">
-            Alpha: {{ alpha.toFixed(2) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Contrast enhancement factor (0.0 - 5.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="band">
-            Band: {{ band }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Search band width in pixels (1 - 100)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="bandModel" :min="1" :max="100" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="threshold-percentile">
-            Threshold Percentile: {{ thresholdPercentile.toFixed(1) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Percentile threshold for brightest pixels (0.0 - 100.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
-            :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-      </template>
-
-      <!-- 1D Signal method parameters -->
-      <template v-if="edgeDetectionMethod === 'signal_1d'">
-        <div class="param-group">
-          <label for="strip-width">
-            Strip Width: {{ stripWidth }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Width of horizontal strip for 1D signal collapse (1 - 20 pixels)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="stripWidthModel" :min="1" :max="20" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="band-height">
-            Band Height: {{ bandHeight }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Height of vertical band for 1D signal (10 - 100 pixels)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="bandHeightModel" :min="10" :max="100" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="sigma">
-            Sigma: {{ sigma.toFixed(2) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Gaussian sigma parameter for smoothing (0.5 - 10.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-      </template>
-
-      <!-- Canny method parameters -->
-      <template v-if="edgeDetectionMethod === 'canny'">
-        <div class="param-group">
-          <label for="canny-threshold1">
-            Canny Threshold 1: {{ cannyThreshold1.toFixed(1) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Lower threshold for Canny edge detection (0.0 - 255.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="cannyThreshold1Model" :min="0" :max="255" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="canny-threshold2">
-            Canny Threshold 2: {{ cannyThreshold2.toFixed(1) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Upper threshold for Canny edge detection (0.0 - 255.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="cannyThreshold2Model" :min="0" :max="255" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="canny-aperture-size">
-            Canny Aperture Size: {{ cannyApertureSize }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Aperture size for Canny edge detection (3, 5, or 7)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="cannyApertureSizeModel" :min="3" :max="7" :step="2" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-      </template>
-
-      <!-- Silhouette method parameters -->
-      <template v-if="edgeDetectionMethod === 'silhouette'">
-        <div class="param-group">
-          <label for="silhouette-blur-ksize-x">
-            Blur Kernel Width: {{ silhouetteBlurKsizeX }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Gaussian blur kernel width (1 - 50)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteBlurKsizeXModel" :min="1" :max="50" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-blur-ksize-y">
-            Blur Kernel Height: {{ silhouetteBlurKsizeY }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Gaussian blur kernel height (1 - 50)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteBlurKsizeYModel" :min="1" :max="50" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-blur-sigma">
-            Blur Sigma: {{ silhouetteBlurSigma.toFixed(2) }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Gaussian blur sigma (0.1 - 10.0)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteBlurSigmaModel" :min="0.1" :max="10" :step="0.1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-close-k">
-            Morphology Kernel Size: {{ silhouetteCloseK }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Morphology kernel size for close/open operations (1 - 50)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteCloseKModel" :min="1" :max="50" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-x-step">
-            X Step: {{ silhouetteXStep }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Step size for x-coordinate sampling (1 - 20)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteXStepModel" :min="1" :max="20" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-band">
-            Vertical Band: {{ silhouetteBand }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Vertical band width around previous paths (1 - 200)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteBandModel" :min="1" :max="200" :step="1" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-
-        <div class="param-group">
-          <label for="silhouette-median-k">
-            Median Filter Size: {{ silhouetteMedianK }}
-            <Popover>
-              <PopoverTrigger class="float-right">
-                <Icon name="mdi:information-outline" />
-              </PopoverTrigger>
-              <PopoverContent>
-                <div>Median filter kernel size for 1D smoothing (must be odd, 3 - 101)</div>
-              </PopoverContent>
-            </Popover>
-          </label>
-          <Slider v-model="silhouetteMedianKModel" :min="3" :max="101" :step="2" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
-        </div>
-      </template>
-
-      <!-- Smoothing factor (shared by both methods) -->
-      <div class="param-group">
-        <label for="smoothing-factor">
-          Smoothing Factor: {{ smoothingFactor.toFixed(2) }}
-          <Popover>
-            <PopoverTrigger class="float-right">
-              <Icon name="mdi:information-outline" />
-            </PopoverTrigger>
-            <PopoverContent>
-              <div>Smoothing factor (0.0 - 1.0, higher = more smoothing)</div>
-            </PopoverContent>
-          </Popover>
-        </label>
-        <Slider v-model="smoothingFactorModel" :min="0" :max="1" :step="0.01"
-          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
       </div>
 
       <h3>Measurement Configuration</h3>
@@ -923,7 +613,8 @@ const canRerunAnalysis = computed(() => {
             </PopoverContent>
           </Popover>
         </Label>
-        <RadioGroup id="distribution-method" v-model="distributionMethod" :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
+        <RadioGroup id="distribution-method" v-model="distributionMethod"
+          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
           <div class="radio-option">
             <RadioGroupItem value="center_line_projection" id="center-line-projection" />
             <Label for="center-line-projection" class="radio-label">Center Line Projection</Label>
@@ -934,6 +625,318 @@ const canRerunAnalysis = computed(() => {
           </div>
         </RadioGroup>
       </div>
+
+      <h3>Edge Detection</h3>
+
+      <div class="param-group">
+        <Label for="edge-detection-method">
+          Edge Detection Method
+          <Popover>
+            <PopoverTrigger class="float-right">
+              <Icon name="mdi:information-outline" />
+            </PopoverTrigger>
+            <PopoverContent>
+              <div>
+                <div><strong>Silhouette:</strong> Mask-based segmentation (recommended, default)</div>
+                <div><strong>Costmap:</strong> Original gradient-based method</div>
+                <div><strong>1D Signal:</strong> 1D signal analysis with median collapse</div>
+                <div><strong>Canny:</strong> OpenCV Canny edge detection</div>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </Label>
+        <Select v-model="edgeDetectionMethod"
+          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
+          <SelectTrigger>
+            <SelectValue placeholder="Select method" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="silhouette">Silhouette</SelectItem>
+            <SelectItem value="costmap">Costmap</SelectItem>
+            <SelectItem value="signal_1d">1D Signal</SelectItem>
+            <SelectItem value="canny">Canny</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <details class="advanced-settings">
+        <summary>
+          <span>Advanced Settings</span>
+          <Icon name="mdi:chevron-down" class="chevron-icon" />
+        </summary>
+        <div class="advanced-content">
+
+          <!-- Costmap method parameters -->
+          <template v-if="edgeDetectionMethod === 'costmap'">
+            <div class="param-group">
+              <label for="alpha">
+                Alpha: {{ alpha.toFixed(2) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Contrast enhancement factor (0.0 - 5.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="band">
+                Band: {{ band }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Search band width in pixels (1 - 100)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="bandModel" :min="1" :max="100" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="threshold-percentile">
+                Threshold Percentile: {{ thresholdPercentile.toFixed(1) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Percentile threshold for brightest pixels (0.0 - 100.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+          </template>
+
+          <!-- 1D Signal method parameters -->
+          <template v-if="edgeDetectionMethod === 'signal_1d'">
+            <div class="param-group">
+              <label for="strip-width">
+                Strip Width: {{ stripWidth }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Width of horizontal strip for 1D signal collapse (1 - 20 pixels)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="stripWidthModel" :min="1" :max="20" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="band-height">
+                Band Height: {{ bandHeight }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Height of vertical band for 1D signal (10 - 100 pixels)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="bandHeightModel" :min="10" :max="100" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="sigma">
+                Sigma: {{ sigma.toFixed(2) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Gaussian sigma parameter for smoothing (0.5 - 10.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+          </template>
+
+          <!-- Canny method parameters -->
+          <template v-if="edgeDetectionMethod === 'canny'">
+            <div class="param-group">
+              <label for="canny-threshold1">
+                Canny Threshold 1: {{ cannyThreshold1.toFixed(1) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Lower threshold for Canny edge detection (0.0 - 255.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="cannyThreshold1Model" :min="0" :max="255" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="canny-threshold2">
+                Canny Threshold 2: {{ cannyThreshold2.toFixed(1) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Upper threshold for Canny edge detection (0.0 - 255.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="cannyThreshold2Model" :min="0" :max="255" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="canny-aperture-size">
+                Canny Aperture Size: {{ cannyApertureSize }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Aperture size for Canny edge detection (3, 5, or 7)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="cannyApertureSizeModel" :min="3" :max="7" :step="2"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+          </template>
+
+          <!-- Silhouette method parameters -->
+          <template v-if="edgeDetectionMethod === 'silhouette'">
+            <div class="param-group">
+              <label for="silhouette-blur-ksize">
+                Blur Kernel Size: {{ silhouetteBlurKsize }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Gaussian blur kernel size for both width and height (1 - 50)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteBlurKsizeModel" :min="1" :max="50" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="silhouette-blur-sigma">
+                Blur Sigma: {{ silhouetteBlurSigma.toFixed(2) }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Gaussian blur sigma (0.1 - 10.0)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteBlurSigmaModel" :min="0.1" :max="10" :step="0.1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="silhouette-close-k">
+                Morph Kernel Size: {{ silhouetteCloseK }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Morphology kernel size for close/open operations (1 - 50)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteCloseKModel" :min="1" :max="50" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="silhouette-x-step">
+                X Step: {{ silhouetteXStep }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Step size for x-coordinate sampling (1 - 20)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteXStepModel" :min="1" :max="20" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="silhouette-band">
+                Vertical Band: {{ silhouetteBand }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Vertical band width around previous paths (1 - 200)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteBandModel" :min="1" :max="200" :step="1"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+
+            <div class="param-group">
+              <label for="silhouette-median-k">
+                Median Filter Size: {{ silhouetteMedianK }}
+                <Popover>
+                  <PopoverTrigger class="float-right">
+                    <Icon name="mdi:information-outline" />
+                  </PopoverTrigger>
+                  <PopoverContent>
+                    <div>Median filter kernel size for 1D smoothing (must be odd, 3 - 101)</div>
+                  </PopoverContent>
+                </Popover>
+              </label>
+              <Slider v-model="silhouetteMedianKModel" :min="3" :max="101" :step="2"
+                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+            </div>
+          </template>
+
+          <!-- Smoothing factor (shared by all methods) -->
+          <div class="param-group">
+            <label for="smoothing-factor">
+              Smoothing Factor: {{ smoothingFactor.toFixed(2) }}
+              <Popover>
+                <PopoverTrigger class="float-right">
+                  <Icon name="mdi:information-outline" />
+                </PopoverTrigger>
+                <PopoverContent>
+                  <div>Smoothing factor (0.0 - 1.0, higher = more smoothing)</div>
+                </PopoverContent>
+              </Popover>
+            </label>
+            <Slider v-model="smoothingFactorModel" :min="0" :max="1" :step="0.01"
+              :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+          </div>
+
+        </div>
+      </details>
 
     </form>
   </div>
@@ -1013,6 +1016,7 @@ h3:not(:first-child) {
   justify-content: start;
   gap: 0.5rem;
 }
+
 .button-group::after {
   content: "";
   border-top: 3px solid var(--border-light);
@@ -1022,8 +1026,9 @@ h3:not(:first-child) {
   width: calc(100% + 2rem);
   height: 1px;
 }
-.button-group + h3,
-.selected-analysis-actions + h3 {
+
+.button-group+h3,
+.selected-analysis-actions+h3 {
   margin-top: 0;
 }
 
@@ -1319,5 +1324,56 @@ h3:not(:first-child) {
   gap: 0.5rem;
   justify-content: flex-end;
   margin-top: 0.5rem;
+}
+
+/* Advanced settings collapsible section */
+.advanced-settings {
+  /* margin-top: 1rem; */
+  /* border: 1px solid var(--border-light); */
+  /* border-radius: 6px; */
+  padding-inline: 0.75rem;
+  /* background: rgba(0, 0, 0, 0.02); */
+}
+
+.advanced-settings summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  user-select: none;
+  cursor: pointer;
+  padding: .25rem 0.5rem;
+  margin: -.25rem -0.5rem;
+  transition: background 0.2s;
+  border-radius: 4px;
+  list-style: none;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings summary:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.advanced-settings[open] summary {
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.advanced-settings[open] summary .chevron-icon {
+  transform: rotate(180deg);
+}
+
+.advanced-settings summary .chevron-icon {
+  transition: transform 0.2s;
+}
+
+.advanced-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 </style>
