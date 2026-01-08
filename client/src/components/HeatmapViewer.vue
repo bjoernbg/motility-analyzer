@@ -38,11 +38,11 @@
       <div class="color-scale-label">Color Scale:</div>
       <div class="color-scale-range">
         <span class="color-indicator red"></span>
-        <span>1 mm</span>
+        <span>{{ HEATMAP_MIN_MM }} mm</span>
         <span class="color-indicator violet"></span>
-        <span>7 mm</span>
+        <span>{{ HEATMAP_MAX_MM }} mm</span>
       </div>
-      <div class="conversion-factor">Conversion: 1 mm = 11 px</div>
+      <div class="conversion-factor">Conversion: 1 mm = {{ PIXEL_TO_MM_FACTOR }} px</div>
     </div>
   </div>
 </template>
@@ -52,6 +52,7 @@ import { ref, onMounted, onUnmounted, watch, computed } from "vue";
 import { getHeatmapMeta, getHeatmapRaw, type HeatmapMeta } from "../lib/api";
 import { useHeatmapCache } from "../composables/useHeatmapCache";
 import { useAnalysisStore } from "../stores/analysis";
+import { PIXEL_TO_MM_FACTOR, HEATMAP_MIN_MM, HEATMAP_MAX_MM } from "../lib/constants";
 
 const props = defineProps<{
   analysisId: string;
@@ -90,13 +91,9 @@ const offsetY = ref(0);
 const hoverInfo = ref<{ frame: number; time: number; index: number; value: number; valueMm: number } | null>(null);
 const mousePos = ref<{ x: number; y: number } | null>(null);
 
-// Fixed color scale constants
-// TODO
-const PIXEL_TO_MM_FACTOR = 11; // pixels per mm
-const MIN_MM = 3; // Red color = 3mm
-const MAX_MM = 30; // Violet color = 30mm
-const MIN_PX = MIN_MM * PIXEL_TO_MM_FACTOR; // 11 pixels
-const MAX_PX = MAX_MM * PIXEL_TO_MM_FACTOR; // 77 pixels
+// Derived constants from shared config
+const MIN_PX = HEATMAP_MIN_MM * PIXEL_TO_MM_FACTOR; // 33 pixels
+const MAX_PX = HEATMAP_MAX_MM * PIXEL_TO_MM_FACTOR; // 330 pixels
 
 const tooltipStyle = computed(() => {
   if (!mousePos.value) return {};
@@ -355,9 +352,9 @@ function renderHeatmap() {
   const imageData = offCtx.createImageData(width, height);
   const pixels = imageData.data; // Uint8ClampedArray
 
-  // Fixed scale: Red = 1mm (11px), Violet = 7mm (77px)
+  // Fixed scale: Red = HEATMAP_MIN_MM, Violet = HEATMAP_MAX_MM
   // Convert pixel distances to mm and map to fixed scale
-  const mmRange = MAX_MM - MIN_MM;
+  const mmRange = HEATMAP_MAX_MM - HEATMAP_MIN_MM;
 
   // Note: We'll treat x = frame, y = index
   // Flatten index = x * height + y (because values are [frame][index])
@@ -371,9 +368,9 @@ function renderHeatmap() {
 
       // Map to fixed scale
       // Clamp values outside the range
-      let t = (vMm - MIN_MM) / mmRange;
-      if (t < 0) t = 0; // Values < 1mm map to red
-      if (t > 1) t = 1; // Values > 7mm map to violet
+      let t = (vMm - HEATMAP_MIN_MM) / mmRange;
+      if (t < 0) t = 0; // Values < HEATMAP_MIN_MM map to red
+      if (t > 1) t = 1; // Values > HEATMAP_MAX_MM map to violet
       const ci = Math.floor(t * 255);
 
       const r = colormap[ci * 3 + 0] ?? 0;

@@ -21,3 +21,7 @@ MAX_UPLOAD_SIZE = 1000 * 1024 * 1024
 # Database path
 DATABASE_PATH = BASE_DIR / "analyses.db"
 
+# Physical measurement constants
+# Pixel to millimeter conversion factor
+PIXEL_TO_MM_FACTOR = 11.0  # 11 pixels = 1 mm
+

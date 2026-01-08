@@ -8,6 +8,7 @@ import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
 import { Icon } from './ui/icon';
 import { debounce } from '../lib/utils';
+import { PIXEL_TO_MM_FACTOR } from '../lib/constants';
 
 const props = defineProps<{
   overlay?: boolean;
@@ -257,7 +258,9 @@ function drawHighlightedMeasurementPoint(
     ctx.textBaseline = 'middle';
 
     // Draw text background for better readability
-    const text = `${distance.toFixed(1)} px`;
+    // Convert pixels to mm
+    const distanceMm = distance / PIXEL_TO_MM_FACTOR;
+    const text = `${distanceMm.toFixed(2)} mm`;
     const metrics = ctx.measureText(text);
     const padding = 8;
     const bgX = midX - metrics.width / 2 - padding;
@@ -317,8 +320,8 @@ function updateCanvas() {
       const pair = frameData.mpp[props.highlightPointIndex];
       if (pair) {
         drawHighlightedMeasurementPoint(ctx.value, scaleX, scaleY, pair, {
-          lineWidth: 15,
-          circleRadius: 20,
+          lineWidth: 7,
+          circleRadius: 11,
           showText: false  // No text in mini overlay
         });
       }
@@ -444,8 +447,8 @@ function updateCanvas() {
       const pair = frameData.mpp[props.highlightPointIndex];
       if (pair) {
         drawHighlightedMeasurementPoint(ctx.value, scaleX, scaleY, pair, {
-          lineWidth: 8,
-          circleRadius: 10,
+          lineWidth: 3,
+          circleRadius: 5,
           showText: true  // Show text in main video
         });
       }

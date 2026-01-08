@@ -10,6 +10,8 @@ from scipy.ndimage import (
 from typing import Optional
 import logging
 
+from .config import PIXEL_TO_MM_FACTOR
+
 logger = logging.getLogger('uvicorn.error')
 
 
@@ -155,7 +157,7 @@ def calculate_physical_spacing(analysis_id: str, results_storage) -> float:
         
         if distances:
             avg_distance = np.mean(distances)
-            return float(avg_distance) * 1.0 / 11.0  # 11 pixels per mm
+            return float(avg_distance) / PIXEL_TO_MM_FACTOR
         else:
             return 1.0
     except Exception as e:
