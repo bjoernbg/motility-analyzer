@@ -5,6 +5,9 @@
 /**
  * Conversion factor from pixels to millimeters
  * Used for displaying distance measurements in mm
+ *
+ * ⚠️ IMPORTANT: This constant is also defined in the backend at server/config.py
+ * If you change this value, you MUST also update it in server/config.py to keep them in sync!
  */
 export const PIXEL_TO_MM_FACTOR = 11; // 11 pixels = 1 mm
 
