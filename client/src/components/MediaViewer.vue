@@ -48,6 +48,7 @@
         <VideoPlayer
           v-show="viewMode === 'video'"
           v-model:show-canvas-overlay="showCanvasOverlay"
+          :highlight-point-index="highlightedPointIndex"
         />
         <HeatmapViewer
           v-if="viewMode === 'heatmap' && store.currentAnalysis"
@@ -78,8 +79,7 @@
           <div v-else-if="viewMode === 'heatmap' && store.currentVideo" class="mini-video-wrapper">
             <VideoPlayer
               overlay
-              :highlight-frame="highlightedPoint?.frame ?? null"
-              :highlight-point-index="highlightedPoint?.pointIndex ?? null"
+              :highlight-point-index="highlightedPointIndex"
             />
           </div>
         </div>
@@ -100,7 +100,7 @@ import { Icon } from './ui/icon';
 const store = useAnalysisStore();
 
 const viewMode = ref<'video' | 'heatmap'>('video');
-const highlightedPoint = ref<{ frame: number; pointIndex: number } | null>(null);
+const highlightedPointIndex = ref<number | null>(null);
 const showContractionOverlays = ref(false);
 const showCanvasOverlay = ref(true);
 
@@ -115,15 +115,10 @@ const showOverlay = computed(() => {
 });
 
 async function handleFrameClick(frame: number, pointIndex: number) {
-  // Store the highlighted point for the mini video overlay
-  highlightedPoint.value = { frame, pointIndex };
+  // Store the highlighted point index for visualization
+  highlightedPointIndex.value = pointIndex;
 
-  // Ensure frame data is loaded for the highlighted frame (needed for overlay visualization)
-  if (store.currentAnalysis) {
-    await store.getFrameData(frame);
-  }
-
-  // Seek to frame using centralized store action
+  // Seek to frame using centralized store action (which loads frame data automatically)
   store.seekToFrame(frame);
 }
 </script>

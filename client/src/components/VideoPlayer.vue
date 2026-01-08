@@ -11,7 +11,6 @@ import { debounce } from '../lib/utils';
 
 const props = defineProps<{
   overlay?: boolean;
-  highlightFrame?: number | null;
   highlightPointIndex?: number | null;
   showCanvasOverlay?: boolean;
 }>();
@@ -80,16 +79,16 @@ watch(() => imageRef.value, () => {
 });
 
 // Watch for changes to highlighted point in overlay mode to update canvas
-watch([() => props.highlightFrame, () => props.highlightPointIndex], () => {
+watch(() => props.highlightPointIndex, () => {
   if (props.overlay) {
     // Canvas will update on next animation frame
   }
 });
 
-// Watch for frame data to become available for the highlighted frame
+// Watch for frame data to become available for the current frame
 watch(() => {
-  if (props.overlay && props.highlightFrame !== null && props.highlightFrame !== undefined) {
-    return store.liveFrameData.get(props.highlightFrame);
+  if (store.currentFrame !== null && store.currentFrame !== undefined) {
+    return store.liveFrameData.get(store.currentFrame);
   }
   return null;
 }, () => {
@@ -220,6 +219,60 @@ function drawPath(ctx: CanvasRenderingContext2D, scaleX: number, scaleY: number,
     ctx.stroke();
   }
 }
+
+function drawHighlightedMeasurementPoint(
+  ctx: CanvasRenderingContext2D,
+  scaleX: number,
+  scaleY: number,
+  pair: [number, number, number, number, number, number, number],
+  options: { lineWidth: number; circleRadius: number; showText: boolean }
+) {
+  const [cx, cy, tx, ty, bx, by, distance] = pair;
+
+  // Draw the vertical line connecting top and bottom points
+  ctx.strokeStyle = '#ff8000';
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = options.lineWidth;
+  ctx.beginPath();
+  ctx.moveTo(tx * scaleX, ty * scaleY);
+  ctx.lineTo(bx * scaleX, by * scaleY);
+  ctx.stroke();
+
+  // Draw points
+  ctx.fillStyle = '#ff8000';
+  ctx.beginPath();
+  ctx.arc(tx * scaleX, ty * scaleY, options.circleRadius, 0, 2 * Math.PI);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(bx * scaleX, by * scaleY, options.circleRadius, 0, 2 * Math.PI);
+  ctx.fill();
+
+  // Draw distance text if requested
+  if (options.showText && distance !== undefined && distance !== null) {
+    const midX = (tx + bx) * scaleX / 2;
+    const midY = (ty + by) * scaleY / 2;
+
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Draw text background for better readability
+    const text = `${distance.toFixed(1)} px`;
+    const metrics = ctx.measureText(text);
+    const padding = 8;
+    const bgX = midX - metrics.width / 2 - padding;
+    const bgY = midY - 10 - padding;
+    const bgWidth = metrics.width + padding * 2;
+    const bgHeight = 20 + padding * 2;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(bgX, bgY, bgWidth, bgHeight);
+
+    // Draw text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, midX, midY);
+  }
+}
 function updateCanvas() {
   const canvas = canvasRef.value;
   const image = imageRef.value;
@@ -256,32 +309,18 @@ function updateCanvas() {
   const scaleX = canvas.width / videoPixelWidth;
   const scaleY = canvas.height / videoPixelHeight;
 
-  // In overlay mode, only draw the highlighted point line
-  if (props.overlay && props.highlightFrame !== null && props.highlightFrame !== undefined && 
+  // In overlay mode, only draw the highlighted point line (no text)
+  if (props.overlay && store.currentFrame !== null && store.currentFrame !== undefined &&
       props.highlightPointIndex !== null && props.highlightPointIndex !== undefined) {
-    const frameData = store.liveFrameData.get(props.highlightFrame);
+    const frameData = store.liveFrameData.get(store.currentFrame);
     if (frameData && frameData.mpp && frameData.mpp.length > props.highlightPointIndex) {
       const pair = frameData.mpp[props.highlightPointIndex];
       if (pair) {
-        const [cx, cy, tx, ty, bx, by] = pair;
-        
-        // Draw the vertical line connecting top and bottom points
-        ctx.value.strokeStyle = '#ff8000';
-        ctx.value.globalAlpha = 1;
-        ctx.value.lineWidth = 15;
-        ctx.value.beginPath();
-        ctx.value.moveTo(tx * scaleX, ty * scaleY);
-        ctx.value.lineTo(bx * scaleX, by * scaleY);
-        ctx.value.stroke();
-        
-        // Draw points
-        ctx.value.fillStyle = '#ff8000';
-        ctx.value.beginPath();
-        ctx.value.arc(tx * scaleX, ty * scaleY, 20, 0, 2 * Math.PI);
-        ctx.value.fill();
-        ctx.value.beginPath();
-        ctx.value.arc(bx * scaleX, by * scaleY, 20, 0, 2 * Math.PI);
-        ctx.value.fill();
+        drawHighlightedMeasurementPoint(ctx.value, scaleX, scaleY, pair, {
+          lineWidth: 15,
+          circleRadius: 20,
+          showText: false  // No text in mini overlay
+        });
       }
     }
   } else if (!props.overlay) {
@@ -397,6 +436,22 @@ function updateCanvas() {
     }
   }
 
+  // Draw highlighted measurement point (when clicked from heatmap) in non-overlay mode
+  if (!props.overlay && store.currentFrame !== null && store.currentFrame !== undefined &&
+      props.highlightPointIndex !== null && props.highlightPointIndex !== undefined) {
+    const frameData = store.liveFrameData.get(store.currentFrame);
+    if (frameData && frameData.mpp && frameData.mpp.length > props.highlightPointIndex) {
+      const pair = frameData.mpp[props.highlightPointIndex];
+      if (pair) {
+        drawHighlightedMeasurementPoint(ctx.value, scaleX, scaleY, pair, {
+          lineWidth: 8,
+          circleRadius: 10,
+          showText: true  // Show text in main video
+        });
+      }
+    }
+  }
+
   // Draw horizontal window borders if set (only in non-overlay mode)
   if (!props.overlay && currentParameters.value) {
     const xLeft = currentParameters.value.horizontal_window_x_left;
@@ -431,10 +486,16 @@ function updateCanvas() {
 
 // Computed property for frame image URL
 const frameImageUrl = computed(() => {
-  if (!store.currentVideo || store.currentFrame === null) {
+  if (!store.currentVideo) {
     return null;
   }
-  return getFrameImageUrl(store.currentVideo.id, store.currentFrame);
+  // Always use current frame (we seek to it when clicking)
+  const frameNum = store.currentFrame;
+
+  if (frameNum === null) {
+    return null;
+  }
+  return getFrameImageUrl(store.currentVideo.id, frameNum);
 });
 
 // Computed property for aspect ratio from video metadata
@@ -591,7 +652,7 @@ async function detectWindow() {
           class="frame-image"
           @load="onFrameLoaded"
         />
-        <canvas v-if="showCanvasOverlay" ref="canvasRef" class="overlay-canvas" />
+        <canvas v-if="overlay || showCanvasOverlay" ref="canvasRef" class="overlay-canvas" />
         <!-- Badge showing when no analysis data is available for current frame -->
         <div v-if="!hasFrameData && store.currentFrame !== null && store.currentVideo" class="no-data-badge">
           No analysis data for this frame
