@@ -298,37 +298,6 @@ async function startAnalysis() {
   }
 }
 
-async function rerunAnalysis() {
-  if (!store.currentAnalysis || !store.currentVideo) {
-    return;
-  }
-
-  isRunning.value = true;
-  try {
-    // Start a new analysis with the same parameters as the current analysis
-    const parameters = store.currentAnalysis.parameters as AnalysisParameters;
-    await store.runAnalysis(parameters);
-  } catch (error) {
-    console.error('Failed to re-run analysis:', error);
-  } finally {
-    isRunning.value = false;
-  }
-}
-
-function createNewAnalysis() {
-  // Clear current analysis to allow creating a new one
-  store.currentAnalysis = null;
-}
-
-function removeSelectedAnalysis() {
-  if (!store.currentAnalysis) {
-    return;
-  }
-
-  deletingAnalysisId.value = store.currentAnalysis.id;
-  deletePopoverOpen[store.currentAnalysis.id] = true;
-}
-
 async function stopAnalysis() {
   try {
     await store.stopCurrentAnalysis();
@@ -442,16 +411,6 @@ async function confirmDeleteAnalysis() {
   }
 }
 
-// Helper to check if analysis can be re-run
-const canRerunAnalysis = computed(() => {
-  return store.currentAnalysis &&
-    (store.currentAnalysis.status === 'completed' ||
-      store.currentAnalysis.status === 'cancelled' ||
-      store.currentAnalysis.status === 'failed');
-});
-
-
-
 </script>
 
 <template>
@@ -514,41 +473,14 @@ const canRerunAnalysis = computed(() => {
               </span>
             </div>
           </div>
-        </div>
-        <div v-else class="no-analyses">
-          No analyses available for this video.
-        </div>
-        <div v-if="matchingAnalysis && store.currentAnalysis?.id !== matchingAnalysis.id"
-          class="matching-analysis-hint">
-          <Icon name="mdi:check-circle" class="match-icon" />
-          Current parameters match an available analysis
-        </div>
-      </div>
 
-
-      <!-- Selected Analysis Actions -->
-      <div v-if="store.currentAnalysis" class="selected-analysis-actions">
-        <div class="button-group">
-          <Button v-if="store.isProcessing" type="button" variant="destructive" @click="stopAnalysis"
-            :disabled="!store.isProcessing">
-            Stop
-          </Button>
-          <template v-else>
-            <Button v-if="canRerunAnalysis" type="button" variant="default" @click="rerunAnalysis"
-              :disabled="isRunning || store.isProcessing">
-              Re-run
-            </Button>
-            <Button type="button" variant="default" @click="createNewAnalysis"
-              :disabled="isRunning || store.isProcessing">
-              Create New Analysis
-            </Button>
-          </template>
-
-          <Popover v-model:open="deletePopoverOpen[store.currentAnalysis.id]">
+          <!-- Delete button - only visible on hover -->
+          <Popover v-model:open="deletePopoverOpen[analysis.id]">
             <PopoverTrigger as-child>
-              <Button type="button" variant="destructive" @click="removeSelectedAnalysis"
+              <Button type="button" variant="ghost" size="sm" class="analysis-delete-button"
+                @click="openDeleteConfirmation(analysis.id, $event)"
                 :disabled="isRunning || store.isProcessing">
-                <Icon name="mdi:delete" />
+                <Icon name="mdi:delete" :size="16" />
               </Button>
             </PopoverTrigger>
             <PopoverContent>
@@ -563,10 +495,18 @@ const canRerunAnalysis = computed(() => {
             </PopoverContent>
           </Popover>
         </div>
+        <div v-else class="no-analyses">
+          No analyses available for this video.
+        </div>
+        <div v-if="matchingAnalysis && store.currentAnalysis?.id !== matchingAnalysis.id"
+          class="matching-analysis-hint">
+          <Icon name="mdi:check-circle" class="match-icon" />
+          Current parameters match an available analysis
+        </div>
       </div>
 
-      <!-- Start/Stop buttons when no analysis selected -->
-      <div v-else class="button-group">
+      <!-- Start/Stop buttons -->
+      <div class="button-group">
         <button type="submit" class="start-button" :disabled="isRunning || store.isProcessing">
           <span v-if="isRunning || store.isProcessing">Running...</span>
           <span v-else>Start Analysis</span>
@@ -593,7 +533,7 @@ const canRerunAnalysis = computed(() => {
           </Popover>
         </label>
         <Slider v-model="numTrackingPointsModel" :min="5" :max="200" :step="1"
-          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+          :disabled="isRunning || store.isProcessing" />
       </div>
 
       <div class="param-group">
@@ -614,7 +554,7 @@ const canRerunAnalysis = computed(() => {
           </Popover>
         </Label>
         <RadioGroup id="distribution-method" v-model="distributionMethod"
-          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
+          :disabled="isRunning || store.isProcessing">
           <div class="radio-option">
             <RadioGroupItem value="center_line_projection" id="center-line-projection" />
             <Label for="center-line-projection" class="radio-label">Center Line Projection</Label>
@@ -646,7 +586,7 @@ const canRerunAnalysis = computed(() => {
           </Popover>
         </Label>
         <Select v-model="edgeDetectionMethod"
-          :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null">
+          :disabled="isRunning || store.isProcessing">
           <SelectTrigger>
             <SelectValue placeholder="Select method" />
           </SelectTrigger>
@@ -681,7 +621,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -697,7 +637,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="bandModel" :min="1" :max="100" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -713,7 +653,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
           </template>
 
@@ -732,7 +672,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="stripWidthModel" :min="1" :max="20" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -748,7 +688,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="bandHeightModel" :min="10" :max="100" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -764,7 +704,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
           </template>
 
@@ -783,7 +723,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="cannyThreshold1Model" :min="0" :max="255" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -799,7 +739,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="cannyThreshold2Model" :min="0" :max="255" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -815,7 +755,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="cannyApertureSizeModel" :min="3" :max="7" :step="2"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
           </template>
 
@@ -834,7 +774,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteBlurKsizeModel" :min="1" :max="50" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -850,7 +790,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteBlurSigmaModel" :min="0.1" :max="10" :step="0.1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -866,7 +806,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteCloseKModel" :min="1" :max="50" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -882,7 +822,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteXStepModel" :min="1" :max="20" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -898,7 +838,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteBandModel" :min="1" :max="200" :step="1"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
 
             <div class="param-group">
@@ -914,7 +854,7 @@ const canRerunAnalysis = computed(() => {
                 </Popover>
               </label>
               <Slider v-model="silhouetteMedianKModel" :min="3" :max="101" :step="2"
-                :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+                :disabled="isRunning || store.isProcessing" />
             </div>
           </template>
 
@@ -932,7 +872,7 @@ const canRerunAnalysis = computed(() => {
               </Popover>
             </label>
             <Slider v-model="smoothingFactorModel" :min="0" :max="1" :step="0.01"
-              :disabled="isRunning || store.isProcessing || store.currentAnalysis !== null" />
+              :disabled="isRunning || store.isProcessing" />
           </div>
 
         </div>
@@ -1027,8 +967,7 @@ h3:not(:first-child) {
   height: 1px;
 }
 
-.button-group+h3,
-.selected-analysis-actions+h3 {
+.button-group+h3 {
   margin-top: 0;
 }
 
@@ -1172,6 +1111,7 @@ h3:not(:first-child) {
   margin-inline: calc(-.5rem - 3px) calc(-.5rem - 1px);
   margin-bottom: -1px;
   border-radius: 4px;
+  position: relative;
 }
 
 .analysis-item-info {
@@ -1218,6 +1158,27 @@ h3:not(:first-child) {
   background: var(--color-primary-100);
 }
 
+.analysis-delete-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.analysis-delete-button:hover {
+  background: var(--color-error-50);
+  color: var(--color-error-600);
+  border-color: var(--color-error-300);
+}
+
+.analysis-item:hover .analysis-delete-button {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 .no-analyses {
   padding: 1rem;

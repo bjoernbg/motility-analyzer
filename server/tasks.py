@@ -126,15 +126,13 @@ class TaskManager:
         analysis_id: str,
         video_id: str,
         parameters: AnalysisParameters,
-        resume: bool = False,
     ):
         """Start background analysis task.
-        
+
         Args:
             analysis_id: ID of the analysis
             video_id: ID of the video to process
             parameters: Analysis parameters
-            resume: If True, resume from last analyzed frame if partial results exist
         """
         analysis = self.analyses.get(analysis_id)
         if not analysis:
@@ -152,18 +150,11 @@ class TaskManager:
                     analysis.progress = 100.0
                     self.analysis_storage.update_analysis(analysis_id, status="completed", progress=100.0)
                     return
-        
-        # Determine if we should resume
+
+        # Always start from frame 0
         start_frame = 0
         existing_results = None
-        if resume:
-            # Get last analyzed frame
-            last_frame = self.results_storage.db.get_last_analyzed_frame(analysis_id)
-            if last_frame is not None:
-                start_frame = last_frame + 1  # Start from next frame
-                # Load existing results to get previous frame paths
-                existing_results = self.results_storage.load_results(analysis_id)
-        
+
         analysis.status = "processing"
         self.analysis_storage.update_analysis(analysis_id, status="processing")
         

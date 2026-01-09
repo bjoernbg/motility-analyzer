@@ -303,21 +303,6 @@ export async function stopAnalysis(analysisId: string): Promise<Analysis> {
   });
 }
 
-export async function restartAnalysis(
-  analysisId: string,
-  parameters?: AnalysisParameters
-): Promise<Analysis> {
-  const options: RequestInit = {
-    method: 'POST',
-  };
-  
-  if (parameters) {
-    options.body = JSON.stringify(parameters);
-  }
-  
-  return fetchJson<Analysis>(`/api/analysis/${encodeURIComponent(analysisId)}/restart`, options);
-}
-
 export interface HorizontalWindowDetectionResult {
   x_left: number;
   x_right: number;

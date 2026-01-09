@@ -21,7 +21,6 @@ import {
   listAnalyses,
   getAnalysisFrame,
   stopAnalysis,
-  restartAnalysis,
   analyzeFrame,
   detectHorizontalWindow,
   getVideoSettings,
@@ -312,7 +311,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     if (!currentVideo.value) {
       throw new Error('No video selected');
     }
-    
+
     if (!currentVideo.value.metadata) {
       throw new Error('Video metadata not loaded. Please wait for metadata to load before starting analysis.');
     }
@@ -320,8 +319,26 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       isLoading.value = true;
       error.value = null;
-      
-      // Start analysis
+
+      // Check if a matching completed analysis already exists
+      const matchingAnalysis = findMatchingAnalysis(parameters);
+      if (matchingAnalysis) {
+        // Select the existing analysis instead of creating new one
+        await selectAnalysis(matchingAnalysis.id);
+        return;
+      }
+
+      // Check if matching in-progress analysis exists (prevent duplicates)
+      const processingAnalyses = availableAnalyses.value.filter(a => a.status === 'processing');
+      for (const analysis of processingAnalyses) {
+        if (parametersMatch(analysis.parameters, parameters)) {
+          // Select the in-progress analysis
+          await selectAnalysis(analysis.id);
+          return;
+        }
+      }
+
+      // No match found - create new analysis
       const analysis = await startAnalysis(currentVideo.value.id, parameters);
       currentAnalysis.value = analysis;
       progressStatus.value = analysis.status as typeof progressStatus.value;
@@ -502,45 +519,6 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
-  async function restartAnalysisById(analysisId: string, parameters?: AnalysisParameters) {
-    // Restart an analysis from frame 0, optionally with new parameters
-    if (!currentVideo.value) {
-      throw new Error('No video selected');
-    }
-
-    try {
-      isLoading.value = true;
-      error.value = null;
-      
-      // Restart analysis
-      const analysis = await restartAnalysis(analysisId, parameters);
-      
-      // Update the analysis in available analyses list
-      const index = availableAnalyses.value.findIndex(a => a.id === analysisId);
-      if (index !== -1) {
-        availableAnalyses.value[index] = analysis;
-      } else {
-        // If not found, refresh the list
-        await loadAnalysesForVideo(currentVideo.value.id);
-      }
-      
-      // Set as current analysis
-      currentAnalysis.value = analysis;
-      progressStatus.value = analysis.status as typeof progressStatus.value;
-      progress.value = analysis.progress;
-
-      // Start polling for progress updates
-      startPolling(analysis.id);
-
-      // Don't load results eagerly - frames are too large
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to restart analysis';
-      console.error('Failed to restart analysis:', err);
-      throw err;
-    } finally {
-      isLoading.value = false;
-    }
-  }
 
   function findMatchingAnalysis(parameters: AnalysisParameters): Analysis | null {
     // Find a completed analysis with matching parameters (with tolerance for floats)
@@ -868,6 +846,33 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   });
 
+  // Watch for parameter changes and auto-deselect if they no longer match
+  watch(
+    () => currentParameters.value,
+    (newParams) => {
+      // Only check if we have a selected analysis
+      if (!currentAnalysis.value || !newParams) {
+        return;
+      }
+
+      // Skip during analysis switching to avoid unnecessary deselection
+      if (isAnalysisSwitching.value) {
+        return;
+      }
+
+      // Check if current parameters still match the selected analysis
+      if (!parametersMatch(currentAnalysis.value.parameters, newParams)) {
+        // Parameters no longer match - deselect the analysis
+        currentAnalysis.value = null;
+        liveFrameData.value.clear();
+        progress.value = 0;
+        progressStatus.value = 'pending';
+        stopPolling();
+      }
+    },
+    { deep: true }
+  );
+
   return {
     // State
     videos,
@@ -909,7 +914,6 @@ export const useAnalysisStore = defineStore('analysis', () => {
     saveCurrentSettings,
     loadAnalysesForVideo,
     selectAnalysis,
-    restartAnalysisById,
     findMatchingAnalysis,
     deleteAnalysisById,
     detectContractionsForAnalysis,
