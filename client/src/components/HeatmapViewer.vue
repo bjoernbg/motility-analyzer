@@ -38,11 +38,11 @@
       <div class="color-scale-label">Color Scale:</div>
       <div class="color-scale-range">
         <span class="color-indicator red"></span>
-        <span>{{ HEATMAP_MIN_MM }} mm</span>
+        <span>{{ heatmapMinMm }} mm</span>
         <span class="color-indicator violet"></span>
-        <span>{{ HEATMAP_MAX_MM }} mm</span>
+        <span>{{ heatmapMaxMm }} mm</span>
       </div>
-      <div class="conversion-factor">Conversion: 1 mm = {{ PIXEL_TO_MM_FACTOR }} px</div>
+      <div class="conversion-factor">Conversion: 1 mm = {{ pixelToMmFactor }} px</div>
     </div>
   </div>
 </template>
@@ -91,9 +91,14 @@ const offsetY = ref(0);
 const hoverInfo = ref<{ frame: number; time: number; index: number; value: number; valueMm: number } | null>(null);
 const mousePos = ref<{ x: number; y: number } | null>(null);
 
-// Derived constants from shared config
-const MIN_PX = HEATMAP_MIN_MM * PIXEL_TO_MM_FACTOR; // 33 pixels
-const MAX_PX = HEATMAP_MAX_MM * PIXEL_TO_MM_FACTOR; // 330 pixels
+// Computed display settings from meta or fallback to constants
+const pixelToMmFactor = computed(() => meta.value?.display_settings?.pixel_to_mm_factor ?? PIXEL_TO_MM_FACTOR);
+const heatmapMinMm = computed(() => meta.value?.display_settings?.heatmap_min_mm ?? HEATMAP_MIN_MM);
+const heatmapMaxMm = computed(() => meta.value?.display_settings?.heatmap_max_mm ?? HEATMAP_MAX_MM);
+
+// Derived constants from display settings
+const MIN_PX = computed(() => heatmapMinMm.value * pixelToMmFactor.value);
+const MAX_PX = computed(() => heatmapMaxMm.value * pixelToMmFactor.value);
 
 const tooltipStyle = computed(() => {
   if (!mousePos.value) return {};
@@ -147,6 +152,13 @@ watch(() => props.analysisId, async (newId, oldId) => {
 
 // Re-render when contraction overlays toggle or contraction events change
 watch(() => [props.showContractionOverlays, store.contractionEvents], () => {
+  if (meta.value && data.value) {
+    renderHeatmap();
+  }
+}, { deep: true });
+
+// Watch for display settings changes and re-render
+watch(() => meta.value?.display_settings, () => {
   if (meta.value && data.value) {
     renderHeatmap();
   }
@@ -352,9 +364,9 @@ function renderHeatmap() {
   const imageData = offCtx.createImageData(width, height);
   const pixels = imageData.data; // Uint8ClampedArray
 
-  // Fixed scale: Red = HEATMAP_MIN_MM, Violet = HEATMAP_MAX_MM
+  // Fixed scale: Red = heatmapMinMm, Violet = heatmapMaxMm
   // Convert pixel distances to mm and map to fixed scale
-  const mmRange = HEATMAP_MAX_MM - HEATMAP_MIN_MM;
+  const mmRange = heatmapMaxMm.value - heatmapMinMm.value;
 
   // Note: We'll treat x = frame, y = index
   // Flatten index = x * height + y (because values are [frame][index])
@@ -364,11 +376,11 @@ function renderHeatmap() {
       const vPx = values[dataIndex] ?? 0; // value in pixels
 
       // Convert to mm
-      const vMm = vPx / PIXEL_TO_MM_FACTOR;
+      const vMm = vPx / pixelToMmFactor.value;
 
       // Map to fixed scale
       // Clamp values outside the range
-      let t = (vMm - HEATMAP_MIN_MM) / mmRange;
+      let t = (vMm - heatmapMinMm.value) / mmRange;
       if (t < 0) t = 0; // Values < HEATMAP_MIN_MM map to red
       if (t > 1) t = 1; // Values > HEATMAP_MAX_MM map to violet
       const ci = Math.floor(t * 255);
@@ -738,7 +750,7 @@ function setupMouseMove() {
     const { frame, index } = result;
     const dataIndex = frame * meta.value.height + index;
     const value = data.value[dataIndex] ?? 0;
-    const valueMm = value / PIXEL_TO_MM_FACTOR;
+    const valueMm = value / pixelToMmFactor.value;
     const timeInSeconds = frame / meta.value.fps;
 
     hoverInfo.value = { frame, time: timeInSeconds, index, value, valueMm };

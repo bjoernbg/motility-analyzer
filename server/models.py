@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 
 class Video(BaseModel):
@@ -142,6 +142,31 @@ class HeatmapMeta(BaseModel):
     min: float = Field(description="Minimum distance value")
     max: float = Field(description="Maximum distance value")
     fps: float = Field(description="Frames per second for time conversion")
+    display_settings: Optional["DisplaySettings"] = Field(default=None, description="Display settings for visualization")
+
+
+class DisplaySettings(BaseModel):
+    """Display settings for measurement visualization."""
+    pixel_to_mm_factor: float = Field(default=11.0, gt=0.0, description="Pixels per millimeter")
+    heatmap_min_mm: float = Field(default=3.0, ge=0.0, description="Minimum value for heatmap color scale (mm)")
+    heatmap_max_mm: float = Field(default=30.0, gt=0.0, description="Maximum value for heatmap color scale (mm)")
+    updated_at: Optional[str] = Field(default=None, description="Last update timestamp")
+
+    @validator('heatmap_max_mm')
+    def validate_max_greater_than_min(cls, v, values):
+        if 'heatmap_min_mm' in values and v <= values['heatmap_min_mm']:
+            raise ValueError('heatmap_max_mm must be greater than heatmap_min_mm')
+        return v
+
+
+class SuggestedDisplaySettings(BaseModel):
+    """Auto-calculated suggestions for display settings."""
+    pixel_to_mm_factor: float = Field(description="Current or default pixel-to-mm factor")
+    heatmap_min_mm: float = Field(description="Suggested minimum (5th percentile)")
+    heatmap_max_mm: float = Field(description="Suggested maximum (95th percentile)")
+    data_min_mm: float = Field(description="Actual data minimum in mm")
+    data_max_mm: float = Field(description="Actual data maximum in mm")
+    data_median_mm: float = Field(description="Actual data median in mm")
 
 
 class ContractionDetectionParameters(BaseModel):

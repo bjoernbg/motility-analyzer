@@ -2,42 +2,44 @@
   <div class="media-viewer">
     <div class="view-toggle-container">
       <div class="view-toggle">
-        <button
-          :class="{ active: viewMode === 'video' }"
-          @click="viewMode = 'video'"
-        >
+        <button :class="{ active: viewMode === 'video' }" @click="viewMode = 'video'">
           Video
         </button>
-        <button
-          :class="{ active: viewMode === 'heatmap' }"
-          @click="viewMode = 'heatmap'"
-        >
+        <button :class="{ active: viewMode === 'heatmap' }" @click="viewMode = 'heatmap'">
           Heatmap
         </button>
       </div>
-      <div v-if="viewMode === 'video' && hasFrameData" class="overlay-toggle">
-        <ButtonGroup>
-          <Button
-            :variant="showCanvasOverlay ? 'default' : 'outline'"
-            @click="showCanvasOverlay = !showCanvasOverlay"
-            size="sm"
-            title="Display detected paths"
-          >
-            <Icon name="lucide:chart-scatter" size="1.1em" />
-          </Button>
-        </ButtonGroup>
-      </div>
-      <div v-if="viewMode === 'heatmap' && store.contractionEvents.length > 0" class="contraction-overlay-toggle">
-        <ButtonGroup>
-          <Button
-            :variant="showContractionOverlays ? 'default' : 'outline'"
-            @click="showContractionOverlays = !showContractionOverlays"
-            size="sm"
-            title="Display detected contraction waves"
-          >
-            <Icon name="lucide:chart-scatter" size="1.1em" />
-          </Button>
-        </ButtonGroup>
+      <div class="flex items-center gap-1">
+        <div v-if="viewMode === 'video' && hasFrameData" class="overlay-toggle">
+          <ButtonGroup>
+            <Button :variant="showCanvasOverlay ? 'default' : 'outline'" @click="showCanvasOverlay = !showCanvasOverlay"
+              size="sm" title="Display detected paths">
+              <Icon name="lucide:chart-scatter" size="1.1em" />
+            </Button>
+          </ButtonGroup>
+        </div>
+        <div v-if="viewMode === 'heatmap' && store.contractionEvents.length > 0" class="contraction-overlay-toggle">
+          <ButtonGroup>
+            <Button :variant="showContractionOverlays ? 'default' : 'outline'"
+              @click="showContractionOverlays = !showContractionOverlays" size="sm"
+              title="Display detected contraction waves">
+              <Icon name="lucide:chart-scatter" size="1.1em" />
+            </Button>
+          </ButtonGroup>
+        </div>
+        <div v-if="store.currentAnalysis" class="settings-toggle">
+          <Popover>
+            <PopoverTrigger as-child>
+              <Button size="sm" variant="outline" title="Measurement settings">
+                <Icon name="lucide:settings" size="1.1em" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" class="p-3">
+              <DisplaySettingsControls :analysis-id="store.currentAnalysis.id"
+                @settings-updated="handleSettingsUpdated" />
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
     </div>
 
@@ -45,19 +47,13 @@
       <!-- Main View -->
       <div class="main-view">
         <!-- Use v-show to keep video loaded when switching views -->
-        <VideoPlayer
-          v-show="viewMode === 'video'"
-          v-model:show-canvas-overlay="showCanvasOverlay"
+        <VideoPlayer v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
           :highlight-point-index="highlightedPointIndex"
-        />
-        <HeatmapViewer
-          v-if="viewMode === 'heatmap' && store.currentAnalysis"
-          :key="`main-heatmap-${store.currentAnalysis.id}`"
-          :analysis-id="store.currentAnalysis.id"
-          :current-frame="store.currentFrame"
-          :show-contraction-overlays="showContractionOverlays"
-          @frame-click="handleFrameClick"
-        />
+          :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor" />
+        <HeatmapViewer v-if="viewMode === 'heatmap' && store.currentAnalysis"
+          :key="`main-heatmap-${store.currentAnalysis.id}`" :analysis-id="store.currentAnalysis.id"
+          :current-frame="store.currentFrame" :show-contraction-overlays="showContractionOverlays"
+          @frame-click="handleFrameClick" />
         <div v-else-if="viewMode === 'heatmap' && !store.currentAnalysis" class="no-heatmap">
           No analysis available. Run an analysis to view the heatmap.
         </div>
@@ -67,20 +63,13 @@
       <div v-if="showOverlay" class="overlay-container">
         <div class="overlay-content">
           <!-- Mini Heatmap when viewing video -->
-          <HeatmapViewer
-            v-if="viewMode === 'video' && store.currentAnalysis"
-            :key="`overlay-heatmap-${store.currentAnalysis.id}`"
-            :analysis-id="store.currentAnalysis.id"
-            :current-frame="store.currentFrame"
-            compact
-            @frame-click="handleFrameClick"
-          />
+          <HeatmapViewer v-if="viewMode === 'video' && store.currentAnalysis"
+            :key="`overlay-heatmap-${store.currentAnalysis.id}`" :analysis-id="store.currentAnalysis.id"
+            :current-frame="store.currentFrame" compact @frame-click="handleFrameClick" />
           <!-- Mini Video when viewing heatmap -->
           <div v-else-if="viewMode === 'heatmap' && store.currentVideo" class="mini-video-wrapper">
-            <VideoPlayer
-              overlay
-              :highlight-point-index="highlightedPointIndex"
-            />
+            <VideoPlayer overlay :highlight-point-index="highlightedPointIndex"
+              :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor" />
           </div>
         </div>
       </div>
@@ -89,13 +78,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import VideoPlayer from './VideoPlayer.vue';
 import HeatmapViewer from './HeatmapViewer.vue';
+import DisplaySettingsControls from './DisplaySettingsControls.vue';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
 import { Icon } from './ui/icon';
+import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
+import { getDisplaySettings, type DisplaySettings } from '../lib/api';
 
 const store = useAnalysisStore();
 
@@ -103,6 +95,7 @@ const viewMode = ref<'video' | 'heatmap'>('video');
 const highlightedPointIndex = ref<number | null>(null);
 const showContractionOverlays = ref(false);
 const showCanvasOverlay = ref(true);
+const currentDisplaySettings = ref<DisplaySettings | null>(null);
 
 const hasFrameData = computed(() => store.liveFrameData.size > 0);
 
@@ -120,6 +113,25 @@ async function handleFrameClick(frame: number, pointIndex: number) {
 
   // Seek to frame using centralized store action (which loads frame data automatically)
   store.seekToFrame(frame);
+}
+
+// Load display settings when analysis changes
+watch(() => store.currentAnalysis?.id, async (id) => {
+  if (id) {
+    try {
+      currentDisplaySettings.value = await getDisplaySettings(id);
+    } catch (err) {
+      console.error('Failed to load display settings:', err);
+      // Fallback to defaults on error
+      currentDisplaySettings.value = null;
+    }
+  } else {
+    currentDisplaySettings.value = null;
+  }
+}, { immediate: true });
+
+function handleSettingsUpdated(settings: DisplaySettings) {
+  currentDisplaySettings.value = settings;
 }
 </script>
 
@@ -164,7 +176,8 @@ async function handleFrameClick(frame: number, pointIndex: number) {
 }
 
 .contraction-overlay-toggle,
-.overlay-toggle {
+.overlay-toggle,
+.settings-toggle {
   display: flex;
   align-items: center;
 }
@@ -223,4 +236,3 @@ async function handleFrameClick(frame: number, pointIndex: number) {
   background: var(--bg-primary);
 }
 </style>
-

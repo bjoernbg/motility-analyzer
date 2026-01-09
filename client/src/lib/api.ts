@@ -377,6 +377,22 @@ export async function deleteAnalysis(analysisId: string): Promise<void> {
   });
 }
 
+export interface DisplaySettings {
+  pixel_to_mm_factor: number;
+  heatmap_min_mm: number;
+  heatmap_max_mm: number;
+  updated_at?: string;
+}
+
+export interface SuggestedDisplaySettings {
+  pixel_to_mm_factor: number;
+  heatmap_min_mm: number;
+  heatmap_max_mm: number;
+  data_min_mm: number;
+  data_max_mm: number;
+  data_median_mm: number;
+}
+
 export interface HeatmapMeta {
   width: number;
   height: number;
@@ -384,6 +400,7 @@ export interface HeatmapMeta {
   min: number;
   max: number;
   fps: number;
+  display_settings?: DisplaySettings;
 }
 
 export async function getHeatmapMeta(analysisId: string): Promise<HeatmapMeta> {
@@ -487,4 +504,29 @@ export async function clearContractionEvents(analysisId: string): Promise<void> 
   });
 }
 
+export async function getDisplaySettings(analysisId: string): Promise<DisplaySettings> {
+  return fetchJson<DisplaySettings>(`/api/analysis/${encodeURIComponent(analysisId)}/display-settings`, {
+    endpointKey: `displaySettings:${analysisId}`,
+  });
+}
 
+export async function updateDisplaySettings(
+  analysisId: string,
+  settings: DisplaySettings
+): Promise<DisplaySettings> {
+  return fetchJson<DisplaySettings>(`/api/analysis/${encodeURIComponent(analysisId)}/display-settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function getSuggestedDisplaySettings(
+  analysisId: string
+): Promise<SuggestedDisplaySettings> {
+  return fetchJson<SuggestedDisplaySettings>(
+    `/api/analysis/${encodeURIComponent(analysisId)}/display-settings/suggestions`,
+    {
+      endpointKey: `displaySettingsSuggestions:${analysisId}`,
+    }
+  );
+}

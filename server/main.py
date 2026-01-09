@@ -1,5 +1,6 @@
 """FastAPI application for video analysis."""
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -13,7 +14,7 @@ from brotli_asgi import BrotliMiddleware
 import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
-from .config import MAX_UPLOAD_SIZE
+from .config import MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
 from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
 from .edge_detection_canny import edge_detection_canny_calculation
@@ -25,10 +26,12 @@ from .metadata import get_video_metadata
 from .models import (
     Analysis,
     AnalysisParameters,
+    DisplaySettings,
     FrameData,
     HeatmapMeta,
     ReencodeResult,
     ReencodeStatistics,
+    SuggestedDisplaySettings,
     Video,
     VideoMetadata,
     ContractionDetectionParameters,
@@ -344,7 +347,14 @@ def get_heatmap_meta(analysis_id: str):
     results_storage = ResultsStorage()
     db = results_storage.db
     matrix, min_val, max_val = db.build_heatmap_matrix(analysis_id)
-    
+
+    # Get display settings from analysis or use defaults
+    display_settings = None
+    if analysis.global_data and "display_settings" in analysis.global_data:
+        display_settings = DisplaySettings(**analysis.global_data["display_settings"])
+    else:
+        display_settings = DisplaySettings()  # Use defaults from model
+
     if matrix.size == 0:
         # No data available - explicitly delete empty matrix
         del matrix
@@ -355,6 +365,7 @@ def get_heatmap_meta(analysis_id: str):
             min=0.0,
             max=0.0,
             fps=fps,
+            display_settings=display_settings,
         )
     else:
         frame_count, point_count = matrix.shape
@@ -365,6 +376,7 @@ def get_heatmap_meta(analysis_id: str):
             min=min_val,
             max=max_val,
             fps=fps,
+            display_settings=display_settings,
         )
         # Explicitly delete the matrix to free memory immediately
         # This is critical for large matrices that can be hundreds of MB
@@ -477,6 +489,104 @@ def get_heatmap_raw(analysis_id: str):
             "X-Height": str(matrix_shape[1]),
             "X-Dtype": "float32",
         },
+    )
+
+
+@app.get("/api/analysis/{analysis_id}/display-settings", response_model=DisplaySettings)
+def get_display_settings(analysis_id: str):
+    """Get current display settings for an analysis."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Extract from global_data or use defaults
+    if analysis.global_data and "display_settings" in analysis.global_data:
+        return DisplaySettings(**analysis.global_data["display_settings"])
+    else:
+        # Return defaults from config
+        return DisplaySettings(
+            pixel_to_mm_factor=PIXEL_TO_MM_FACTOR,
+            heatmap_min_mm=3.0,
+            heatmap_max_mm=30.0,
+        )
+
+
+@app.put("/api/analysis/{analysis_id}/display-settings", response_model=DisplaySettings)
+def update_display_settings(analysis_id: str, settings: DisplaySettings):
+    """Update display settings for an analysis."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Add timestamp
+    settings.updated_at = datetime.now().isoformat()
+
+    # Update global_data
+    global_data = analysis.global_data or {}
+    global_data["display_settings"] = settings.model_dump()
+
+    # Persist to database
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    db.update_analysis(analysis_id, global_data=global_data)
+
+    # Invalidate heatmap metadata cache (metadata includes display settings)
+    video_path = VideoStorage.get_video_path(analysis.video_id)
+    if video_path and video_path.exists():
+        cache_file = video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_meta.json"
+        if cache_file.exists():
+            cache_file.unlink()
+
+    return settings
+
+
+@app.get("/api/analysis/{analysis_id}/display-settings/suggestions", response_model=SuggestedDisplaySettings)
+def get_suggested_display_settings(analysis_id: str):
+    """Calculate suggested display settings based on actual heatmap data."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    # Get current or default pixel_to_mm_factor
+    current_factor = PIXEL_TO_MM_FACTOR
+    if analysis.global_data and "display_settings" in analysis.global_data:
+        current_factor = analysis.global_data["display_settings"].get("pixel_to_mm_factor", PIXEL_TO_MM_FACTOR)
+
+    # Build heatmap matrix
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    matrix, min_val_px, max_val_px = db.build_heatmap_matrix(analysis_id)
+
+    if matrix.size == 0:
+        raise HTTPException(status_code=400, detail="No heatmap data available")
+
+    # Convert to mm
+    data_mm = matrix / current_factor
+
+    # Calculate statistics
+    min_mm = float(np.min(data_mm))
+    max_mm = float(np.max(data_mm))
+    median_mm = float(np.median(data_mm))
+
+    # Use percentiles for suggested range (handles outliers better)
+    suggested_min = float(np.percentile(data_mm, 5))   # 5th percentile
+    suggested_max = float(np.percentile(data_mm, 95))  # 95th percentile
+
+    # Round to reasonable precision
+    suggested_min = round(suggested_min, 1)
+    suggested_max = round(suggested_max, 1)
+
+    # Explicitly delete matrix to free memory
+    del matrix
+    del data_mm
+
+    return SuggestedDisplaySettings(
+        pixel_to_mm_factor=current_factor,
+        heatmap_min_mm=suggested_min,
+        heatmap_max_mm=suggested_max,
+        data_min_mm=round(min_mm, 2),
+        data_max_mm=round(max_mm, 2),
+        data_median_mm=round(median_mm, 2),
     )
 
 

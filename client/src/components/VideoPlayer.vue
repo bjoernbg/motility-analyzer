@@ -14,6 +14,7 @@ const props = defineProps<{
   overlay?: boolean;
   highlightPointIndex?: number | null;
   showCanvasOverlay?: boolean;
+  pixelToMmFactor?: number;
 }>();
 
 const emit = defineEmits<{
@@ -26,6 +27,7 @@ const imageRef = ref<HTMLImageElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
 const videoFps = computed(() => store.currentVideo?.metadata?.fps ?? 30);
+const conversionFactor = computed(() => props.pixelToMmFactor ?? PIXEL_TO_MM_FACTOR);
 const currentParameters = ref<AnalysisParameters | null>(null);
 
 // Debounced analysis function for parameter changes
@@ -259,7 +261,7 @@ function drawHighlightedMeasurementPoint(
 
     // Draw text background for better readability
     // Convert pixels to mm
-    const distanceMm = distance / PIXEL_TO_MM_FACTOR;
+    const distanceMm = distance / conversionFactor.value;
     const text = `${distanceMm.toFixed(2)} mm`;
     const metrics = ctx.measureText(text);
     const padding = 8;
