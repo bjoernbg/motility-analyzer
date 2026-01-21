@@ -173,6 +173,8 @@ def detect_contractions(
     percentile: float = 10.0,
     smooth_sigma: tuple[float, float] = (1.0, 1.0),
     min_pixels: int = 200,
+    min_area: Optional[float] = None,
+    min_height: Optional[float] = None,
     open_iters: int = 1,
     close_iters: int = 2,
 ) -> tuple[list[dict], np.ndarray, np.ndarray]:
@@ -187,6 +189,8 @@ def detect_contractions(
         percentile: Percentile for automatic threshold (0-100)
         smooth_sigma: Smoothing sigma in (y, t) index units
         min_pixels: Minimum pixels per event to keep
+        min_area: Minimum area in mm²·s to keep (if None, no area filtering)
+        min_height: Minimum height in mm to keep (if None, no height filtering)
         open_iters: Binary opening iterations
         close_iters: Binary closing iterations
     
@@ -217,35 +221,49 @@ def detect_contractions(
     logger.info(f"Labeling complete: found {n} connected components")
     
     events = []
-    filtered_count = 0
+    filtered_by_pixels = 0
+    filtered_by_height = 0
+    filtered_by_area = 0
+
     for k in range(1, n + 1):
         # Get coordinates for this component
         yy, tt = np.where(lbl == k)
-        
+
+        # Filter 1: Pixel count (cheapest check first)
         if yy.size < min_pixels:
-            filtered_count += 1
+            filtered_by_pixels += 1
             continue
-        
-        # Fit contraction line
-        a, b = fit_contraction_line(yy, tt)
-        
-        # Bounding box and extents
+
+        # Calculate bounding box and extents
         t0, t1 = int(tt.min()), int(tt.max())
         y0, y1 = int(yy.min()), int(yy.max())
-        
+
         duration = (t1 - t0 + 1) * dt
         height = (y1 - y0 + 1) * dy
-        
-        # Exact area (below threshold)
+
+        # Filter 2: Height threshold
+        if min_height is not None and height < min_height:
+            filtered_by_height += 1
+            continue
+
+        # Calculate exact area (below threshold)
         area_exact = yy.size * dy * dt
-        
+
+        # Filter 3: Area threshold
+        if min_area is not None and area_exact < min_area:
+            filtered_by_area += 1
+            continue
+
+        # Only fit line for events that passed all filters (expensive operation)
+        a, b = fit_contraction_line(yy, tt)
+
         # Triangle approximation
         area_triangle = 0.5 * duration * height
-        
+
         # Convert slope to physical velocity (dy per dt)
         # a is in "y-indices per frame", convert to mm/s
         velocity = a * (dy / dt)  # positive means moving to higher y over time
-        
+
         events.append({
             "label": int(k),
             "n_pixels": int(yy.size),
@@ -259,9 +277,18 @@ def detect_contractions(
             "area_exact": float(area_exact),
             "area_triangle": float(area_triangle),
         })
-    
-    if filtered_count > 0:
-        logger.info(f"Filtered out {filtered_count} components with < {min_pixels} pixels")
+
+    # Log filtering statistics
+    total_filtered = filtered_by_pixels + filtered_by_height + filtered_by_area
+    if total_filtered > 0:
+        parts = []
+        if filtered_by_pixels > 0:
+            parts.append(f"{filtered_by_pixels} by min_pixels (<{min_pixels})")
+        if filtered_by_height > 0:
+            parts.append(f"{filtered_by_height} by min_height (<{min_height:.2f} mm)")
+        if filtered_by_area > 0:
+            parts.append(f"{filtered_by_area} by min_area (<{min_area:.2f} mm²·s)")
+        logger.info(f"Filtered out {total_filtered} components: {', '.join(parts)}")
     
     # Sort by start time
     events.sort(key=lambda e: e["t_range_frames"][0])

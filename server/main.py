@@ -995,6 +995,8 @@ async def detect_contractions_endpoint(
             percentile=parameters.threshold_percentile,
             smooth_sigma=(parameters.smooth_sigma_y, parameters.smooth_sigma_t),
             min_pixels=parameters.min_pixels,
+            min_area=parameters.min_area,
+            min_height=parameters.min_height,
             open_iters=parameters.open_iters,
             close_iters=parameters.close_iters,
         )

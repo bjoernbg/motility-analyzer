@@ -14,6 +14,8 @@ const parameters = ref<ContractionDetectionParameters>({
   open_iters: 1,
   close_iters: 2,
   min_pixels: 200,
+  min_area: null,
+  min_height: null,
 });
 
 const canDetectContractions = computed(() => {
@@ -96,6 +98,9 @@ async function handleClearContractions() {
               min="0"
               class="w-full mt-1 px-2 py-1 text-sm border rounded"
             />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Spatial smoothing (higher = smoother across tracking points)
+            </div>
           </div>
           <div>
             <label class="text-xs font-medium">Smoothing Sigma T</label>
@@ -106,6 +111,9 @@ async function handleClearContractions() {
               min="0"
               class="w-full mt-1 px-2 py-1 text-sm border rounded"
             />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Temporal smoothing (higher = smoother across time)
+            </div>
           </div>
           <div>
             <label class="text-xs font-medium">Threshold Percentile</label>
@@ -117,6 +125,9 @@ async function handleClearContractions() {
               max="100"
               class="w-full mt-1 px-2 py-1 text-sm border rounded"
             />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Lower values detect more contractions (0-100)
+            </div>
           </div>
           <div>
             <label class="text-xs font-medium">Min Pixels</label>
@@ -127,6 +138,37 @@ async function handleClearContractions() {
               min="1"
               class="w-full mt-1 px-2 py-1 text-sm border rounded"
             />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Filter events with fewer pixels (removes noise)
+            </div>
+          </div>
+          <div>
+            <label class="text-xs font-medium">Min Area (mm²·s)</label>
+            <input
+              v-model.number="parameters.min_area"
+              type="number"
+              step="0.1"
+              min="0"
+              placeholder="No filter"
+              class="w-full mt-1 px-2 py-1 text-sm border rounded"
+            />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Filter events below this area
+            </div>
+          </div>
+          <div>
+            <label class="text-xs font-medium">Min Height (mm)</label>
+            <input
+              v-model.number="parameters.min_height"
+              type="number"
+              step="0.1"
+              min="0"
+              placeholder="No filter"
+              class="w-full mt-1 px-2 py-1 text-sm border rounded"
+            />
+            <div class="text-xs text-muted-foreground mt-0.5">
+              Filter events below this height
+            </div>
           </div>
         </div>
       </div>

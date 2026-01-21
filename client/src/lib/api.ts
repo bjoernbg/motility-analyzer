@@ -445,6 +445,8 @@ export interface ContractionDetectionParameters {
   open_iters?: number;
   close_iters?: number;
   min_pixels?: number;
+  min_area?: number | null;
+  min_height?: number | null;
   dy?: number | null;
 }
 

@@ -178,6 +178,8 @@ class ContractionDetectionParameters(BaseModel):
     open_iters: int = Field(default=1, ge=0, description="Binary opening iterations (removes speckles)")
     close_iters: int = Field(default=2, ge=0, description="Binary closing iterations (fills holes)")
     min_pixels: int = Field(default=200, ge=1, description="Minimum pixels per event to keep")
+    min_area: Optional[float] = Field(default=None, ge=0.0, description="Minimum area in mm²·s (exact calculation)")
+    min_height: Optional[float] = Field(default=None, ge=0.0, description="Minimum height in mm (spatial extent)")
     dy: Optional[float] = Field(default=None, ge=0.0, description="Physical spacing between point pairs in mm (auto-calculated if None)")
 
 
