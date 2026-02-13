@@ -15,11 +15,8 @@ import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .config import MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
-from .costmap import costmap_calculation
-from .edge_detection_1d import edge_detection_1d_calculation
-from .edge_detection_canny import edge_detection_canny_calculation
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
-from .database import init_database, CombinedAnalysisDB
+from .database import init_database, clear_all_data, CombinedAnalysisDB
 from .encoder import reencode_video
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -43,7 +40,7 @@ from .models import (
     CombinedAnalysisMetadata,
     CompatibilityCheckResult,
 )
-from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_all_video_caches
+from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_all_video_caches, delete_all_video_files
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
 from .contraction_detection import detect_contractions, calculate_physical_spacing
@@ -79,6 +76,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Width", "X-Height", "X-Dtype"],
 )
 
 
@@ -319,15 +317,17 @@ def get_heatmap_meta(analysis_id: str):
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
+    is_processing = analysis.status == "processing"
+
     # Get video metadata for FPS
     video_path = VideoStorage.get_video_path(analysis.video_id)
     if not video_path or not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
-    
-    # Check for cached response
+
+    # Check for cached response (skip for processing analyses to get fresh data)
     cache_file = video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_meta.json"
-    if cache_file.exists():
+    if not is_processing and cache_file.exists():
         try:
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
@@ -341,7 +341,7 @@ def get_heatmap_meta(analysis_id: str):
         except (json.JSONDecodeError, IOError, ValueError):
             # If cache is corrupted, regenerate
             pass
-    
+
     try:
         video_metadata = get_video_metadata(video_path)
         fps = video_metadata.fps
@@ -387,14 +387,15 @@ def get_heatmap_meta(analysis_id: str):
         # This is critical for large matrices that can be hundreds of MB
         del matrix
     
-    # Cache the response
-    try:
-        with open(cache_file, 'w') as f:
-            json.dump(result.model_dump(), f, indent=2)
-    except IOError:
-        # If caching fails, continue without caching
-        pass
-    
+    # Cache the response (skip for processing analyses to avoid caching partial data)
+    if not is_processing:
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(result.model_dump(), f, indent=2)
+        except IOError:
+            # If caching fails, continue without caching
+            pass
+
     return result
 
 
@@ -404,22 +405,24 @@ def get_heatmap_raw(analysis_id: str):
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
+    is_processing = analysis.status == "processing"
+
     # Get video path for cache location
     video_path = VideoStorage.get_video_path(analysis.video_id)
     if not video_path or not video_path.exists():
         raise HTTPException(status_code=404, detail="Video not found")
-    
-    # Check for cached response
+
+    # Check for cached response (skip for processing analyses to get fresh data)
     cache_file = video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_raw.bin"
     cache_meta_file = video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_raw_meta.json"
-    
-    if cache_file.exists() and cache_meta_file.exists():
+
+    if not is_processing and cache_file.exists() and cache_meta_file.exists():
         try:
             # Load cached metadata for headers
             with open(cache_meta_file, 'r') as f:
                 meta = json.load(f)
-            
+
             # Don't trust cached data if it's empty (width=0 or height=0)
             # This can happen if the cache was created before the analysis completed
             # or if there was no mpp data at the time
@@ -427,7 +430,7 @@ def get_heatmap_raw(analysis_id: str):
                 # Load cached binary data
                 with open(cache_file, 'rb') as f:
                     cached_content = f.read()
-                
+
                 return Response(
                     content=cached_content,
                     media_type="application/octet-stream",
@@ -471,20 +474,21 @@ def get_heatmap_raw(analysis_id: str):
     # This is critical for large matrices that can be hundreds of MB
     del matrix
     
-    # Cache the response
-    try:
-        with open(cache_file, 'wb') as f:
-            f.write(matrix_bytes)
-        with open(cache_meta_file, 'w') as f:
-            json.dump({
-                "width": matrix_shape[0],
-                "height": matrix_shape[1],
-                "dtype": "float32",
-            }, f)
-    except IOError:
-        # If caching fails, continue without caching
-        pass
-    
+    # Cache the response (skip for processing analyses to avoid caching partial data)
+    if not is_processing:
+        try:
+            with open(cache_file, 'wb') as f:
+                f.write(matrix_bytes)
+            with open(cache_meta_file, 'w') as f:
+                json.dump({
+                    "width": matrix_shape[0],
+                    "height": matrix_shape[1],
+                    "dtype": "float32",
+                }, f)
+        except IOError:
+            # If caching fails, continue without caching
+            pass
+
     # Return raw bytes
     return Response(
         content=matrix_bytes,
@@ -714,52 +718,19 @@ async def analyze_frame(video_id: str, frame_number: int, parameters: AnalysisPa
         # Convert to numpy array
         frame_np = np.array(frame)
         
-        # Dispatch to correct edge detection method
-        if parameters.edge_detection_method == "signal_1d":
-            path_top, path_bottom = edge_detection_1d_calculation(
-                frame=frame_np,
-                strip_width=parameters.strip_width,
-                band_height=parameters.band_height,
-                sigma=parameters.sigma,
-                smoothing_factor=parameters.smoothing_factor,
-                horizontal_window_x_left=parameters.horizontal_window_x_left,
-                horizontal_window_x_right=parameters.horizontal_window_x_right,
-            )
-        elif parameters.edge_detection_method == "canny":
-            path_top, path_bottom = edge_detection_canny_calculation(
-                frame=frame_np,
-                canny_threshold1=parameters.canny_threshold1,
-                canny_threshold2=parameters.canny_threshold2,
-                canny_aperture_size=parameters.canny_aperture_size,
-                smoothing_factor=parameters.smoothing_factor,
-                horizontal_window_x_left=parameters.horizontal_window_x_left,
-                horizontal_window_x_right=parameters.horizontal_window_x_right,
-            )
-        elif parameters.edge_detection_method == "silhouette":
-            path_top, path_bottom = edge_detection_silhouette_calculation(
-                frame=frame_np,
-                smoothing_factor=parameters.smoothing_factor,
-                horizontal_window_x_left=parameters.horizontal_window_x_left,
-                horizontal_window_x_right=parameters.horizontal_window_x_right,
-                blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
-                blur_sigma=parameters.silhouette_blur_sigma,
-                close_k=parameters.silhouette_close_k,
-                x_step=parameters.silhouette_x_step,
-                band=parameters.silhouette_band,
-                median_k=parameters.silhouette_median_k,
-            )
-        else:
-            # Default to costmap method
-            _, path_top, path_bottom = costmap_calculation(
-                frame=frame_np,
-                alpha=parameters.alpha,
-                band=parameters.band,
-                smoothing_factor=parameters.smoothing_factor,
-                threshold_percentile=parameters.threshold_percentile,
-                horizontal_window_x_left=parameters.horizontal_window_x_left,
-                horizontal_window_x_right=parameters.horizontal_window_x_right,
-                subsequent_frame_band=parameters.subsequent_frame_band,
-            )
+        # Edge detection using silhouette method
+        path_top, path_bottom = edge_detection_silhouette_calculation(
+            frame=frame_np,
+            smoothing_factor=parameters.smoothing_factor,
+            horizontal_window_x_left=parameters.horizontal_window_x_left,
+            horizontal_window_x_right=parameters.horizontal_window_x_right,
+            blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
+            blur_sigma=parameters.silhouette_blur_sigma,
+            close_k=parameters.silhouette_close_k,
+            x_step=parameters.silhouette_x_step,
+            band=parameters.silhouette_band,
+            median_k=parameters.silhouette_median_k,
+        )
         
         # Calculate center path with perpendicular projection
         path_center = calculate_center_path(
@@ -1136,6 +1107,37 @@ async def delete_analysis(analysis_id: str):
         del task_manager.tasks[analysis_id]
 
     return {"message": "Analysis deleted successfully"}
+
+
+@app.delete("/api/clear-all-data")
+async def clear_all_data_endpoint():
+    """Factory reset: cancel tasks, drop database, delete all video files."""
+    # 1. Cancel all running analysis tasks
+    tasks_cancelled = 0
+    for analysis_id in list(task_manager.analyses.keys()):
+        analysis = task_manager.analyses[analysis_id]
+        if analysis.status == "processing":
+            await task_manager.stop_analysis(analysis_id)
+            tasks_cancelled += 1
+
+    # 2. Clear in-memory state
+    task_manager.tasks.clear()
+    task_manager.analyses.clear()
+
+    # 3. Close all video pool handles
+    video_pool.close_all()
+
+    # 4. Drop and recreate database
+    clear_all_data()
+
+    # 5. Delete all files in videos directory
+    files_deleted = delete_all_video_files()
+
+    return {
+        "message": "All data cleared successfully",
+        "tasks_cancelled": tasks_cancelled,
+        "files_deleted": files_deleted,
+    }
 
 
 # Combined Analyses Endpoints

@@ -178,10 +178,7 @@ async function analyzeCurrentFrameIfReady() {
 // Get default parameters for analysis
 function getDefaultParameters(): AnalysisParameters {
   return {
-    alpha: 1.5,
-    band: 20,
     smoothing_factor: 0.2,
-    threshold_percentile: 80.0,
     horizontal_window_x_left: null,
     horizontal_window_x_right: null,
     num_tracking_points: 30,

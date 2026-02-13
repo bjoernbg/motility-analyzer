@@ -119,6 +119,28 @@ def init_database() -> None:
     migrate_database_for_combined_analyses()
 
 
+def clear_all_data() -> None:
+    """Drop all tables and reinitialize the database (factory reset).
+
+    This reclaims disk space via VACUUM after dropping tables.
+    """
+    db_path = Path(DATABASE_PATH)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DROP TABLE IF EXISTS contraction_events")
+        conn.execute("DROP TABLE IF EXISTS frames")
+        conn.execute("DROP TABLE IF EXISTS combined_analyses")
+        conn.execute("DROP TABLE IF EXISTS analyses")
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+
+    # Recreate all tables and indexes
+    init_database()
+
+
 class AnalysisDB:
     """Database operations for analyses."""
     

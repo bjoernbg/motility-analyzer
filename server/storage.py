@@ -172,6 +172,26 @@ def clear_heatmap_cache(analysis_id: str, video_id: str) -> None:
             pass
 
 
+def delete_all_video_files() -> int:
+    """Delete every file in VIDEOS_DIR (preserving the directory itself).
+
+    Covers video files, metadata JSON, heatmap caches, and settings files.
+    Best-effort: continues on per-file failures.
+
+    Returns:
+        Number of files successfully deleted.
+    """
+    deleted = 0
+    for path in VIDEOS_DIR.iterdir():
+        if path.is_file():
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                pass
+    return deleted
+
+
 def clear_all_video_caches(video_id: str, analysis_ids: List[str]) -> None:
     """Clear all cache files for a video and its analyses.
 

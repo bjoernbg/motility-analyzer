@@ -66,24 +66,9 @@ export interface Video {
 }
 
 export interface AnalysisParameters {
-  // Edge detection method selection
-  edge_detection_method?: "costmap" | "signal_1d" | "canny" | "silhouette";
-  // Costmap parameters (only used when edge_detection_method="costmap")
-  alpha?: number;
-  band?: number;
-  threshold_percentile?: number;
-  subsequent_frame_band?: number | null;
-  // Smoothing factor (used by both methods)
+  // Smoothing factor
   smoothing_factor?: number;
-  // 1D Signal method parameters (only used when edge_detection_method="signal_1d")
-  strip_width?: number;
-  band_height?: number;
-  sigma?: number;
-  // Canny method parameters (only used when edge_detection_method="canny")
-  canny_threshold1?: number;
-  canny_threshold2?: number;
-  canny_aperture_size?: number;
-  // Silhouette method parameters (only used when edge_detection_method="silhouette")
+  // Silhouette method parameters
   silhouette_blur_ksize_x?: number;
   silhouette_blur_ksize_y?: number;
   silhouette_blur_sigma?: number;
@@ -95,7 +80,7 @@ export interface AnalysisParameters {
   horizontal_window_x_left?: number | null;
   horizontal_window_x_right?: number | null;
   // Measurement configuration
-  num_tracking_points?: number;
+  num_tracking_points?: 30 | 50 | 80 | 120 | 200;
   distribution_method?: "center_line_projection" | "x_axis_even";
 }
 
@@ -409,30 +394,39 @@ export async function getHeatmapMeta(analysisId: string): Promise<HeatmapMeta> {
   });
 }
 
-export async function getHeatmapRaw(analysisId: string): Promise<ArrayBuffer> {
+export interface HeatmapRawResult {
+  buffer: ArrayBuffer;
+  width: number;
+  height: number;
+}
+
+export async function getHeatmapRaw(analysisId: string): Promise<HeatmapRawResult> {
   const endpointKey = `heatmap-raw:${analysisId}`;
   const controller = getAbortController(endpointKey);
-  
+
   try {
     const response = await fetch(`${API_BASE_URL}/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`, {
       signal: controller.signal,
     });
-    
+
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }));
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
-    
+
+    const width = parseInt(response.headers.get('X-Width') || '0', 10);
+    const height = parseInt(response.headers.get('X-Height') || '0', 10);
+
     cleanupAbortController(endpointKey);
-    return response.arrayBuffer();
+    return { buffer: await response.arrayBuffer(), width, height };
   } catch (error) {
     cleanupAbortController(endpointKey);
-    
+
     // Re-throw AbortError so it can be handled by the caller
     if (error instanceof Error && error.name === 'AbortError') {
       throw error;
     }
-    
+
     throw error;
   }
 }
@@ -531,6 +525,10 @@ export async function clearContractionEvents(analysisId: string): Promise<void> 
   await fetchJson(`/api/analysis/${encodeURIComponent(analysisId)}/contractions`, {
     method: 'DELETE',
   });
+}
+
+export async function clearAllData(): Promise<{ message: string; tasks_cancelled: number; files_deleted: number }> {
+  return fetchJson('/api/clear-all-data', { method: 'DELETE' });
 }
 
 export async function getDisplaySettings(analysisId: string): Promise<DisplaySettings> {

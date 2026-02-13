@@ -7,34 +7,15 @@ import { debounce } from '../lib/utils';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
 import { Icon } from './ui/icon';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from './ui/select';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 
 const store = useAnalysisStore();
 
-// Edge detection method
-const edgeDetectionMethod = ref<"costmap" | "signal_1d" | "canny" | "silhouette">("silhouette");
-
-// Costmap parameters (only used when edge_detection_method="costmap")
-const alpha = ref(1.5);
-const band = ref(20);
-const thresholdPercentile = ref(80.0);
-
-// Smoothing factor (used by both methods)
+// Smoothing factor
 const smoothingFactor = ref(0.2);
 
-// 1D Signal method parameters (only used when edge_detection_method="signal_1d")
-const stripWidth = ref(5);
-const bandHeight = ref(30);
-const sigma = ref(2.0);
-
-// Canny method parameters (only used when edge_detection_method="canny")
-const cannyThreshold1 = ref(50.0);
-const cannyThreshold2 = ref(150.0);
-const cannyApertureSize = ref(3);
-
-// Silhouette method parameters (only used when edge_detection_method="silhouette")
+// Silhouette method parameters
 const silhouetteBlurKsize = ref(7);
 const silhouetteBlurSigma = ref(1.6);
 const silhouetteCloseK = ref(5);
@@ -43,65 +24,16 @@ const silhouetteBand = ref(60);
 const silhouetteMedianK = ref(3);
 
 // Measurement configuration parameters
-const numTrackingPoints = ref(30);
+const trackingPointPresets = [30, 50, 80, 120, 200] as const;
+const numTrackingPoints = ref<30 | 50 | 80 | 120 | 200>(30);
 const distributionMethod = ref<"center_line_projection" | "x_axis_even">("center_line_projection");
 
 const isRunning = ref(false);
 
 // Computed properties to convert between number and array for Slider component
-const alphaModel = computed({
-  get: () => [alpha.value],
-  set: (value: number[]) => { alpha.value = value[0] ?? 1.5; }
-});
-
-const bandModel = computed({
-  get: () => [band.value],
-  set: (value: number[]) => { band.value = value[0] ?? 20; }
-});
-
 const smoothingFactorModel = computed({
   get: () => [smoothingFactor.value],
   set: (value: number[]) => { smoothingFactor.value = value[0] ?? 0.2; }
-});
-
-const thresholdPercentileModel = computed({
-  get: () => [thresholdPercentile.value],
-  set: (value: number[]) => { thresholdPercentile.value = value[0] ?? 80.0; }
-});
-
-const numTrackingPointsModel = computed({
-  get: () => [numTrackingPoints.value],
-  set: (value: number[]) => { numTrackingPoints.value = value[0] ?? 30; }
-});
-
-const stripWidthModel = computed({
-  get: () => [stripWidth.value],
-  set: (value: number[]) => { stripWidth.value = value[0] ?? 5; }
-});
-
-const bandHeightModel = computed({
-  get: () => [bandHeight.value],
-  set: (value: number[]) => { bandHeight.value = value[0] ?? 30; }
-});
-
-const sigmaModel = computed({
-  get: () => [sigma.value],
-  set: (value: number[]) => { sigma.value = value[0] ?? 2.0; }
-});
-
-const cannyThreshold1Model = computed({
-  get: () => [cannyThreshold1.value],
-  set: (value: number[]) => { cannyThreshold1.value = value[0] ?? 50.0; }
-});
-
-const cannyThreshold2Model = computed({
-  get: () => [cannyThreshold2.value],
-  set: (value: number[]) => { cannyThreshold2.value = value[0] ?? 150.0; }
-});
-
-const cannyApertureSizeModel = computed({
-  get: () => [cannyApertureSize.value],
-  set: (value: number[]) => { cannyApertureSize.value = value[0] ?? 3; }
 });
 
 const silhouetteBlurKsizeModel = computed({
@@ -138,17 +70,7 @@ const silhouetteMedianKModel = computed({
 function syncParamsFromStore() {
   const params = store.currentParameters;
   if (params) {
-    edgeDetectionMethod.value = params.edge_detection_method ?? "silhouette";
-    alpha.value = params.alpha ?? 1.5;
-    band.value = params.band ?? 20;
     smoothingFactor.value = params.smoothing_factor ?? 0.2;
-    thresholdPercentile.value = params.threshold_percentile ?? 80.0;
-    stripWidth.value = params.strip_width ?? 5;
-    bandHeight.value = params.band_height ?? 30;
-    sigma.value = params.sigma ?? 2.0;
-    cannyThreshold1.value = params.canny_threshold1 ?? 50.0;
-    cannyThreshold2.value = params.canny_threshold2 ?? 150.0;
-    cannyApertureSize.value = params.canny_aperture_size ?? 3;
     // Migration logic for blur kernel: if x and y differ, take max
     silhouetteBlurKsize.value = Math.max(
       params.silhouette_blur_ksize_x ?? 7,
@@ -159,21 +81,16 @@ function syncParamsFromStore() {
     silhouetteXStep.value = params.silhouette_x_step ?? 7;
     silhouetteBand.value = params.silhouette_band ?? 60;
     silhouetteMedianK.value = params.silhouette_median_k ?? 3;
-    numTrackingPoints.value = params.num_tracking_points ?? 30;
+    // Snap to nearest valid preset for num_tracking_points
+    const raw = params.num_tracking_points ?? 30;
+    const closest = trackingPointPresets.reduce((prev, curr) =>
+      Math.abs(curr - raw) < Math.abs(prev - raw) ? curr : prev
+    );
+    numTrackingPoints.value = closest;
     distributionMethod.value = params.distribution_method ?? "center_line_projection";
   } else {
     // Reset to defaults if no saved settings
-    edgeDetectionMethod.value = "silhouette";
-    alpha.value = 1.5;
-    band.value = 20;
     smoothingFactor.value = 0.2;
-    thresholdPercentile.value = 80.0;
-    stripWidth.value = 5;
-    bandHeight.value = 30;
-    sigma.value = 2.0;
-    cannyThreshold1.value = 50.0;
-    cannyThreshold2.value = 150.0;
-    cannyApertureSize.value = 3;
     silhouetteBlurKsize.value = 7;
     silhouetteBlurSigma.value = 1.6;
     silhouetteCloseK.value = 5;
@@ -221,17 +138,7 @@ const debouncedSaveSettings = debounce(async () => {
 // Watch for parameter changes and trigger debounced single-frame analysis and save
 watch(
   [
-    edgeDetectionMethod,
-    alpha,
-    band,
     smoothingFactor,
-    thresholdPercentile,
-    stripWidth,
-    bandHeight,
-    sigma,
-    cannyThreshold1,
-    cannyThreshold2,
-    cannyApertureSize,
     silhouetteBlurKsize,
     silhouetteBlurSigma,
     silhouetteCloseK,
@@ -256,18 +163,7 @@ function getCurrentParameters(): AnalysisParameters {
   // Get horizontal window values from store's current parameters if available
   const currentParams = store.currentParameters;
   return {
-    edge_detection_method: edgeDetectionMethod.value,
-    alpha: alpha.value,
-    band: band.value,
     smoothing_factor: smoothingFactor.value,
-    threshold_percentile: thresholdPercentile.value,
-    strip_width: stripWidth.value,
-    band_height: bandHeight.value,
-    sigma: sigma.value,
-    canny_threshold1: cannyThreshold1.value,
-    canny_threshold2: cannyThreshold2.value,
-    canny_aperture_size: cannyApertureSize.value,
-    // Sync both x and y to the same value for backwards compatibility
     silhouette_blur_ksize_x: silhouetteBlurKsize.value,
     silhouette_blur_ksize_y: silhouetteBlurKsize.value,
     silhouette_blur_sigma: silhouetteBlurSigma.value,
@@ -522,18 +418,29 @@ async function confirmDeleteAnalysis() {
 
       <div class="param-group">
         <label for="num-tracking-points">
-          Number of Tracking Points: {{ numTrackingPoints }}
+          Tracking Points: {{ numTrackingPoints }}
           <Popover>
             <PopoverTrigger class="float-right">
               <Icon name="mdi:information-outline" />
             </PopoverTrigger>
             <PopoverContent>
-              <div>Number of points to track for measurement (5 - 200)</div>
+              <div>Number of points to track for measurement along the detected edge</div>
             </PopoverContent>
           </Popover>
         </label>
-        <Slider v-model="numTrackingPointsModel" :min="5" :max="200" :step="1"
-          :disabled="isRunning || store.isProcessing" />
+        <div class="tracking-points-presets">
+          <Button
+            v-for="preset in trackingPointPresets"
+            :key="preset"
+            type="button"
+            :variant="numTrackingPoints === preset ? 'default' : 'outline'"
+            size="sm"
+            :disabled="isRunning || store.isProcessing"
+            @click="numTrackingPoints = preset"
+          >
+            {{ preset }}
+          </Button>
+        </div>
       </div>
 
       <div class="param-group">
@@ -566,201 +473,12 @@ async function confirmDeleteAnalysis() {
         </RadioGroup>
       </div>
 
-      <h3>Edge Detection</h3>
-
-      <div class="param-group">
-        <Label for="edge-detection-method">
-          Edge Detection Method
-          <Popover>
-            <PopoverTrigger class="float-right">
-              <Icon name="mdi:information-outline" />
-            </PopoverTrigger>
-            <PopoverContent>
-              <div>
-                <div><strong>Silhouette:</strong> Mask-based segmentation (recommended, default)</div>
-                <div><strong>Costmap:</strong> Original gradient-based method</div>
-                <div><strong>1D Signal:</strong> 1D signal analysis with median collapse</div>
-                <div><strong>Canny:</strong> OpenCV Canny edge detection</div>
-              </div>
-            </PopoverContent>
-          </Popover>
-        </Label>
-        <Select v-model="edgeDetectionMethod"
-          :disabled="isRunning || store.isProcessing">
-          <SelectTrigger>
-            <SelectValue placeholder="Select method" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="silhouette">Silhouette</SelectItem>
-            <SelectItem value="costmap">Costmap</SelectItem>
-            <SelectItem value="signal_1d">1D Signal</SelectItem>
-            <SelectItem value="canny">Canny</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
       <details class="advanced-settings">
         <summary>
           <span>Advanced Settings</span>
           <Icon name="mdi:chevron-down" class="chevron-icon" />
         </summary>
         <div class="advanced-content">
-
-          <!-- Costmap method parameters -->
-          <template v-if="edgeDetectionMethod === 'costmap'">
-            <div class="param-group">
-              <label for="alpha">
-                Alpha: {{ alpha.toFixed(2) }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Contrast enhancement factor (0.0 - 5.0)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="alphaModel" :min="0" :max="5" :step="0.1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="band">
-                Band: {{ band }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Search band width in pixels (1 - 100)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="bandModel" :min="1" :max="100" :step="1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="threshold-percentile">
-                Threshold Percentile: {{ thresholdPercentile.toFixed(1) }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Percentile threshold for brightest pixels (0.0 - 100.0)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="thresholdPercentileModel" :min="0" :max="100" :step="0.1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-          </template>
-
-          <!-- 1D Signal method parameters -->
-          <template v-if="edgeDetectionMethod === 'signal_1d'">
-            <div class="param-group">
-              <label for="strip-width">
-                Strip Width: {{ stripWidth }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Width of horizontal strip for 1D signal collapse (1 - 20 pixels)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="stripWidthModel" :min="1" :max="20" :step="1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="band-height">
-                Band Height: {{ bandHeight }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Height of vertical band for 1D signal (10 - 100 pixels)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="bandHeightModel" :min="10" :max="100" :step="1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="sigma">
-                Sigma: {{ sigma.toFixed(2) }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Gaussian sigma parameter for smoothing (0.5 - 10.0)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="sigmaModel" :min="0.5" :max="10" :step="0.1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-          </template>
-
-          <!-- Canny method parameters -->
-          <template v-if="edgeDetectionMethod === 'canny'">
-            <div class="param-group">
-              <label for="canny-threshold1">
-                Canny Threshold 1: {{ cannyThreshold1.toFixed(1) }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Lower threshold for Canny edge detection (0.0 - 255.0)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="cannyThreshold1Model" :min="0" :max="255" :step="1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="canny-threshold2">
-                Canny Threshold 2: {{ cannyThreshold2.toFixed(1) }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Upper threshold for Canny edge detection (0.0 - 255.0)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="cannyThreshold2Model" :min="0" :max="255" :step="1"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-
-            <div class="param-group">
-              <label for="canny-aperture-size">
-                Canny Aperture Size: {{ cannyApertureSize }}
-                <Popover>
-                  <PopoverTrigger class="float-right">
-                    <Icon name="mdi:information-outline" />
-                  </PopoverTrigger>
-                  <PopoverContent>
-                    <div>Aperture size for Canny edge detection (3, 5, or 7)</div>
-                  </PopoverContent>
-                </Popover>
-              </label>
-              <Slider v-model="cannyApertureSizeModel" :min="3" :max="7" :step="2"
-                :disabled="isRunning || store.isProcessing" />
-            </div>
-          </template>
-
-          <!-- Silhouette method parameters -->
-          <template v-if="edgeDetectionMethod === 'silhouette'">
             <div class="param-group">
               <label for="silhouette-blur-ksize">
                 Blur Kernel Size: {{ silhouetteBlurKsize }}
@@ -856,9 +574,8 @@ async function confirmDeleteAnalysis() {
               <Slider v-model="silhouetteMedianKModel" :min="3" :max="101" :step="2"
                 :disabled="isRunning || store.isProcessing" />
             </div>
-          </template>
 
-          <!-- Smoothing factor (shared by all methods) -->
+          <!-- Smoothing factor -->
           <div class="param-group">
             <label for="smoothing-factor">
               Smoothing Factor: {{ smoothingFactor.toFixed(2) }}
@@ -1330,6 +1047,15 @@ h3:not(:first-child) {
 
 .advanced-settings summary .chevron-icon {
   transition: transform 0.2s;
+}
+
+.tracking-points-presets {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.tracking-points-presets > * {
+  flex: 1;
 }
 
 .advanced-content {

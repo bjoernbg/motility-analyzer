@@ -14,10 +14,10 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
     The re-encoded video replaces the original file and is converted to MP4 format.
 
     Settings:
-    - Codec: libsvtav1 (AV1 encoder)
-    - Preset: 6 (balanced speed/quality)
-    - CRF: 30 (quality level)
-    - Pixel format: yuv420p10le (10-bit color)
+    - Codec: libx264 (H.264)
+    - Preset: slow (better compression)
+    - CRF: 24 (quality level)
+    - Pixel format: yuv420p (8-bit)
     - Audio: removed (-an)
     - Metadata: stripped (map_metadata -1, map_chapters -1)
     - Container: MP4 with faststart flag
@@ -56,10 +56,10 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
             "-hide_banner",
             "-i", str(video_path),
             "-map", "0:v:0",
-            "-c:v", "libsvtav1",
-            "-preset", "6",
-            "-crf", "30",
-            "-pix_fmt", "yuv420p10le",
+            "-c:v", "libx264",
+            "-crf", "24",
+            "-preset", "slow",
+            "-pix_fmt", "yuv420p",
             "-an",
             "-map_metadata", "-1",
             "-map_chapters", "-1",

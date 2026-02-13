@@ -96,6 +96,13 @@ const pixelToMmFactor = computed(() => meta.value?.display_settings?.pixel_to_mm
 const heatmapMinMm = computed(() => meta.value?.display_settings?.heatmap_min_mm ?? HEATMAP_MIN_MM);
 const heatmapMaxMm = computed(() => meta.value?.display_settings?.heatmap_max_mm ?? HEATMAP_MAX_MM);
 
+// Live refresh during processing
+const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null);
+const isRefreshing = ref(false);
+const isAnalysisProcessing = computed(
+  () => store.currentAnalysis?.id === props.analysisId && store.progressStatus === 'processing'
+);
+
 // Derived constants from display settings
 const MIN_PX = computed(() => heatmapMinMm.value * pixelToMmFactor.value);
 const MAX_PX = computed(() => heatmapMaxMm.value * pixelToMmFactor.value);
@@ -118,9 +125,14 @@ onMounted(async () => {
   renderAxes();
   setupMouseMove();
   setupResizeObserver();
+  // Start live refresh if analysis is already processing
+  if (isAnalysisProcessing.value) {
+    startLiveRefresh();
+  }
 });
 
 onUnmounted(() => {
+  stopLiveRefresh();
   if (resizeObserver.value) {
     resizeObserver.value.disconnect();
   }
@@ -164,6 +176,19 @@ watch(() => meta.value?.display_settings, () => {
   }
 }, { deep: true });
 
+// Watch for processing state changes to start/stop live refresh
+watch(isAnalysisProcessing, (processing, wasProcessing) => {
+  if (processing) {
+    startLiveRefresh();
+  } else if (wasProcessing) {
+    // Transitioned from processing to terminal state
+    stopLiveRefresh();
+    heatmapCache.invalidate(props.analysisId);
+    // Do a final full load to cache the complete data
+    loadData();
+  }
+});
+
 const resizeObserver = ref<ResizeObserver | null>(null);
 
 function setupResizeObserver() {
@@ -174,94 +199,132 @@ function setupResizeObserver() {
       if (meta.value && data.value && container.value) {
         const axisWidth = props.compact ? 0 : AXIS_WIDTH;
         const containerWidth = container.value.clientWidth - axisWidth;
-        const dataWidth = meta.value.width;
-      const minScale = containerWidth / dataWidth;
-      
-      // If zoomed out beyond fit-to-width, adjust to new container size
-      if (scale.value <= minScale * 1.01) {
-        calculateInitialScale();
+        // Use expected total frames (same logic as calculateInitialScale) for min scale check
+        const videoMeta = store.currentVideo?.metadata;
+        const expectedTotalFrames = videoMeta
+          ? Math.floor(videoMeta.total_frames / (videoMeta.frame_multiplier ?? 1))
+          : 0;
+        const dataWidth = (expectedTotalFrames > meta.value.width)
+          ? expectedTotalFrames
+          : meta.value.width;
+        const minScale = containerWidth / dataWidth;
+
+        // If zoomed out beyond fit-to-width, adjust to new container size
+        if (scale.value <= minScale * 1.01) {
+          calculateInitialScale();
+        }
       }
-    }
-    renderHeatmap();
-    renderAxes();
-  });
+      renderHeatmap();
+      renderAxes();
+    });
   
   resizeObserver.value.observe(container.value);
 }
 
-async function loadData() {
+async function loadData(skipCache = false) {
   const analysisId = props.analysisId;
-  
+
   try {
-    isLoading.value = true;
-    error.value = null;
-    
-    // Check cache first for instant switching
-    const cached = heatmapCache.getCached(analysisId);
-    if (cached) {
-      meta.value = cached.meta;
-      data.value = cached.data;
-      isLoading.value = false;
-      
-      // Calculate scale after setting data
-      await new Promise(resolve => setTimeout(resolve, 0));
-      calculateInitialScale();
-      return;
+    // Don't show loading spinner for background refreshes
+    if (!skipCache) {
+      isLoading.value = true;
     }
-    
-    // 1. Fetch meta
+    error.value = null;
+
+    // Check client-side cache first for instant switching (skip during live refresh)
+    if (!skipCache) {
+      const cached = heatmapCache.getCached(analysisId);
+      if (cached) {
+        meta.value = cached.meta;
+        data.value = cached.data;
+        isLoading.value = false;
+
+        // Calculate scale after setting data
+        await new Promise(resolve => setTimeout(resolve, 0));
+        calculateInitialScale();
+        return;
+      }
+    }
+
+    // 1. Fetch meta (for fps, display_settings, min/max)
     const metaResp = await getHeatmapMeta(analysisId);
-    
+
     // Check if analysis ID changed during fetch (user switched again)
     if (props.analysisId !== analysisId) {
       return; // Abort, another load is in progress
     }
-    
-    meta.value = metaResp;
-    
+
     // Check if we have data
     if (metaResp.width === 0 || metaResp.height === 0) {
-      error.value = "No heatmap data available. The analysis may not have measurement point pairs (mpp) data.";
-      isLoading.value = false;
+      // During live refresh, don't set error or update meta - keep showing current partial heatmap
+      if (!skipCache) {
+        meta.value = metaResp;
+        error.value = "No heatmap data available. The analysis may not have measurement point pairs (mpp) data.";
+        isLoading.value = false;
+      }
       return;
     }
 
-    // 2. Fetch raw data
-    const buffer = await getHeatmapRaw(analysisId);
-    
+    // 2. Fetch raw data (returns authoritative dimensions in headers)
+    const rawResult = await getHeatmapRaw(analysisId);
+
     // Check if analysis ID changed during fetch
     if (props.analysisId !== analysisId) {
       return; // Abort, another load is in progress
     }
-    
+
     // Use Float32Array directly from binary response (zero-copy view)
-    const dataArray = new Float32Array(buffer);
-    
-    // Verify data size matches expected
-    const expectedSize = metaResp.width * metaResp.height;
+    const dataArray = new Float32Array(rawResult.buffer);
+
+    // Use dimensions from raw response headers (authoritative, avoids race with meta)
+    const actualWidth = rawResult.width;
+    const actualHeight = rawResult.height;
+
+    if (actualWidth === 0 || actualHeight === 0) {
+      if (!skipCache) {
+        meta.value = metaResp;
+        error.value = "No heatmap data available.";
+        isLoading.value = false;
+      }
+      return;
+    }
+
+    // Verify data size matches the raw response's own dimensions
+    const expectedSize = actualWidth * actualHeight;
     if (dataArray.length !== expectedSize) {
       throw new Error(`Data size mismatch: expected ${expectedSize}, got ${dataArray.length}`);
     }
-    
-    // Store in cache for future instant access
-    heatmapCache.setCache(analysisId, metaResp, dataArray);
-    
+
+    // Update meta with authoritative width from raw response (may differ during processing)
+    const resolvedMeta: HeatmapMeta = { ...metaResp, width: actualWidth, height: actualHeight };
+
+    // Store in cache for future instant access (skip during live refresh to avoid caching partial data)
+    if (!skipCache) {
+      heatmapCache.setCache(analysisId, resolvedMeta, dataArray);
+    }
+
+    // Track whether this is the first time we're getting data
+    const hadNoData = !data.value;
+
     // Update refs
+    meta.value = resolvedMeta;
     data.value = dataArray;
-    
-    // Calculate initial scale to fit entire heatmap width in container
-    // Wait for next tick to ensure container is rendered
-    await new Promise(resolve => setTimeout(resolve, 0));
-    calculateInitialScale();
+
+    // Calculate initial scale on first load, or when data first arrives during live refresh
+    // (skip subsequent live refreshes to preserve user zoom/pan)
+    if (!skipCache || hadNoData) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      calculateInitialScale();
+    }
   } catch (err) {
     // Don't set error if request was aborted (e.g., user switched analyses)
     if (err instanceof Error && err.name === 'AbortError') {
       // Silently ignore abort errors - they're expected when switching analyses
       return;
     }
-    
-    // Only set error if we're still loading this analysis
-    if (props.analysisId === analysisId) {
+
+    // Only set error if we're still loading this analysis (and not a background refresh)
+    if (props.analysisId === analysisId && !skipCache) {
       error.value = err instanceof Error ? err.message : "Failed to load heatmap data";
       console.error("Failed to load heatmap data:", err);
     }
@@ -273,18 +336,50 @@ async function loadData() {
   }
 }
 
+function startLiveRefresh() {
+  if (refreshTimer.value) return; // Already running
+  refreshTimer.value = setInterval(async () => {
+    if (isRefreshing.value) return; // Skip if previous refresh still in progress
+    isRefreshing.value = true;
+    try {
+      await loadData(true);
+    } finally {
+      isRefreshing.value = false;
+    }
+  }, 5000);
+}
+
+function stopLiveRefresh() {
+  if (refreshTimer.value) {
+    clearInterval(refreshTimer.value);
+    refreshTimer.value = null;
+  }
+  isRefreshing.value = false;
+}
+
 function calculateInitialScale() {
   if (!container.value || !meta.value) return;
-  
+
   const axisWidth = props.compact ? 0 : AXIS_WIDTH;
   const containerWidth = container.value.clientWidth - axisWidth;
-  const dataWidth = meta.value.width;
-  
+
+  // Calculate expected total frames from video metadata (accounting for frame multiplier)
+  const videoMeta = store.currentVideo?.metadata;
+  const expectedTotalFrames = videoMeta
+    ? Math.floor(videoMeta.total_frames / (videoMeta.frame_multiplier ?? 1))
+    : 0;
+
+  // When data is partial (fewer frames than expected), use total expected width
+  // so the heatmap builds up from the left instead of stretching to fill the container
+  const dataWidth = (expectedTotalFrames > meta.value.width)
+    ? expectedTotalFrames
+    : meta.value.width;
+
   if (containerWidth > 0 && dataWidth > 0) {
     // Calculate scale so entire width fits: containerWidth = dataWidth * scale
     // Allow fractional scale when there's more data than pixels
     scale.value = containerWidth / dataWidth;
-    
+
     // Reset offset
     offsetX.value = 0;
     offsetY.value = 0;

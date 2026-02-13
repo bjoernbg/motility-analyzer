@@ -8,9 +8,6 @@ import logging
 import cv2  # type: ignore[import-untyped]
 import numpy as np
 
-from .costmap import costmap_calculation
-from .edge_detection_1d import edge_detection_1d_calculation
-from .edge_detection_canny import edge_detection_canny_calculation
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .metadata import get_video_metadata
 from .models import AnalysisParameters, AnalysisResult, FrameData
@@ -640,60 +637,21 @@ async def process_video(
             # Convert to numpy array if needed
             frame_np = np.array(frame)
             
-            # Dispatch to correct edge detection method
-            if parameters.edge_detection_method == "signal_1d":
-                path_top, path_bottom = edge_detection_1d_calculation(
-                    frame=frame_np,
-                    strip_width=parameters.strip_width,
-                    band_height=parameters.band_height,
-                    sigma=parameters.sigma,
-                    smoothing_factor=parameters.smoothing_factor,
-                    horizontal_window_x_left=parameters.horizontal_window_x_left,
-                    horizontal_window_x_right=parameters.horizontal_window_x_right,
-                    prev_path_top=prev_path_top,
-                    prev_path_bottom=prev_path_bottom,
-                )
-            elif parameters.edge_detection_method == "canny":
-                path_top, path_bottom = edge_detection_canny_calculation(
-                    frame=frame_np,
-                    canny_threshold1=parameters.canny_threshold1,
-                    canny_threshold2=parameters.canny_threshold2,
-                    canny_aperture_size=parameters.canny_aperture_size,
-                    smoothing_factor=parameters.smoothing_factor,
-                    horizontal_window_x_left=parameters.horizontal_window_x_left,
-                    horizontal_window_x_right=parameters.horizontal_window_x_right,
-                    prev_path_top=prev_path_top,
-                    prev_path_bottom=prev_path_bottom,
-                )
-            elif parameters.edge_detection_method == "silhouette":
-                path_top, path_bottom = edge_detection_silhouette_calculation(
-                    frame=frame_np,
-                    smoothing_factor=parameters.smoothing_factor,
-                    horizontal_window_x_left=parameters.horizontal_window_x_left,
-                    horizontal_window_x_right=parameters.horizontal_window_x_right,
-                    prev_path_top=prev_path_top,
-                    prev_path_bottom=prev_path_bottom,
-                    blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
-                    blur_sigma=parameters.silhouette_blur_sigma,
-                    close_k=parameters.silhouette_close_k,
-                    x_step=parameters.silhouette_x_step,
-                    band=parameters.silhouette_band,
-                    median_k=parameters.silhouette_median_k,
-                )
-            else:
-                # Default to costmap method
-                _, path_top, path_bottom = costmap_calculation(
-                    frame=frame_np,
-                    alpha=parameters.alpha,
-                    band=parameters.band,
-                    smoothing_factor=parameters.smoothing_factor,
-                    threshold_percentile=parameters.threshold_percentile,
-                    horizontal_window_x_left=parameters.horizontal_window_x_left,
-                    horizontal_window_x_right=parameters.horizontal_window_x_right,
-                    prev_path_top=prev_path_top,
-                    prev_path_bottom=prev_path_bottom,
-                    subsequent_frame_band=parameters.subsequent_frame_band,
-                )
+            # Edge detection using silhouette method
+            path_top, path_bottom = edge_detection_silhouette_calculation(
+                frame=frame_np,
+                smoothing_factor=parameters.smoothing_factor,
+                horizontal_window_x_left=parameters.horizontal_window_x_left,
+                horizontal_window_x_right=parameters.horizontal_window_x_right,
+                prev_path_top=prev_path_top,
+                prev_path_bottom=prev_path_bottom,
+                blur_ksize=(parameters.silhouette_blur_ksize_x, parameters.silhouette_blur_ksize_y),
+                blur_sigma=parameters.silhouette_blur_sigma,
+                close_k=parameters.silhouette_close_k,
+                x_step=parameters.silhouette_x_step,
+                band=parameters.silhouette_band,
+                median_k=parameters.silhouette_median_k,
+            )
             
             # Update previous paths for next frame
             prev_path_top = path_top
@@ -768,12 +726,10 @@ async def process_video(
         "average_points_center_per_frame": sum(len(frame.pc) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
         "average_regions_per_frame": sum(len(frame.colored_regions) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
         "parameters_used": {
-            "alpha": parameters.alpha,
-            "band": parameters.band,
             "smoothing_factor": parameters.smoothing_factor,
-            "threshold_percentile": parameters.threshold_percentile,
             "horizontal_window_x_left": parameters.horizontal_window_x_left,
             "horizontal_window_x_right": parameters.horizontal_window_x_right,
+            "num_tracking_points": parameters.num_tracking_points,
         },
     }
     

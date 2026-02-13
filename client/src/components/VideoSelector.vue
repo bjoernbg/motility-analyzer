@@ -15,6 +15,7 @@ const showModal = ref(false);
 const isReencoding = ref(false);
 const showSuccessModal = ref(false);
 const encodeStats = ref<ReencodeStatistics | null>(null);
+const isClearingAll = ref(false);
 
 // Check if current video needs re-encoding
 const needsReencoding = computed(() => {
@@ -175,6 +176,29 @@ async function handleReencode() {
     alert(`Failed to re-encode "${filename}": ${error instanceof Error ? error.message : 'Unknown error'}`);
   } finally {
     isReencoding.value = false;
+  }
+}
+
+async function handleClearAllData() {
+  const confirmed = confirm(
+    'Clear ALL data?\n\n' +
+    'This will permanently delete:\n' +
+    '  - All uploaded videos\n' +
+    '  - All analyses and results\n' +
+    '  - All cached heatmaps and metadata\n\n' +
+    'This action cannot be undone.'
+  );
+
+  if (!confirmed) return;
+
+  isClearingAll.value = true;
+  try {
+    await store.clearAllData();
+    closeModal();
+  } catch (error) {
+    console.error('Failed to clear all data:', error);
+  } finally {
+    isClearingAll.value = false;
   }
 }
 
@@ -368,6 +392,16 @@ function closeSuccessModal() {
 
             <div v-if="store.error" class="error">
               {{ store.error }}
+            </div>
+
+            <div class="clear-all-section">
+              <button
+                class="clear-all-button"
+                :disabled="isClearingAll"
+                @click="handleClearAllData"
+              >
+                {{ isClearingAll ? 'Clearing...' : 'Clear All Data' }}
+              </button>
             </div>
           </div>
         </div>
@@ -651,6 +685,36 @@ h3 {
   color: var(--color-error-600);
   border-radius: 4px;
   border: 1px solid var(--color-error-200);
+}
+
+/* Clear All Data */
+.clear-all-section {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-light);
+}
+
+.clear-all-button {
+  width: 100%;
+  padding: 0.625rem 1rem;
+  background: transparent;
+  color: var(--color-error-600);
+  border: 1px solid var(--color-error-300);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.clear-all-button:hover:not(:disabled) {
+  background: var(--color-error-100);
+  border-color: var(--color-error-500);
+}
+
+.clear-all-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Encoding Overlay */

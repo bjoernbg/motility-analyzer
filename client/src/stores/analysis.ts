@@ -13,6 +13,7 @@ import type {
   CombinedAnalysis,
   CompatibilityCheckResult,
 } from '../lib/api';
+import { useHeatmapCache } from '../composables/useHeatmapCache';
 import {
   uploadVideo,
   listVideos,
@@ -28,6 +29,7 @@ import {
   getVideoSettings,
   saveVideoSettings,
   deleteAnalysis,
+  clearAllData as clearAllDataApi,
   detectContractions,
   getContractionEvents,
   clearContractionEvents,
@@ -453,6 +455,19 @@ export const useAnalysisStore = defineStore('analysis', () => {
         // Stop polling if analysis is finished
         if (analysis.status === 'completed' || analysis.status === 'failed' || analysis.status === 'cancelled') {
           stopPolling();
+
+          // Invalidate stale partial heatmap cache
+          useHeatmapCache().invalidate(targetId);
+
+          // Refresh the completed analyses list
+          if (currentVideo.value) {
+            loadAnalysesForVideo(currentVideo.value.id);
+          }
+
+          // Load contraction events if analysis completed successfully
+          if (analysis.status === 'completed') {
+            loadContractionEvents(targetId);
+          }
         }
       } catch (err) {
         console.error('Failed to poll analysis status:', err);
@@ -899,6 +914,28 @@ export const useAnalysisStore = defineStore('analysis', () => {
     stopPolling();
   }
 
+  async function clearAllData() {
+    try {
+      stopPolling();
+      await clearAllDataApi();
+      // Reset all state
+      reset();
+      videos.value = [];
+      availableAnalyses.value = [];
+      combinedAnalyses.value = [];
+      currentCombinedAnalysis.value = null;
+      analysis1.value = null;
+      analysis2.value = null;
+      video1.value = null;
+      video2.value = null;
+      syncedFrame.value = null;
+      maxSyncedFrame.value = null;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to clear all data';
+      throw err;
+    }
+  }
+
   // Watch for lastFrameWithData and auto-seek during processing (unless user is actively seeking)
   watch(() => lastFrameWithData.value, (frame) => {
     if (frame !== null && isProcessing.value && !isUserSeeking.value) {
@@ -1138,6 +1175,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     setUserSeeking,
     seekToFrame,
     reset,
+    clearAllData,
     // Combined analyses actions
     loadCombinedAnalyses,
     selectCombinedAnalysis,
