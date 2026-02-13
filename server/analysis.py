@@ -73,6 +73,7 @@ def intersect_normal_with_path(
     center_point: tuple[int, int],
     normal: tuple[float, float],
     target_path: np.ndarray,
+    target_segments: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float, float] | None:
     """Intersect infinite normal line through center_point with polyline target_path.
 
@@ -84,36 +85,45 @@ def intersect_normal_with_path(
     cx, cy = float(center_point[0]), float(center_point[1])
     nx, ny = float(normal[0]), float(normal[1])
 
-    best_s_abs = float("inf")
-    best_point: tuple[float, float] | None = None
+    if target_segments is None:
+        # Prepare segment vectors (x0, y0) + u*(vx, vy), u in [0,1].
+        p0 = target_path[:-1].astype(np.float32, copy=False)
+        p1 = target_path[1:].astype(np.float32, copy=False)
+        x0 = p0[:, 0]
+        y0 = p0[:, 1]
+        vx = p1[:, 0] - p0[:, 0]
+        vy = p1[:, 1] - p0[:, 1]
+    else:
+        x0, y0, vx, vy = target_segments
 
-    for i in range(len(target_path) - 1):
-        x0, y0 = float(target_path[i, 0]), float(target_path[i, 1])
-        x1, y1 = float(target_path[i + 1, 0]), float(target_path[i + 1, 1])
-        vx, vy = x1 - x0, y1 - y0
+    # Solve for all segments at once:
+    # (x0, y0) + u*(vx, vy) = (cx, cy) + s*(nx, ny)
+    det = (vy * nx) - (vx * ny)
+    valid = np.abs(det) >= 1e-9
+    if not np.any(valid):
+        return None
 
-        # Solve: (x0, y0) + u*(vx, vy) = (cx, cy) + s*(nx, ny)
-        # Unknowns: u (segment parameter), s (distance along normal line)
-        det = vx * (-ny) - vy * (-nx)
-        if abs(det) < 1e-9:
-            continue
+    bx = cx - x0
+    by = cy - y0
+    u = np.empty_like(det, dtype=np.float64)
+    np.divide((by * nx) - (bx * ny), det, out=u, where=valid)
 
-        bx, by = cx - x0, cy - y0
-        u = (bx * (-ny) - by * (-nx)) / det
-        if u < 0.0 or u > 1.0:
-            continue
+    valid &= (u >= 0.0) & (u <= 1.0)
+    if not np.any(valid):
+        return None
 
-        # Compute intersection point and signed distance s on normal line
-        ix = x0 + u * vx
-        iy = y0 + u * vy
-        s = (ix - cx) * nx + (iy - cy) * ny
+    x0_v = x0[valid]
+    y0_v = y0[valid]
+    vx_v = vx[valid]
+    vy_v = vy[valid]
+    u_v = u[valid]
 
-        s_abs = abs(s)
-        if s_abs < best_s_abs:
-            best_s_abs = s_abs
-            best_point = (ix, iy)
+    ix = x0_v + u_v * vx_v
+    iy = y0_v + u_v * vy_v
 
-    return best_point
+    s_abs = np.abs((ix - cx) * nx + (iy - cy) * ny)
+    best_idx = int(np.argmin(s_abs))
+    return float(ix[best_idx]), float(iy[best_idx])
 
 
 def find_nearest_point_on_path(
@@ -231,6 +241,7 @@ def project_perpendicular(
     center_path: list[tuple[int, int]] | np.ndarray,
     center_point_idx: int,
     target_path: list[tuple[int, int]] | np.ndarray,
+    target_segments: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
 ) -> tuple[float, float] | None:
     """Project a point from the center path perpendicularly onto a target path.
     
@@ -257,7 +268,7 @@ def project_perpendicular(
     
     # Intersect the target edge with the true local normal line through center_point.
     normal = (-tangent[1], tangent[0])
-    intersection = intersect_normal_with_path(center_point, normal, target_path_np)
+    intersection = intersect_normal_with_path(center_point, normal, target_path_np, target_segments)
     if intersection is not None:
         return intersection
 
@@ -520,6 +531,22 @@ def calculate_measurement_point_pairs(
         path_center_np = np.array(path_center, dtype=np.int32)
         path_top_np = np.array(path_top, dtype=np.int32)
         path_bottom_np = np.array(path_bottom, dtype=np.int32)
+
+        # Precompute segment vectors once per frame; reused for every projected point.
+        def build_segments(path_np: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+            if len(path_np) < 2:
+                return None
+            p0 = path_np[:-1].astype(np.float32, copy=False)
+            p1 = path_np[1:].astype(np.float32, copy=False)
+            return (
+                p0[:, 0],
+                p0[:, 1],
+                p1[:, 0] - p0[:, 0],
+                p1[:, 1] - p0[:, 1],
+            )
+
+        path_top_segments = build_segments(path_top_np)
+        path_bottom_segments = build_segments(path_bottom_np)
         
         # For each center point, project perpendicularly to top and bottom paths
         for center_point in center_in_window:
@@ -538,8 +565,20 @@ def calculate_measurement_point_pairs(
                 center_idx = int(np.argmin(dists_sq))
             
             # Project to top and bottom paths using pre-converted numpy arrays
-            top_projected = project_perpendicular(center_point, path_center_np, center_idx, path_top_np)
-            bottom_projected = project_perpendicular(center_point, path_center_np, center_idx, path_bottom_np)
+            top_projected = project_perpendicular(
+                center_point,
+                path_center_np,
+                center_idx,
+                path_top_np,
+                path_top_segments,
+            )
+            bottom_projected = project_perpendicular(
+                center_point,
+                path_center_np,
+                center_idx,
+                path_bottom_np,
+                path_bottom_segments,
+            )
             
             if top_projected is not None and bottom_projected is not None:
                 # Calculate distance between top and bottom points

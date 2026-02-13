@@ -53,6 +53,10 @@ def init_database() -> None:
     conn = sqlite3.connect(str(db_path))
     # Enable foreign key constraints
     conn.execute("PRAGMA foreign_keys = ON")
+    # Favor throughput for frequent incremental writes during analysis.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
     cursor = conn.cursor()
     
     # Create analyses table
@@ -154,6 +158,10 @@ class AnalysisDB:
         conn.row_factory = sqlite3.Row
         # Enable foreign key constraints
         conn.execute("PRAGMA foreign_keys = ON")
+        # Keep per-connection settings aligned with init_database.
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
     
     def create_analysis(self, analysis: Analysis) -> None:
@@ -914,6 +922,9 @@ class CombinedAnalysisDB:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def create_combined_analysis(self, combined: dict) -> None:

@@ -49,5 +49,5 @@ ANALYSIS_MAX_WORKERS = _env_int(
 # Persist analysis progress/results to SQLite every N frames.
 ANALYSIS_PERSIST_EVERY_N_FRAMES = _env_int(
     "ANALYSIS_PERSIST_EVERY_N_FRAMES",
-    default=10,
+    default=25,
 )

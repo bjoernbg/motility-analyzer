@@ -35,3 +35,5 @@ client/*.sw?
 client/*.tsbuildinfo
 client/.eslintcache
 
+server/analyses.db-shm
+server/analyses.db-wal
