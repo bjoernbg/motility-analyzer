@@ -122,7 +122,14 @@ class TaskManager:
             
             # Run the async process_video in this thread's event loop
             result = loop.run_until_complete(
-                process_video(video_id, parameters, progress_callback, start_frame, existing_results)
+                process_video(
+                    video_id,
+                    parameters,
+                    progress_callback,
+                    start_frame,
+                    existing_results,
+                    collect_per_frame=False,
+                )
             )
             if total_frames_var is not None and pending_frames:
                 flush_pending_frames(total_frames_var, last_seen_frame, last_seen_progress)

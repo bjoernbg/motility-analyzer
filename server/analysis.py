@@ -547,23 +547,31 @@ def calculate_measurement_point_pairs(
 
         path_top_segments = build_segments(path_top_np)
         path_bottom_segments = build_segments(path_bottom_np)
+
+        # Approximate nearest center-path index for each selected point using x-order.
+        # center path is x-monotonic, so this avoids an O(N) full distance scan per point.
+        center_points_np = np.array(center_in_window, dtype=np.int32)
+        center_x = path_center_np[:, 0]
+        right_idx = np.searchsorted(center_x, center_points_np[:, 0], side='left')
+        right_idx = np.clip(right_idx, 0, len(path_center_np) - 1)
+        left_idx = np.clip(right_idx - 1, 0, len(path_center_np) - 1)
+
+        left_pts = path_center_np[left_idx]
+        right_pts = path_center_np[right_idx]
+        left_dist2 = (
+            (left_pts[:, 0] - center_points_np[:, 0]) ** 2
+            + (left_pts[:, 1] - center_points_np[:, 1]) ** 2
+        )
+        right_dist2 = (
+            (right_pts[:, 0] - center_points_np[:, 0]) ** 2
+            + (right_pts[:, 1] - center_points_np[:, 1]) ** 2
+        )
+        center_indices = np.where(left_dist2 <= right_dist2, left_idx, right_idx)
         
         # For each center point, project perpendicularly to top and bottom paths
-        for center_point in center_in_window:
-            # Find the index of this point in the original center path
-            # Optimize: use vectorized search instead of loop
-            center_point_np = np.array([center_point[0], center_point[1]], dtype=np.int32)
-            dists_sq = (path_center_np[:, 0] - center_point_np[0]) ** 2 + (path_center_np[:, 1] - center_point_np[1]) ** 2
-            
-            # First try exact match (within 2 pixels)
-            close_mask = dists_sq <= 4  # 2^2 = 4
-            if np.any(close_mask):
-                close_indices = np.where(close_mask)[0]
-                center_idx = int(close_indices[np.argmin(dists_sq[close_indices])])
-            else:
-                # If not found, use nearest point
-                center_idx = int(np.argmin(dists_sq))
-            
+        for center_point, center_idx_raw in zip(center_in_window, center_indices):
+            center_idx = int(center_idx_raw)
+
             # Project to top and bottom paths using pre-converted numpy arrays
             top_projected = project_perpendicular(
                 center_point,
@@ -650,6 +658,7 @@ async def process_video(
     progress_callback: Callable[[float, int, int, FrameData], Awaitable[None]],
     start_frame: int = 0,
     existing_results: Optional[AnalysisResult] = None,
+    collect_per_frame: bool = True,
 ) -> tuple[AnalysisResult, int]:
     """
     Process video with costmap analysis.
@@ -660,6 +669,7 @@ async def process_video(
         progress_callback: Function to call with (progress, current_frame, total_frames, frame_data)
         start_frame: Frame number to start processing from (for resuming)
         existing_results: Existing results to load previous frame paths from (for resuming)
+        collect_per_frame: Whether to keep all frames in-memory for the returned AnalysisResult
     
     Returns:
         Tuple of (AnalysisResult with per-frame and global data, total_frames)
@@ -682,7 +692,12 @@ async def process_video(
     if start_frame >= total_frames:
         raise ValueError(f"start_frame ({start_frame}) must be less than total_frames ({total_frames})")
     
-    per_frame_data = []
+    per_frame_data: list[FrameData] = []
+    total_points_top = 0
+    total_points_bottom = 0
+    total_points_center = 0
+    total_regions = 0
+    processed_frames = 0
     
     # Track previous frame paths for optimization
     prev_path_top: list[tuple[int, int]] | None = None
@@ -790,6 +805,8 @@ async def process_video(
     
     # If resuming, merge with existing results
     if start_frame > 0 and existing_results:
+        if not collect_per_frame:
+            raise ValueError("Resuming analysis requires collect_per_frame=True")
         # Combine existing frames (before start_frame) with new frames
         existing_frames = [f for f in existing_results.per_frame if f.f < start_frame]
         all_frames = existing_frames + per_frame_data
@@ -799,14 +816,15 @@ async def process_video(
     # Generate global statistics
     global_data = {
         "total_frames": total_frames,
-        "total_points_top": sum(len(frame.pt) for frame in per_frame_data),
-        "total_points_bottom": sum(len(frame.pb) for frame in per_frame_data),
-        "total_points_center": sum(len(frame.pc) for frame in per_frame_data),
-        "total_regions": sum(len(frame.colored_regions) for frame in per_frame_data),
-        "average_points_top_per_frame": sum(len(frame.pt) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
-        "average_points_bottom_per_frame": sum(len(frame.pb) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
-        "average_points_center_per_frame": sum(len(frame.pc) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
-        "average_regions_per_frame": sum(len(frame.colored_regions) for frame in per_frame_data) / total_frames if total_frames > 0 else 0,
+        "processed_frames": processed_frames,
+        "total_points_top": total_points_top,
+        "total_points_bottom": total_points_bottom,
+        "total_points_center": total_points_center,
+        "total_regions": total_regions,
+        "average_points_top_per_frame": total_points_top / total_frames if total_frames > 0 else 0,
+        "average_points_bottom_per_frame": total_points_bottom / total_frames if total_frames > 0 else 0,
+        "average_points_center_per_frame": total_points_center / total_frames if total_frames > 0 else 0,
+        "average_regions_per_frame": total_regions / total_frames if total_frames > 0 else 0,
         "parameters_used": {
             "smoothing_factor": parameters.smoothing_factor,
             "horizontal_window_x_left": parameters.horizontal_window_x_left,
@@ -817,7 +835,7 @@ async def process_video(
     
     return (
         AnalysisResult(
-            per_frame=per_frame_data,
+            per_frame=per_frame_data if collect_per_frame else [],
             global_data=global_data,
         ),
         total_frames,
