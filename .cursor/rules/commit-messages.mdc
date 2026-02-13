@@ -1,0 +1,25 @@
+---
+description: Use short, concise commit messages
+alwaysApply: true
+---
+
+# Commit Messages
+
+Keep commit messages **short and to the point**. Prefer one clear line (50–72 chars) over long, detailed descriptions.
+
+- **Do**: Imperative, present tense, one main idea per commit.
+- **Don’t**: Long paragraphs, bullet lists, or step-by-step explanations in the subject.
+
+**Examples:**
+
+- Good: `Fix heatmap cache invalidation on analysis restart`
+- Good: `Add frame multiplier to video metadata`
+- Avoid: `This commit fixes the heatmap cache invalidation logic that was causing stale data to be shown when the user restarts an analysis. It also updates the...` (use body for details only when necessary)
+
+Optional body is fine for rare cases that need context; keep the **subject line** concise.
+
+---
+
+## Note: Cursor "Generate commit message" button
+
+The Source Control **Generate commit message** action does **not** use project or global Rules. To get short messages that follow this rule, use **Chat or Composer** and ask: *"Write a short commit message for my staged changes"* — the agent will see this rule and keep the message concise. You can then paste the result into the commit box.
