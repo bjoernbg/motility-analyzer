@@ -1,11 +1,6 @@
 <template>
   <div class="w-64 max-w-[90vw] space-y-3">
-    <div class="flex items-center justify-between">
-      <h3 class="font-semibold text-sm">Measurement Settings</h3>
-      <Button @click="loadSuggestions" :disabled="isLoadingSuggestions" size="sm" variant="ghost">
-        <Icon name="lucide-sparkles" class="w-3 h-3" />
-      </Button>
-    </div>
+    <h3 class="font-semibold text-sm">Measurement Settings</h3>
 
     <div v-if="error" class="text-xs text-red-600 bg-red-50 p-2 rounded">
       {{ error }}
@@ -62,21 +57,9 @@
           class="shrink min-w-0 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
       </div>
-    </div>
-
-    <!-- Data Stats (compact) -->
-    <div v-if="suggestions" class="bg-gray-50 p-2 rounded text-xs space-y-1">
-      <div class="flex justify-between">
-        <span class="text-gray-600">Data range:</span>
-        <span class="font-mono">{{ suggestions.data_min_mm.toFixed(1) }}–{{ suggestions.data_max_mm.toFixed(1) }}</span>
+      <div class="text-xs text-gray-500">
+        Auto-updated during calibration.
       </div>
-      <div class="flex justify-between">
-        <span class="text-gray-600">Suggested:</span>
-        <span class="font-mono">{{ suggestions.heatmap_min_mm }}–{{ suggestions.heatmap_max_mm }}</span>
-      </div>
-      <Button @click="applySuggestions" size="sm" variant="outline" class="w-full mt-1">
-        Use Suggested
-      </Button>
     </div>
 
     <!-- Actions -->
@@ -93,20 +76,18 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { getVideoDisplaySettings, updateVideoDisplaySettings, getSuggestedDisplaySettings, calibrateVideo, type DisplaySettings, type SuggestedDisplaySettings, type CalibrationResult } from '../lib/api';
+import { getVideoDisplaySettings, updateVideoDisplaySettings, calibrateVideo, type DisplaySettings, type CalibrationResult } from '../lib/api';
 import { useAnalysisStore } from '../stores/analysis';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
-import { Icon } from './ui/icon';
 
 const props = defineProps<{
-  analysisId: string;
   videoId: string;
 }>();
 
 const emit = defineEmits<{
   'settings-updated': [settings: DisplaySettings];
-  'calibration-result': [result: CalibrationResult];
+  'calibration-result': [result: CalibrationResult | null];
 }>();
 
 const store = useAnalysisStore();
@@ -124,8 +105,6 @@ const localSettings = ref<DisplaySettings>({
   heatmap_max_mm: 30.0,
 });
 
-const suggestions = ref<SuggestedDisplaySettings | null>(null);
-const isLoadingSuggestions = ref(false);
 const isCalibrating = ref(false);
 const calibrationInfo = ref<string | null>(null);
 const isSaving = ref(false);
@@ -154,26 +133,6 @@ async function loadCurrentSettings() {
   }
 }
 
-async function loadSuggestions() {
-  try {
-    error.value = null;
-    isLoadingSuggestions.value = true;
-    suggestions.value = await getSuggestedDisplaySettings(props.analysisId);
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Failed to calculate suggestions';
-    console.error('Failed to load suggestions:', err);
-  } finally {
-    isLoadingSuggestions.value = false;
-  }
-}
-
-function applySuggestions() {
-  if (!suggestions.value) return;
-
-  localSettings.value.heatmap_min_mm = suggestions.value.heatmap_min_mm;
-  localSettings.value.heatmap_max_mm = suggestions.value.heatmap_max_mm;
-}
-
 async function runCalibration() {
   try {
     error.value = null;
@@ -193,6 +152,7 @@ async function runCalibration() {
       const distances = frameData.mpp.map(mpp => mpp[6]); // distance is index 6
       const sorted = [...distances].sort((a, b) => a - b);
       const medianPx = sorted[Math.floor(sorted.length / 2)];
+      if (medianPx === undefined) return;
       const medianMm = medianPx / result.pixel_to_mm_factor;
       localSettings.value.heatmap_min_mm = Math.round(0.5 * medianMm * 10) / 10;
       localSettings.value.heatmap_max_mm = Math.round(1.5 * medianMm * 10) / 10;
@@ -251,17 +211,16 @@ function resetToDefaults() {
     heatmap_max_mm: 30.0,
   };
   calibrationInfo.value = null;
-  emit('calibration-result', null as unknown as CalibrationResult); // Clear calibration overlay
+  emit('calibration-result', null); // Clear calibration overlay
 }
 
-// Load settings on mount and when analysis ID changes
+// Load settings on mount and when video changes
 onMounted(() => {
   loadCurrentSettings();
 });
 
 watch(() => props.videoId, () => {
   loadCurrentSettings();
-  suggestions.value = null;
   calibrationInfo.value = null;
   error.value = null;
   saveSuccess.value = false;

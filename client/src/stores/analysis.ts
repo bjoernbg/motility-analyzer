@@ -38,6 +38,9 @@ import {
   listCombinedAnalyses,
   getCombinedAnalysis,
   deleteCombinedAnalysis,
+  calibrateVideo,
+  getVideoDisplaySettings,
+  updateVideoDisplaySettings,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
@@ -182,6 +185,20 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function autoCalibrateVideoDisplaySettings(videoId: string) {
+    try {
+      const calibration = await calibrateVideo(videoId, 0);
+      const currentDisplaySettings = await getVideoDisplaySettings(videoId);
+      await updateVideoDisplaySettings(videoId, {
+        ...currentDisplaySettings,
+        pixel_to_mm_factor: calibration.pixel_to_mm_factor,
+      });
+    } catch (err) {
+      // Calibration should not block upload flow.
+      console.warn('Auto-calibration after upload failed:', err);
+    }
+  }
+
   async function handleVideoUpload(file: File) {
     try {
       isLoading.value = true;
@@ -206,6 +223,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
         if (videoInList) {
           videoInList.metadata = metadata;
         }
+
+        await autoCalibrateVideoDisplaySettings(video.id);
+
         // Only set currentVideo after metadata is loaded
         currentVideo.value = video;
         
@@ -1185,4 +1205,3 @@ export const useAnalysisStore = defineStore('analysis', () => {
     setCombinedViewMode,
   };
 });
-

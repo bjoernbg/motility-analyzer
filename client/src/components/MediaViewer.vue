@@ -61,8 +61,7 @@
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" class="p-3">
-              <DisplaySettingsControls :analysis-id="store.activeAnalysis.id"
-                :video-id="store.activeVideo.id"
+              <DisplaySettingsControls :video-id="store.activeVideo.id"
                 @settings-updated="handleSettingsUpdated"
                 @calibration-result="handleCalibrationResult" />
             </PopoverContent>
