@@ -1,7 +1,9 @@
 """Video re-encoding utilities using ffmpeg."""
+
 import logging
 import subprocess
 import time
+from contextlib import suppress
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -54,29 +56,34 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
         cmd = [
             "ffmpeg",
             "-hide_banner",
-            "-i", str(video_path),
-            "-map", "0:v:0",
-            "-c:v", "libx264",
-            "-crf", "24",
-            "-preset", "slow",
-            "-pix_fmt", "yuv420p",
+            "-i",
+            str(video_path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "24",
+            "-preset",
+            "slow",
+            "-pix_fmt",
+            "yuv420p",
             "-an",
-            "-map_metadata", "-1",
-            "-map_chapters", "-1",
-            "-metadata", "encoder=",
-            "-movflags", "+faststart",
-            str(temp_output)
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
+            "-metadata",
+            "encoder=",
+            "-movflags",
+            "+faststart",
+            str(temp_output),
         ]
 
         logger.info(f"Executing ffmpeg command: {' '.join(cmd)}")
 
         # Execute encoding (blocking)
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
         if result.returncode != 0:
             logger.error(f"FFmpeg failed with return code {result.returncode}")
@@ -93,7 +100,11 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
         new_size = temp_output.stat().st_size
 
         # Calculate statistics
-        size_reduction_percent = ((original_size - new_size) / original_size * 100) if original_size > 0 else 0.0
+        size_reduction_percent = (
+            ((original_size - new_size) / original_size * 100)
+            if original_size > 0
+            else 0.0
+        )
 
         statistics = {
             "duration_seconds": round(duration_seconds, 2),
@@ -120,10 +131,8 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
         # Clean up temp file if it exists
         if temp_output.exists():
             logger.warning(f"Cleaning up temporary file: {temp_output.name}")
-            try:
+            with suppress(Exception):
                 temp_output.unlink()
-            except Exception:
-                pass
 
         # Re-raise the error
         error_msg = f"Failed to re-encode video: {str(e)}"

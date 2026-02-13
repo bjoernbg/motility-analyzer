@@ -1,4 +1,5 @@
 """Silhouette edge detection method using mask-based segmentation."""
+
 import logging
 
 import cv2
@@ -7,7 +8,7 @@ from scipy.ndimage import median_filter
 
 from .edge_utils import interpolate_path_to_array
 
-logger = logging.getLogger('uvicorn.error')
+logger = logging.getLogger("uvicorn.error")
 
 
 def detect_mask_edges_at_x(
@@ -22,14 +23,14 @@ def detect_mask_edges_at_x(
     For a given x, return (y_top, y_bottom) from a binary mask (object=255).
     Optionally restrict search to a vertical band around previous y estimates.
     Returns None if no object pixels found in that (banded) column.
-    
+
     Args:
         mask: Binary mask image (uint8, 0/255).
         x: X coordinate to detect edges at.
         y_center_top: Optional center y for top edge search band.
         y_center_bottom: Optional center y for bottom edge search band.
         band: Optional width of vertical search band around y_center.
-    
+
     Returns:
         Tuple of (y_top, y_bottom) where values are float or None if not found.
     """
@@ -60,14 +61,14 @@ def make_object_mask(
 ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
     """
     Create a binary mask of the largest object using Otsu thresholding and morphology.
-    
+
     Args:
         img_gray: Grayscale input image.
         roi: Optional ROI as (x0, y0, w, h). If None, processes full frame.
         blur_ksize: Gaussian blur kernel size (width, height).
         blur_sigma: Gaussian blur sigma.
         close_k: Morphology kernel size for close/open operations.
-    
+
     Returns:
         Tuple of (mask_full_frame, roi_used) where:
         - mask_full_frame: uint8 mask (0/255) in full-frame coordinates
@@ -83,7 +84,7 @@ def make_object_mask(
         w = max(1, min(W - x0, w))
         h = max(1, min(H - y0, h))
 
-    g = img_gray[y0:y0+h, x0:x0+w]
+    g = img_gray[y0 : y0 + h, x0 : x0 + w]
     g_blur = cv2.GaussianBlur(g, blur_ksize, blur_sigma)
 
     # Object brighter than background
@@ -104,7 +105,7 @@ def make_object_mask(
     m = (lab == largest).astype(np.uint8) * 255
 
     mask_full = np.zeros((H, W), np.uint8)
-    mask_full[y0:y0+h, x0:x0+w] = m
+    mask_full[y0 : y0 + h, x0 : x0 + w] = m
     return mask_full, (x0, y0, w, h)
 
 
@@ -122,12 +123,12 @@ def edge_detection_silhouette_calculation(
     blur_sigma: float = 1.5,
     close_k: int = 5,
     x_step: int = 3,
-    band: int = 40,          # vertical band around prev curves (when prev paths exist)
-    median_k: int = 31,      # 1D smoothing strength for ~800px ROI
+    band: int = 40,  # vertical band around prev curves (when prev paths exist)
+    median_k: int = 31,  # 1D smoothing strength for ~800px ROI
 ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
     """
     Calculate edge paths using silhouette mask-based detection.
-    
+
     Args:
         frame: Input image as BGR or grayscale ndarray.
         smoothing_factor: Kept for API compatibility (not used, median smoothing used instead).
@@ -142,7 +143,7 @@ def edge_detection_silhouette_calculation(
         x_step: Step size for x-coordinate sampling.
         band: Vertical band width around previous paths (only used when prev paths exist).
         median_k: Median filter kernel size for 1D smoothing (must be odd).
-    
+
     Returns:
         Tuple of (path_top, path_bottom) where paths are lists of (x, y) tuples.
     """
@@ -158,30 +159,43 @@ def edge_detection_silhouette_calculation(
     H, W = img_gray.shape
 
     # x-range based on horizontal window (extend margins similarly to your code)
-    x_start = max(0, (horizontal_window_x_left - 100) if horizontal_window_x_left is not None else 0)
-    x_end   = min(W - 1, (horizontal_window_x_right + 100) if horizontal_window_x_right is not None else W - 1)
+    x_start = max(
+        0,
+        (horizontal_window_x_left - 100) if horizontal_window_x_left is not None else 0,
+    )
+    x_end = min(
+        W - 1,
+        (horizontal_window_x_right + 100)
+        if horizontal_window_x_right is not None
+        else W - 1,
+    )
     if x_end < x_start:
         return [], []
 
     # ROI optimization: use previous paths to determine vertical bounds if available
     roi_width = x_end - x_start + 1
-    
-    if prev_path_top is not None and prev_path_bottom is not None and len(prev_path_top) > 0 and len(prev_path_bottom) > 0:
+
+    if (
+        prev_path_top is not None
+        and prev_path_bottom is not None
+        and len(prev_path_top) > 0
+        and len(prev_path_bottom) > 0
+    ):
         # Calculate vertical bounds from previous paths
         y_min_top = min(y for _, y in prev_path_top)
         y_max_bottom = max(y for _, y in prev_path_bottom)
-        
+
         # Add padding (use band parameter as padding distance)
         vertical_padding = band
         y0_roi = max(0, y_min_top - vertical_padding)
         y1_roi = min(H, y_max_bottom + vertical_padding + 1)
         roi_height = y1_roi - y0_roi
-        
+
         roi = (x_start, y0_roi, roi_width, roi_height)
     else:
         # Fallback to horizontal-only ROI optimization
         roi = (x_start, 0, roi_width, H) if roi_width < W else None
-    
+
     mask, _ = make_object_mask(
         img_gray,
         roi=roi,
@@ -205,26 +219,32 @@ def edge_detection_silhouette_calculation(
     # Vectorized column extraction: extract all needed columns at once
     # This avoids repeated Python function call overhead
     x_coords_clamped = np.clip(x_coords, 0, W - 1)
-    mask_cols = mask[:, x_coords_clamped]  # Shape: (H, n) - all columns extracted at once
+    mask_cols = mask[
+        :, x_coords_clamped
+    ]  # Shape: (H, n) - all columns extracted at once
 
     if use_prev:
         default_y = float(H // 2)
-        prev_y_top = interpolate_path_to_array(prev_path_top, x_coords, default_y=default_y)
-        prev_y_bot = interpolate_path_to_array(prev_path_bottom, x_coords, default_y=default_y)
+        prev_y_top = interpolate_path_to_array(
+            prev_path_top, x_coords, default_y=default_y
+        )
+        prev_y_bot = interpolate_path_to_array(
+            prev_path_bottom, x_coords, default_y=default_y
+        )
 
         # Process each column with banded search
         for i in range(n):
             y_center_top = float(prev_y_top[i])
             y_center_bottom = float(prev_y_bot[i])
-            
+
             # Calculate band boundaries
             y_lo = max(0, int(min(y_center_top, y_center_bottom)) - band)
             y_hi = min(H, int(max(y_center_top, y_center_bottom)) + band + 1)
-            
+
             # Extract band from pre-extracted column
             col_band = mask_cols[y_lo:y_hi, i]
             ys_local = np.flatnonzero(col_band)
-            
+
             if ys_local.size > 0:
                 y_top[i] = float(ys_local[0] + y_lo)
                 y_bot[i] = float(ys_local[-1] + y_lo)
@@ -256,22 +276,25 @@ def edge_detection_silhouette_calculation(
     median_k = max(3, median_k)
 
     # Use scipy's optimized median filter (much faster than Python loop)
-    y_top_s = median_filter(y_top_f, size=median_k, mode='reflect')
-    y_bot_s = median_filter(y_bot_f, size=median_k, mode='reflect')
+    y_top_s = median_filter(y_top_f, size=median_k, mode="reflect")
+    y_bot_s = median_filter(y_bot_f, size=median_k, mode="reflect")
 
     # Optional: trim edges of ROI (often messier). Keep center 90%
     lo = int(0.05 * n)
     hi = int(0.95 * n)
     x_coords = x_coords[lo:hi]
-    y_top_s  = y_top_s[lo:hi]
-    y_bot_s  = y_bot_s[lo:hi]
+    y_top_s = y_top_s[lo:hi]
+    y_bot_s = y_bot_s[lo:hi]
 
-    path_top = [(int(x_coords[i]), int(round(float(y_top_s[i])))) for i in range(len(x_coords))]
-    path_bot = [(int(x_coords[i]), int(round(float(y_bot_s[i])))) for i in range(len(x_coords))]
+    path_top = [
+        (int(x_coords[i]), int(round(float(y_top_s[i])))) for i in range(len(x_coords))
+    ]
+    path_bot = [
+        (int(x_coords[i]), int(round(float(y_bot_s[i])))) for i in range(len(x_coords))
+    ]
 
     if path_storage is not None:
         path_storage["path_top"] = path_top
         path_storage["path_bottom"] = path_bot
 
     return path_top, path_bot
-

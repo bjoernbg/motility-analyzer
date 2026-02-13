@@ -1,16 +1,17 @@
 """Shared utility functions for edge detection methods."""
+
 import cv2
 import numpy as np
 
 
 def starting_point_detection(*, frame: np.ndarray):
     """Detect starting points for top and bottom boundaries.
-    
+
     This function is shared between costmap and 1D signal edge detection methods.
-    
+
     Args:
         frame: Input image as BGR or grayscale ndarray.
-    
+
     Returns:
         Tuple of (y_top, y_bottom, x_mid) where y_top and y_bottom are the detected
         edge positions and x_mid is the center x coordinate.
@@ -70,21 +71,21 @@ def starting_point_detection(*, frame: np.ndarray):
 
 def get_y_from_path(path: list[tuple[int, int]], x: int) -> float | None:
     """Get y value from a path for a given x coordinate using interpolation.
-    
+
     Args:
         path: List of (x, y) tuples sorted by x (left to right).
         x: The x coordinate to get y value for.
-    
+
     Returns:
         Interpolated y value, or None if x is outside path range.
     """
     if not path:
         return None
-    
+
     # Extract x and y arrays
     path_x = [p[0] for p in path]
     path_y = [p[1] for p in path]
-    
+
     # Check if x is outside path range
     if x < path_x[0] or x > path_x[-1]:
         # Use nearest neighbor for out-of-range x
@@ -92,37 +93,37 @@ def get_y_from_path(path: list[tuple[int, int]], x: int) -> float | None:
             return float(path_y[0])
         else:
             return float(path_y[-1])
-    
+
     # Find the two points to interpolate between
     for i in range(len(path_x) - 1):
         if path_x[i] <= x <= path_x[i + 1]:
             # Linear interpolation
             x0, y0 = path_x[i], path_y[i]
             x1, y1 = path_x[i + 1], path_y[i + 1]
-            
+
             if x1 == x0:
                 return float(y0)
-            
+
             # Linear interpolation: y = y0 + (y1 - y0) * (x - x0) / (x1 - x0)
             y = y0 + (y1 - y0) * (x - x0) / (x1 - x0)
             return float(y)
-    
+
     # Should not reach here, but return last y if needed
     return float(path_y[-1])
 
 
 def interpolate_path_to_array(
-    path: list[tuple[int, int]], 
+    path: list[tuple[int, int]],
     x_coords: np.ndarray,
     default_y: float | None = None,
 ) -> np.ndarray:
     """Pre-interpolate path y-values for all x coordinates at once using vectorized operations.
-    
+
     Args:
         path: List of (x, y) tuples sorted by x (left to right).
         x_coords: Array of x coordinates to interpolate for.
         default_y: Default y value to use if path is empty or x is out of range. If None, uses nearest neighbor.
-    
+
     Returns:
         Array of interpolated y values (float32), same length as x_coords.
     """
@@ -130,13 +131,13 @@ def interpolate_path_to_array(
         if default_y is not None:
             return np.full(len(x_coords), default_y, dtype=np.float32)
         return np.full(len(x_coords), np.nan, dtype=np.float32)
-    
+
     path_x = np.array([p[0] for p in path], dtype=np.float32)
     path_y = np.array([p[1] for p in path], dtype=np.float32)
-    
+
     # Handle out-of-range x coordinates with nearest neighbor
     result = np.interp(x_coords, path_x, path_y).astype(np.float32)
-    
+
     # Clamp to nearest neighbor for out-of-range values
     if default_y is None:
         # Use nearest neighbor: first or last path point
@@ -148,5 +149,5 @@ def interpolate_path_to_array(
         # Use default for out-of-range
         mask_out = (x_coords < path_x[0]) | (x_coords > path_x[-1])
         result[mask_out] = default_y
-    
+
     return result

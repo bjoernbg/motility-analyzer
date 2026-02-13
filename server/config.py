@@ -1,4 +1,5 @@
 """Configuration settings for the video analysis server."""
+
 import os
 from pathlib import Path
 

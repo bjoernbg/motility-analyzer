@@ -1,4 +1,5 @@
 """Horizontal window detection for finding left and right boundaries."""
+
 import cv2
 import numpy as np
 
@@ -73,4 +74,3 @@ def horizontal_window_detection(*, frame: np.ndarray, y: int | None = None):
             x_right = int(right_start + right_peak_idx)
 
     return int(x_left), int(x_right), int(y_mid)
-

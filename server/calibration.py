@@ -28,6 +28,7 @@ def calibrate_tube_width(
     # Convert to grayscale
     if frame.ndim == 3:
         import cv2
+
         img_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     else:
         img_gray = frame

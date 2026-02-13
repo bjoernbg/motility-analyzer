@@ -1,4 +1,5 @@
 """Validation logic for combining analyses."""
+
 from server.models import Analysis, CompatibilityCheckResult, VideoMetadata
 
 
@@ -6,7 +7,7 @@ def validate_compatibility(
     analysis1: Analysis,
     analysis2: Analysis,
     video1_metadata: VideoMetadata,
-    video2_metadata: VideoMetadata
+    video2_metadata: VideoMetadata,
 ) -> CompatibilityCheckResult:
     """Validate if two analyses can be combined.
 
@@ -36,22 +37,26 @@ def validate_compatibility(
 
     # Required checks - errors prevent combination
     if analysis1.video_id == analysis2.video_id:
-        errors.append("Cannot combine analyses from the same video. Please select a different analysis.")
+        errors.append(
+            "Cannot combine analyses from the same video. Please select a different analysis."
+        )
 
-    if analysis1.status != 'completed' or analysis2.status != 'completed':
+    if analysis1.status != "completed" or analysis2.status != "completed":
         incomplete = []
-        if analysis1.status != 'completed':
+        if analysis1.status != "completed":
             incomplete.append("Analysis 1")
-        if analysis2.status != 'completed':
+        if analysis2.status != "completed":
             incomplete.append("Analysis 2")
-        errors.append(f"Both analyses must be completed before combining. {', '.join(incomplete)} is {analysis1.status if analysis1.status != 'completed' else analysis2.status}.")
+        errors.append(
+            f"Both analyses must be completed before combining. {', '.join(incomplete)} is {analysis1.status if analysis1.status != 'completed' else analysis2.status}."
+        )
 
     # Extract parameters
     params1 = analysis1.parameters
     params2 = analysis2.parameters
 
-    num_tracking_points1 = params1.get('num_tracking_points')
-    num_tracking_points2 = params2.get('num_tracking_points')
+    num_tracking_points1 = params1.get("num_tracking_points")
+    num_tracking_points2 = params2.get("num_tracking_points")
 
     if num_tracking_points1 != num_tracking_points2:
         errors.append(
@@ -59,8 +64,8 @@ def validate_compatibility(
             f"Analysis 2 uses {num_tracking_points2}. Both analyses must use the same number of tracking points."
         )
 
-    dist_method1 = params1.get('distribution_method')
-    dist_method2 = params2.get('distribution_method')
+    dist_method1 = params1.get("distribution_method")
+    dist_method2 = params2.get("distribution_method")
 
     if dist_method1 != dist_method2:
         errors.append(
@@ -72,14 +77,14 @@ def validate_compatibility(
     frame_diff = abs(video1_metadata.total_frames - video2_metadata.total_frames)
     duration_diff = abs(video1_metadata.duration - video2_metadata.duration)
 
-    details['frame_count_1'] = video1_metadata.total_frames
-    details['frame_count_2'] = video2_metadata.total_frames
-    details['frame_count_diff'] = frame_diff
-    details['duration_1'] = video1_metadata.duration
-    details['duration_2'] = video2_metadata.duration
-    details['duration_diff'] = duration_diff
-    details['num_tracking_points'] = num_tracking_points1
-    details['distribution_method'] = dist_method1
+    details["frame_count_1"] = video1_metadata.total_frames
+    details["frame_count_2"] = video2_metadata.total_frames
+    details["frame_count_diff"] = frame_diff
+    details["duration_1"] = video1_metadata.duration
+    details["duration_2"] = video2_metadata.duration
+    details["duration_diff"] = duration_diff
+    details["num_tracking_points"] = num_tracking_points1
+    details["distribution_method"] = dist_method1
 
     if frame_diff > 100:
         warnings.append(
@@ -94,8 +99,5 @@ def validate_compatibility(
         )
 
     return CompatibilityCheckResult(
-        compatible=len(errors) == 0,
-        errors=errors,
-        warnings=warnings,
-        details=details
+        compatible=len(errors) == 0, errors=errors, warnings=warnings, details=details
     )
