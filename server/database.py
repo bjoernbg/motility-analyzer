@@ -465,7 +465,13 @@ class AnalysisDB:
         finally:
             conn.close()
     
-    def append_frame_to_results(self, analysis_id: str, frame_data: FrameData, total_frames: int) -> None:
+    def append_frame_to_results(
+        self,
+        analysis_id: str,
+        frame_data: FrameData,
+        total_frames: int,
+        processed_count: int | None = None,
+    ) -> None:
         """Append a frame to existing results by inserting into frames table."""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -478,9 +484,10 @@ class AnalysisDB:
                 VALUES (?, ?, ?)
             """, (analysis_id, frame_data.f, frame_data_json))
             
-            # Count processed frames
-            cursor.execute("SELECT COUNT(*) as count FROM frames WHERE analysis_id = ?", (analysis_id,))
-            processed_count = cursor.fetchone()["count"]
+            # If caller already knows processed frame count, avoid extra COUNT(*) query.
+            if processed_count is None:
+                cursor.execute("SELECT COUNT(*) as count FROM frames WHERE analysis_id = ?", (analysis_id,))
+                processed_count = int(cursor.fetchone()["count"])
             
             # Update global_data in analyses table
             global_data = {
@@ -497,13 +504,83 @@ class AnalysisDB:
             conn.commit()
         finally:
             conn.close()
+
+    def append_frames_to_results(
+        self,
+        analysis_id: str,
+        frames: list[FrameData],
+        total_frames: int,
+        processed_count: int,
+    ) -> None:
+        """Append multiple frames in a single transaction for better throughput."""
+        if not frames:
+            return
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            frame_rows: list[tuple[str, int, str]] = []
+            for frame_data in frames:
+                frame_rows.append(
+                    (
+                        analysis_id,
+                        frame_data.f,
+                        json.dumps(frame_data.model_dump(), default=str),
+                    )
+                )
+
+            cursor.executemany(
+                """
+                INSERT OR REPLACE INTO frames (analysis_id, frame_number, frame_data)
+                VALUES (?, ?, ?)
+                """,
+                frame_rows,
+            )
+
+            global_data = {
+                "total_frames": total_frames,
+                "processed_frames": processed_count,
+            }
+            global_data_json = json.dumps(global_data, default=str)
+            cursor.execute(
+                """
+                UPDATE analyses
+                SET global_data = ?
+                WHERE id = ?
+                """,
+                (global_data_json, analysis_id),
+            )
+
+            conn.commit()
+        finally:
+            conn.close()
     
-    def finalize_results(self, analysis_id: str, results: AnalysisResult) -> None:
+    def finalize_results(
+        self,
+        analysis_id: str,
+        results: AnalysisResult,
+        skip_frame_upsert: bool = False,
+    ) -> None:
         """Finalize results with complete global_data calculation."""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
+            # Save global_data and completion metadata regardless of frame upsert mode.
+            global_data_json = json.dumps(results.global_data, default=str)
+            completed_at = datetime.now().isoformat()
+
+            cursor.execute("""
+                UPDATE analyses
+                SET global_data = ?, completed_at = ?, status = 'completed', progress = 100.0
+                WHERE id = ?
+            """, (global_data_json, completed_at, analysis_id))
+
+            if skip_frame_upsert:
+                conn.commit()
+                return
+
             # Load existing frames to merge with final results
             # (in case finalize is called before all frames are appended)
             cursor.execute("""
@@ -514,12 +591,6 @@ class AnalysisDB:
             """, (analysis_id,))
             
             existing_frame_rows = cursor.fetchall()
-            existing_frame_nums = set()
-            
-            # Collect existing frame numbers
-            for frame_row in existing_frame_rows:
-                frame_data_dict = json.loads(frame_row["frame_data"])
-                existing_frame_nums.add(frame_data_dict["f"])
             
             # Ensure all existing frames are in final results
             final_frame_nums = {f.f for f in results.per_frame}
@@ -531,16 +602,6 @@ class AnalysisDB:
             
             # Sort by frame number
             results.per_frame.sort(key=lambda f: f.f)
-            
-            # Save global_data to analyses table
-            global_data_json = json.dumps(results.global_data, default=str)
-            completed_at = datetime.now().isoformat()
-            
-            cursor.execute("""
-                UPDATE analyses
-                SET global_data = ?, completed_at = ?, status = 'completed', progress = 100.0
-                WHERE id = ?
-            """, (global_data_json, completed_at, analysis_id))
             
             # Insert or replace all frames
             for frame_data in results.per_frame:
@@ -998,4 +1059,3 @@ class CombinedAnalysisDB:
             ]
         finally:
             conn.close()
-

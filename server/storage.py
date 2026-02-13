@@ -86,13 +86,34 @@ class ResultsStorage:
         """Check if results exist for an analysis."""
         return self.db.results_exist(analysis_id)
     
-    def append_frame_to_results(self, analysis_id: str, frame_data: FrameData, total_frames: int) -> None:
+    def append_frame_to_results(
+        self,
+        analysis_id: str,
+        frame_data: FrameData,
+        total_frames: int,
+        processed_count: int | None = None,
+    ) -> None:
         """Append a frame to existing results or create new results structure."""
-        self.db.append_frame_to_results(analysis_id, frame_data, total_frames)
+        self.db.append_frame_to_results(analysis_id, frame_data, total_frames, processed_count=processed_count)
+
+    def append_frames_to_results(
+        self,
+        analysis_id: str,
+        frames: list[FrameData],
+        total_frames: int,
+        processed_count: int,
+    ) -> None:
+        """Append multiple frames to existing results in one transaction."""
+        self.db.append_frames_to_results(analysis_id, frames, total_frames, processed_count)
     
-    def finalize_results(self, analysis_id: str, results: AnalysisResult) -> None:
+    def finalize_results(
+        self,
+        analysis_id: str,
+        results: AnalysisResult,
+        skip_frame_upsert: bool = False,
+    ) -> None:
         """Finalize results with complete global_data calculation."""
-        self.db.finalize_results(analysis_id, results)
+        self.db.finalize_results(analysis_id, results, skip_frame_upsert=skip_frame_upsert)
     
     def get_frame(self, analysis_id: str, frame_number: int):
         """Get a single frame by analysis_id and frame_number."""
@@ -218,4 +239,3 @@ def clear_all_video_caches(video_id: str, analysis_ids: List[str]) -> None:
     # Clear heatmap caches for all analyses
     for analysis_id in analysis_ids:
         clear_heatmap_cache(analysis_id, video_id)
-

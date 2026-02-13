@@ -2,13 +2,14 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
+import logging
 
 from .analysis import process_video
+from .config import ANALYSIS_MAX_WORKERS, ANALYSIS_PERSIST_EVERY_N_FRAMES
 from .models import Analysis, AnalysisParameters, FrameData, ContractionDetectionParameters
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_heatmap_cache
 from .contraction_detection import detect_contractions, calculate_physical_spacing
 from .metadata import get_video_metadata
-import logging
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -21,7 +22,13 @@ class TaskManager:
         self.analyses: Dict[str, Analysis] = {}
         self.analysis_storage = AnalysisStorage()
         self.results_storage = ResultsStorage()
-        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.persist_every_n_frames = max(1, ANALYSIS_PERSIST_EVERY_N_FRAMES)
+        self.executor = ThreadPoolExecutor(max_workers=ANALYSIS_MAX_WORKERS)
+        logger.info(
+            "TaskManager configured with %s workers and DB persist interval %s frames",
+            ANALYSIS_MAX_WORKERS,
+            self.persist_every_n_frames,
+        )
     
     def register_analysis(self, analysis: Analysis):
         """Register a new analysis and persist to database."""
@@ -72,27 +79,58 @@ class TaskManager:
         
         try:
             total_frames_var: int | None = None
+            pending_frames: list[FrameData] = []
+            last_seen_frame = 0
+            last_seen_progress = 0.0
+
+            def flush_pending_frames(total_frames: int, current_frame: int, progress: float) -> None:
+                """Persist buffered frames and progress in one batched DB write."""
+                nonlocal pending_frames
+                if pending_frames:
+                    self.results_storage.append_frames_to_results(
+                        analysis_id=analysis_id,
+                        frames=pending_frames,
+                        total_frames=total_frames,
+                        processed_count=current_frame,
+                    )
+                    pending_frames = []
+
+                self.analysis_storage.update_analysis(analysis_id, progress=progress)
             
             async def progress_callback(progress: float, current_frame: int, total_frames: int, frame_data: FrameData):
                 """Update progress and save frame data incrementally."""
-                nonlocal total_frames_var
+                nonlocal total_frames_var, last_seen_frame, last_seen_progress
                 analysis.progress = progress
                 total_frames_var = total_frames
-                
-                # Persist progress to database (every frame for accurate polling)
-                self.analysis_storage.update_analysis(analysis_id, progress=progress)
-                
-                # Save frame data incrementally to database
-                self.results_storage.append_frame_to_results(analysis_id, frame_data, total_frames)
-                
+
+                if analysis.status == "cancelled":
+                    raise asyncio.CancelledError()
+
+                pending_frames.append(frame_data)
+                last_seen_frame = current_frame
+                last_seen_progress = progress
+
+                if (
+                    len(pending_frames) >= self.persist_every_n_frames
+                    or current_frame >= total_frames
+                ):
+                    flush_pending_frames(total_frames, current_frame, progress)
+
                 # Check if analysis was cancelled
                 if analysis.status == "cancelled":
                     raise asyncio.CancelledError()
             
             # Run the async process_video in this thread's event loop
-            return loop.run_until_complete(
+            result = loop.run_until_complete(
                 process_video(video_id, parameters, progress_callback, start_frame, existing_results)
             )
+            if total_frames_var is not None and pending_frames:
+                flush_pending_frames(total_frames_var, last_seen_frame, last_seen_progress)
+            return result
+        except Exception:
+            if total_frames_var is not None and pending_frames and analysis.status != "cancelled":
+                flush_pending_frames(total_frames_var, last_seen_frame, last_seen_progress)
+            raise
         finally:
             loop.close()
     
@@ -160,7 +198,7 @@ class TaskManager:
         
         try:
             # Run analysis in a separate thread to avoid blocking the event loop
-            results, total_frames_var = await asyncio.get_event_loop().run_in_executor(
+            results, _total_frames = await asyncio.get_event_loop().run_in_executor(
                 self.executor,
                 self._run_analysis_in_thread,
                 video_id,
@@ -180,7 +218,7 @@ class TaskManager:
             analysis.progress = 100.0
             
             # Finalize results with global_data calculation (this also updates status and completed_at)
-            self.results_storage.finalize_results(analysis_id, results)
+            self.results_storage.finalize_results(analysis_id, results, skip_frame_upsert=True)
             
             # Clear cached heatmap data to force regeneration with complete results
             clear_heatmap_cache(analysis_id, video_id)
@@ -254,4 +292,3 @@ class TaskManager:
 
 # Global task manager instance
 task_manager = TaskManager()
-

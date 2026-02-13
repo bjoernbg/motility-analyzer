@@ -679,12 +679,10 @@ async def process_video(
             if not ret:
                 break
             
-            # Convert to numpy array if needed
-            frame_np = np.array(frame)
-            
             # Edge detection using silhouette method
             path_top, path_bottom = edge_detection_silhouette_calculation(
-                frame=frame_np,
+                # OpenCV already returns ndarray; avoid an extra per-frame copy.
+                frame=frame,
                 smoothing_factor=parameters.smoothing_factor,
                 horizontal_window_x_left=parameters.horizontal_window_x_left,
                 horizontal_window_x_right=parameters.horizontal_window_x_right,
