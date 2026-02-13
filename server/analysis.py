@@ -18,7 +18,7 @@ logger = logging.getLogger('uvicorn.error')
 def calculate_path_tangent(
     path: list[tuple[int, int]] | np.ndarray,
     point_idx: int,
-    look_ahead: int = 30,
+    look_ahead: int = 5,
 ) -> tuple[float, float] | None:
     """Calculate the tangent direction (normalized) at a point on a path.
     
@@ -69,6 +69,53 @@ def calculate_path_tangent(
     return (dx / length, dy / length)
 
 
+def intersect_normal_with_path(
+    center_point: tuple[int, int],
+    normal: tuple[float, float],
+    target_path: np.ndarray,
+) -> tuple[float, float] | None:
+    """Intersect infinite normal line through center_point with polyline target_path.
+
+    Returns the closest intersection to center_point along the normal, if any.
+    """
+    if len(target_path) < 2:
+        return None
+
+    cx, cy = float(center_point[0]), float(center_point[1])
+    nx, ny = float(normal[0]), float(normal[1])
+
+    best_s_abs = float("inf")
+    best_point: tuple[float, float] | None = None
+
+    for i in range(len(target_path) - 1):
+        x0, y0 = float(target_path[i, 0]), float(target_path[i, 1])
+        x1, y1 = float(target_path[i + 1, 0]), float(target_path[i + 1, 1])
+        vx, vy = x1 - x0, y1 - y0
+
+        # Solve: (x0, y0) + u*(vx, vy) = (cx, cy) + s*(nx, ny)
+        # Unknowns: u (segment parameter), s (distance along normal line)
+        det = vx * (-ny) - vy * (-nx)
+        if abs(det) < 1e-9:
+            continue
+
+        bx, by = cx - x0, cy - y0
+        u = (bx * (-ny) - by * (-nx)) / det
+        if u < 0.0 or u > 1.0:
+            continue
+
+        # Compute intersection point and signed distance s on normal line
+        ix = x0 + u * vx
+        iy = y0 + u * vy
+        s = (ix - cx) * nx + (iy - cy) * ny
+
+        s_abs = abs(s)
+        if s_abs < best_s_abs:
+            best_s_abs = s_abs
+            best_point = (ix, iy)
+
+    return best_point
+
+
 def find_nearest_point_on_path(
     path: list[tuple[int, int]],
     point: tuple[float, float],
@@ -116,17 +163,13 @@ def find_nearest_point_on_path(
         vec_x = x - px
         vec_y = y - py
         
-        # Project onto perpendicular direction
-        proj = vec_x * perp_dx + vec_y * perp_dy
-        
-        # Distance along perpendicular
-        perp_dist_sq = proj * proj
-        
-        # Also consider distance along the path direction (to prefer closer points)
+        # Component along the projection line (perpendicular to path direction)
+        perp_dist_sq = (vec_x * perp_dx + vec_y * perp_dy) ** 2
+        # Component parallel to path direction; keep this minimal for orthogonality
         along_dist_sq = (vec_x * dx + vec_y * dy) ** 2
         
-        # Combined distance metric (prioritize perpendicular alignment)
-        dist_sq = perp_dist_sq + 0.1 * along_dist_sq
+        # Prioritize true perpendicular alignment, then closest point along that line
+        dist_sq = along_dist_sq + 0.1 * perp_dist_sq
         
         if dist_sq < min_dist_sq:
             min_dist_sq = dist_sq
@@ -171,15 +214,13 @@ def find_nearest_point_on_path_vectorized(
     # Vector from point to all path points
     vec = path_np - np.array([px, py], dtype=np.float32)  # Shape: (N, 2)
     
-    # Project onto perpendicular direction
-    proj = vec[:, 0] * perp_dx + vec[:, 1] * perp_dy
-    perp_dist_sq = proj ** 2
-    
-    # Also consider distance along the path direction (to prefer closer points)
+    # Component along the projection line (perpendicular to path direction)
+    perp_dist_sq = (vec[:, 0] * perp_dx + vec[:, 1] * perp_dy) ** 2
+    # Component parallel to path direction; keep this minimal for orthogonality
     along_dist_sq = (vec[:, 0] * dx + vec[:, 1] * dy) ** 2
     
-    # Combined distance metric (prioritize perpendicular alignment)
-    dist_sq = perp_dist_sq + 0.1 * along_dist_sq
+    # Prioritize true perpendicular alignment, then closest point along that line
+    dist_sq = along_dist_sq + 0.1 * perp_dist_sq
     
     idx = np.argmin(dist_sq)
     return (int(path_np[idx, 0]), int(path_np[idx, 1]))
@@ -190,7 +231,7 @@ def project_perpendicular(
     center_path: list[tuple[int, int]] | np.ndarray,
     center_point_idx: int,
     target_path: list[tuple[int, int]] | np.ndarray,
-) -> tuple[int, int] | None:
+) -> tuple[float, float] | None:
     """Project a point from the center path perpendicularly onto a target path.
     
     Args:
@@ -214,11 +255,14 @@ def project_perpendicular(
         # Fallback: use simple nearest point (vectorized)
         return find_nearest_point_on_path_vectorized(target_path_np, center_point)
     
-    # Perpendicular direction (rotate 90 degrees)
-    perp_dx, perp_dy = -tangent[1], tangent[0]
-    
-    # Find nearest point on target path along perpendicular direction (vectorized)
-    return find_nearest_point_on_path_vectorized(target_path_np, center_point, (perp_dx, perp_dy))
+    # Intersect the target edge with the true local normal line through center_point.
+    normal = (-tangent[1], tangent[0])
+    intersection = intersect_normal_with_path(center_point, normal, target_path_np)
+    if intersection is not None:
+        return intersection
+
+    # Fallback if no segment intersection was found (discrete/sparse path edge cases).
+    return find_nearest_point_on_path_vectorized(target_path_np, center_point, tangent)
 
 
 def calculate_center_path(
@@ -487,7 +531,8 @@ def calculate_measurement_point_pairs(
             # First try exact match (within 2 pixels)
             close_mask = dists_sq <= 4  # 2^2 = 4
             if np.any(close_mask):
-                center_idx = int(np.argmax(close_mask))  # Get first match
+                close_indices = np.where(close_mask)[0]
+                center_idx = int(close_indices[np.argmin(dists_sq[close_indices])])
             else:
                 # If not found, use nearest point
                 center_idx = int(np.argmin(dists_sq))
@@ -740,4 +785,3 @@ async def process_video(
         ),
         total_frames,
     )
-
