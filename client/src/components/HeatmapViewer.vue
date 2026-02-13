@@ -28,11 +28,8 @@
       </div>
     </div>
     <div v-if="hoverInfo && !isLoading && !error && !compact" class="tooltip" :style="tooltipStyle">
-      Frame: {{ hoverInfo.frame }}<br />
-      Time: {{ hoverInfo.time.toFixed(2) }}s<br />
-      Point: {{ hoverInfo.index }}<br />
-      Distance: {{ hoverInfo.value.toFixed(3) }} px<br />
-      Distance: {{ hoverInfo.valueMm.toFixed(3) }} mm
+      Time: {{ formatTimestamp(hoverInfo.time) }}<br />
+      Measured: {{ hoverInfo.valueMm.toFixed(3) }} mm
     </div>
   </div>
 </template>
@@ -79,7 +76,7 @@ const offsetX = ref(0);
 const offsetY = ref(0);
 
 // Hover info
-const hoverInfo = ref<{ frame: number; time: number; index: number; value: number; valueMm: number } | null>(null);
+const hoverInfo = ref<{ time: number; valueMm: number } | null>(null);
 const mousePos = ref<{ x: number; y: number } | null>(null);
 
 // Computed display settings from meta or fallback to constants
@@ -124,6 +121,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopLiveRefresh();
+  cleanupMouseMove();
   if (resizeObserver.value) {
     resizeObserver.value.disconnect();
   }
@@ -742,6 +740,19 @@ function onMouseUp() {
   window.removeEventListener("mouseup", onMouseUp);
 }
 
+function clearHoverInfo() {
+  hoverInfo.value = null;
+  mousePos.value = null;
+}
+
+function formatTimestamp(timeInSeconds: number): string {
+  const totalMilliseconds = Math.max(0, Math.round(timeInSeconds * 1000));
+  const minutes = Math.floor(totalMilliseconds / 60000);
+  const seconds = Math.floor((totalMilliseconds % 60000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}.${milliseconds.toString().padStart(3, "0")}`;
+}
+
 /** Convert mouse position to frame/index */
 function getFrameFromMouse(e: MouseEvent): { frame: number; index: number } | null {
   if (!canvas.value || !meta.value || !data.value || !container.value) return null;
@@ -772,47 +783,61 @@ function getFrameFromMouse(e: MouseEvent): { frame: number; index: number } | nu
 }
 
 /** Hover logic (convert mouse position to frame/index) */
+function onCanvasMouseMove(e: MouseEvent) {
+  if (!canvas.value || !meta.value || !data.value || !container.value || isDragging) {
+    clearHoverInfo();
+    return;
+  }
+
+  const result = getFrameFromMouse(e);
+  if (!result) {
+    clearHoverInfo();
+    return;
+  }
+
+  mousePos.value = { x: e.clientX, y: e.clientY };
+
+  const { frame, index } = result;
+  const dataIndex = frame * meta.value.height + index;
+  const value = data.value[dataIndex] ?? 0;
+  const valueMm = value / pixelToMmFactor.value;
+  const timeInSeconds = frame / meta.value.fps;
+
+  hoverInfo.value = { time: timeInSeconds, valueMm };
+}
+
+function onCanvasMouseLeave() {
+  clearHoverInfo();
+}
+
+function onCanvasClick(e: MouseEvent) {
+  if (!canvas.value || !meta.value || !data.value || !container.value) {
+    return;
+  }
+
+  // Don't emit click if user was dragging
+  if (hasDragged) {
+    return;
+  }
+
+  const result = getFrameFromMouse(e);
+  if (result) {
+    emit('frame-click', result.frame, result.index);
+  }
+}
+
 function setupMouseMove() {
   if (!canvas.value || !container.value) return;
-  canvas.value.addEventListener("mousemove", (e: MouseEvent) => {
-    if (!canvas.value || !meta.value || !data.value || !container.value || isDragging) {
-      hoverInfo.value = null;
-      return;
-    }
+  canvas.value.addEventListener("mousemove", onCanvasMouseMove);
+  canvas.value.addEventListener("mouseleave", onCanvasMouseLeave);
+  canvas.value.addEventListener("click", onCanvasClick);
+}
 
-    const result = getFrameFromMouse(e);
-    if (!result) {
-      hoverInfo.value = null;
-      return;
-    }
-
-    mousePos.value = { x: e.clientX, y: e.clientY };
-
-    const { frame, index } = result;
-    const dataIndex = frame * meta.value.height + index;
-    const value = data.value[dataIndex] ?? 0;
-    const valueMm = value / pixelToMmFactor.value;
-    const timeInSeconds = frame / meta.value.fps;
-
-    hoverInfo.value = { frame, time: timeInSeconds, index, value, valueMm };
-  });
-  
-  // Add click handler to emit frame-click event
-  canvas.value.addEventListener("click", (e: MouseEvent) => {
-    if (!canvas.value || !meta.value || !data.value || !container.value) {
-      return;
-    }
-    
-    // Don't emit click if user was dragging
-    if (hasDragged) {
-      return;
-    }
-
-    const result = getFrameFromMouse(e);
-    if (result) {
-      emit('frame-click', result.frame, result.index);
-    }
-  });
+function cleanupMouseMove() {
+  if (!canvas.value) return;
+  canvas.value.removeEventListener("mousemove", onCanvasMouseMove);
+  canvas.value.removeEventListener("mouseleave", onCanvasMouseLeave);
+  canvas.value.removeEventListener("click", onCanvasClick);
 }
 </script>
 
@@ -926,4 +951,3 @@ function setupMouseMove() {
 }
 
 </style>
-
