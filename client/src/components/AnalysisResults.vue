@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import ContractionDetectionControls from './ContractionDetectionControls.vue';
 import ContractionEventsList from './ContractionEventsList.vue';
+import CombineAnalysisDialog from './CombineAnalysisDialog.vue';
+import { Button } from './ui/button';
+import { Icon } from './ui/icon';
 
 const store = useAnalysisStore();
 
@@ -83,6 +86,18 @@ const eventsPerMinuteWithDeviation = computed(() => {
 const hasResults = computed(() => {
   return store.currentAnalysis !== null;
 });
+
+// Combined analysis functionality
+const showCombineDialog = ref(false);
+
+function openCombineDialog() {
+  showCombineDialog.value = true;
+}
+
+function handleCombinationCreated() {
+  showCombineDialog.value = false;
+  // The store action will automatically load and select the new combined analysis
+}
 </script>
 
 <template>
@@ -151,7 +166,19 @@ const hasResults = computed(() => {
           View overlays on the video player.
         </p>
       </div>
-      
+
+      <!-- Combined Analysis Section -->
+      <div v-if="store.currentAnalysis && store.progressStatus === 'completed'" class="combine-section">
+        <h3>Multi-View Analysis</h3>
+        <p class="section-description">
+          Combine this analysis with another video from a different angle for synchronized comparison.
+        </p>
+        <Button @click="openCombineDialog" variant="outline">
+          <Icon name="lucide:combine" size="1.1em" />
+          <span>Combine with another analysis</span>
+        </Button>
+      </div>
+
       <div v-if="store.currentAnalysis" class="contraction-detection-section">
         <ContractionDetectionControls />
         <div class="mt-4">
@@ -159,6 +186,14 @@ const hasResults = computed(() => {
         </div>
       </div>
     </div>
+
+    <!-- Combined Analysis Dialog -->
+    <CombineAnalysisDialog
+      v-if="store.currentAnalysis"
+      v-model="showCombineDialog"
+      :current-analysis-id="store.currentAnalysis.id"
+      @created="handleCombinationCreated"
+    />
   </div>
 </template>
 
@@ -256,6 +291,25 @@ h3 {
 
 .contraction-detection-section {
   margin-top: 2rem;
+}
+
+.combine-section {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.combine-section h3 {
+  margin-top: 0;
+}
+
+.section-description {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
 }
 </style>
 

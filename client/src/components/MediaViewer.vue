@@ -1,5 +1,8 @@
 <template>
   <div class="media-viewer">
+    <!-- Tab navigation (only in combined mode) -->
+    <AnalysisTabNavigation />
+
     <div class="view-toggle-container">
       <div class="view-toggle">
         <button :class="{ active: viewMode === 'video' }" @click="viewMode = 'video'">
@@ -7,6 +10,13 @@
         </button>
         <button :class="{ active: viewMode === 'heatmap' }" @click="viewMode = 'heatmap'">
           Heatmap
+        </button>
+        <button
+          v-if="store.isInCombinedMode && store.combinedViewMode === 'combined'"
+          :class="{ active: viewMode === 'heatmap_diff' }"
+          @click="viewMode = 'heatmap_diff'"
+        >
+          Heatmap Diff
         </button>
       </div>
       <div class="flex items-center gap-1">
@@ -27,7 +37,7 @@
             </Button>
           </ButtonGroup>
         </div>
-        <div v-if="store.currentAnalysis" class="settings-toggle">
+        <div v-if="store.activeAnalysis" class="settings-toggle">
           <Popover>
             <PopoverTrigger as-child>
               <Button size="sm" variant="outline" title="Measurement settings">
@@ -35,7 +45,7 @@
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" class="p-3">
-              <DisplaySettingsControls :analysis-id="store.currentAnalysis.id"
+              <DisplaySettingsControls :analysis-id="store.activeAnalysis.id"
                 @settings-updated="handleSettingsUpdated" />
             </PopoverContent>
           </Popover>
@@ -46,28 +56,92 @@
     <div class="main-view-container">
       <!-- Main View -->
       <div class="main-view">
-        <!-- Use v-show to keep video loaded when switching views -->
-        <VideoPlayer v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
-          :highlight-point-index="highlightedPointIndex"
-          :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor" />
-        <HeatmapViewer v-if="viewMode === 'heatmap' && store.currentAnalysis"
-          :key="`main-heatmap-${store.currentAnalysis.id}`" :analysis-id="store.currentAnalysis.id"
-          :current-frame="store.currentFrame" :show-contraction-overlays="showContractionOverlays"
-          @frame-click="handleFrameClick" />
-        <div v-else-if="viewMode === 'heatmap' && !store.currentAnalysis" class="no-heatmap">
-          No analysis available. Run an analysis to view the heatmap.
-        </div>
+        <!-- Single view mode (or individual tab in combined mode) -->
+        <template v-if="!store.isInCombinedMode || store.combinedViewMode !== 'combined'">
+          <!-- Use v-show to keep video loaded when switching views -->
+          <VideoPlayer v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
+            :highlight-point-index="highlightedPointIndex"
+            :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor" />
+          <HeatmapViewer v-if="viewMode === 'heatmap' && store.activeAnalysis"
+            :key="`main-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
+            :current-frame="store.currentFrame" :show-contraction-overlays="showContractionOverlays"
+            @frame-click="handleFrameClick" />
+          <div v-else-if="viewMode === 'heatmap' && !store.activeAnalysis" class="no-heatmap">
+            No analysis available. Run an analysis to view the heatmap.
+          </div>
+        </template>
+
+        <!-- Combined stacked view -->
+        <template v-else>
+          <!-- Video mode: two videos stacked -->
+          <div v-if="viewMode === 'video'" class="stacked-view">
+            <div class="stacked-item">
+              <div class="stacked-label">{{ video1Name }}</div>
+              <VideoPlayer
+                :analysis-id="store.analysis1?.id"
+                v-model:show-canvas-overlay="showCanvasOverlay"
+                :highlight-point-index="highlightedPointIndex"
+                :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
+              />
+            </div>
+            <div class="stacked-item">
+              <div class="stacked-label">{{ video2Name }}</div>
+              <VideoPlayer
+                :analysis-id="store.analysis2?.id"
+                v-model:show-canvas-overlay="showCanvasOverlay"
+                :highlight-point-index="highlightedPointIndex"
+                :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
+              />
+            </div>
+          </div>
+
+          <!-- Heatmap mode: two heatmaps stacked -->
+          <div v-else-if="viewMode === 'heatmap'" class="stacked-view">
+            <div class="stacked-item">
+              <div class="stacked-label">{{ video1Name }}</div>
+              <HeatmapViewer
+                v-if="store.analysis1"
+                :key="`heatmap-1-${store.analysis1.id}`"
+                :analysis-id="store.analysis1.id"
+                :current-frame="store.currentFrame"
+                :show-contraction-overlays="showContractionOverlays"
+                @frame-click="handleFrameClick"
+              />
+            </div>
+            <div class="stacked-item">
+              <div class="stacked-label">{{ video2Name }}</div>
+              <HeatmapViewer
+                v-if="store.analysis2"
+                :key="`heatmap-2-${store.analysis2.id}`"
+                :analysis-id="store.analysis2.id"
+                :current-frame="store.currentFrame"
+                :show-contraction-overlays="showContractionOverlays"
+                @frame-click="handleFrameClick"
+              />
+            </div>
+          </div>
+
+          <!-- Heatmap diff mode: single diff heatmap -->
+          <div v-else-if="viewMode === 'heatmap_diff'" class="diff-view">
+            <HeatmapDiffViewer
+              v-if="store.currentCombinedAnalysis"
+              :combined-analysis-id="store.currentCombinedAnalysis.id"
+              :current-frame="store.currentFrame"
+              @frame-click="handleFrameClick"
+            />
+          </div>
+        </template>
       </div>
 
       <!-- Overlay in upper-right corner (20% width) -->
       <div v-if="showOverlay" class="overlay-container">
         <div class="overlay-content">
           <!-- Mini Heatmap when viewing video -->
-          <HeatmapViewer v-if="viewMode === 'video' && store.currentAnalysis"
-            :key="`overlay-heatmap-${store.currentAnalysis.id}`" :analysis-id="store.currentAnalysis.id"
+          <HeatmapViewer v-if="viewMode === 'video' && store.activeAnalysis"
+            :key="`overlay-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
             :current-frame="store.currentFrame" compact @frame-click="handleFrameClick" />
           <!-- Mini Video when viewing heatmap -->
-          <div v-else-if="viewMode === 'heatmap' && store.currentVideo" class="mini-video-wrapper">
+          <div v-else-if="viewMode === 'heatmap' && store.activeVideo" class="mini-video-wrapper">
             <VideoPlayer overlay :highlight-point-index="highlightedPointIndex"
               :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor" />
           </div>
@@ -82,6 +156,8 @@ import { ref, computed, watch } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import VideoPlayer from './VideoPlayer.vue';
 import HeatmapViewer from './HeatmapViewer.vue';
+import HeatmapDiffViewer from './HeatmapDiffViewer.vue';
+import AnalysisTabNavigation from './AnalysisTabNavigation.vue';
 import DisplaySettingsControls from './DisplaySettingsControls.vue';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
@@ -91,7 +167,17 @@ import { getDisplaySettings, type DisplaySettings } from '../lib/api';
 
 const store = useAnalysisStore();
 
-const viewMode = ref<'video' | 'heatmap'>('video');
+const viewMode = ref<'video' | 'heatmap' | 'heatmap_diff'>('video');
+
+const video1Name = computed(() => {
+  if (!store.video1?.filename) return 'Analysis 1';
+  return store.video1.filename.replace(/\.[^/.]+$/, '');
+});
+
+const video2Name = computed(() => {
+  if (!store.video2?.filename) return 'Analysis 2';
+  return store.video2.filename.replace(/\.[^/.]+$/, '');
+});
 const highlightedPointIndex = ref<number | null>(null);
 const showContractionOverlays = ref(false);
 const showCanvasOverlay = ref(true);
@@ -100,10 +186,17 @@ const currentDisplaySettings = ref<DisplaySettings | null>(null);
 const hasFrameData = computed(() => store.liveFrameData.size > 0);
 
 const showOverlay = computed(() => {
+  // No overlay in combined mode or diff mode
+  if (store.isInCombinedMode && store.combinedViewMode === 'combined') {
+    return false;
+  }
+  if (viewMode.value === 'heatmap_diff') {
+    return false;
+  }
   if (viewMode.value === 'video') {
-    return store.currentAnalysis !== null;
+    return store.activeAnalysis !== null;
   } else {
-    return store.currentVideo !== null;
+    return store.activeVideo !== null;
   }
 });
 
@@ -116,7 +209,7 @@ async function handleFrameClick(frame: number, pointIndex: number) {
 }
 
 // Load display settings when analysis changes
-watch(() => store.currentAnalysis?.id, async (id) => {
+watch(() => store.activeAnalysis?.id, async (id) => {
   if (id) {
     try {
       currentDisplaySettings.value = await getDisplaySettings(id);
@@ -234,5 +327,37 @@ function handleSettingsUpdated(settings: DisplaySettings) {
   border: 1px solid var(--border-light);
   border-radius: 3px;
   background: var(--bg-primary);
+}
+
+/* Stacked views for combined mode */
+.stacked-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stacked-item {
+  position: relative;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.stacked-label {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 3px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.diff-view {
+  width: 100%;
 }
 </style>

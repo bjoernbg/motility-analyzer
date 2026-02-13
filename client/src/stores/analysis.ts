@@ -10,6 +10,8 @@ import type {
   ContractionDetectionResult,
   ContractionEvent,
   ReencodeStatistics,
+  CombinedAnalysis,
+  CompatibilityCheckResult,
 } from '../lib/api';
 import {
   uploadVideo,
@@ -29,6 +31,11 @@ import {
   detectContractions,
   getContractionEvents,
   clearContractionEvents,
+  validateCombination,
+  createCombinedAnalysis,
+  listCombinedAnalyses,
+  getCombinedAnalysis,
+  deleteCombinedAnalysis,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
@@ -66,7 +73,22 @@ export const useAnalysisStore = defineStore('analysis', () => {
   // Track if user is actively seeking (dragging slider, etc.) to prevent auto-seek conflicts
   const isUserSeeking = ref(false);
 
-  // Simple LRU cache for frame data (max 20 frames)
+  // Combined analyses state
+  const combinedAnalyses = ref<CombinedAnalysis[]>([]);
+  const currentCombinedAnalysis = ref<CombinedAnalysis | null>(null);
+  const combinedViewMode = ref<'analysis1' | 'analysis2' | 'combined'>('combined');
+
+  // Dual-analysis state (when in combined mode)
+  const analysis1 = ref<Analysis | null>(null);
+  const analysis2 = ref<Analysis | null>(null);
+  const video1 = ref<Video | null>(null);
+  const video2 = ref<Video | null>(null);
+
+  // Synced playback for combined mode
+  const syncedFrame = ref<number | null>(null);
+  const maxSyncedFrame = ref<number | null>(null);
+
+  // Simple LRU cache for frame data (max 20 frames, increased to 40 in combined mode)
   interface FrameCacheEntry {
     data: FrameData;
     lastAccessed: number;
@@ -105,6 +127,43 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isCompleted = computed(() => progressStatus.value === 'completed');
   const hasResults = computed(() => {
     return (currentAnalysis.value?.global_data !== null && currentAnalysis.value?.global_data !== undefined) || liveFrameData.value.size > 0;
+  });
+
+  // Combined mode computed properties
+  const isInCombinedMode = computed(() => currentCombinedAnalysis.value !== null);
+
+  const activeAnalysis = computed(() => {
+    if (!isInCombinedMode.value) {
+      return currentAnalysis.value;
+    }
+
+    switch (combinedViewMode.value) {
+      case 'analysis1':
+        return analysis1.value;
+      case 'analysis2':
+        return analysis2.value;
+      case 'combined':
+        return analysis1.value; // Default to first analysis
+      default:
+        return analysis1.value;
+    }
+  });
+
+  const activeVideo = computed(() => {
+    if (!isInCombinedMode.value) {
+      return currentVideo.value;
+    }
+
+    switch (combinedViewMode.value) {
+      case 'analysis1':
+        return video1.value;
+      case 'analysis2':
+        return video2.value;
+      case 'combined':
+        return video1.value; // Default to first video
+      default:
+        return video1.value;
+    }
   });
 
   // Actions
@@ -240,7 +299,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       const completedAnalyses = availableAnalyses.value.filter(a => a.status === 'completed');
       if (completedAnalyses.length > 0) {
         // Sort by created_at descending (newest first)
-        completedAnalyses.sort((a, b) => 
+        completedAnalyses.sort((a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
         const newestAnalysis = completedAnalyses[0];
@@ -248,10 +307,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
           await selectAnalysis(newestAnalysis.id);
         }
       }
-      
-      // Auto-load contraction events for selected analysis
-      if (currentAnalysis.value && currentAnalysis.value.status === 'completed') {
-        await loadContractionEvents(currentAnalysis.value.id);
+
+      // Auto-load contraction events for selected analysis (moved outside conditional)
+      const analysisToLoad = currentAnalysis.value as Analysis | null;
+      if (analysisToLoad && analysisToLoad.status === 'completed') {
+        await loadContractionEvents(analysisToLoad.id);
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to load video metadata';
@@ -873,6 +933,149 @@ export const useAnalysisStore = defineStore('analysis', () => {
     { deep: true }
   );
 
+  // Combined Analysis Actions
+  async function loadCombinedAnalyses() {
+    try {
+      combinedAnalyses.value = await listCombinedAnalyses();
+    } catch (err) {
+      console.error('Failed to load combined analyses:', err);
+      error.value = err instanceof Error ? err.message : 'Failed to load combined analyses';
+    }
+  }
+
+  async function selectCombinedAnalysis(combinedId: string) {
+    try {
+      isLoading.value = true;
+      error.value = null;
+
+      // Clear single-analysis state
+      currentAnalysis.value = null;
+      currentVideo.value = null;
+      liveFrameData.value.clear();
+      stopPolling();
+
+      // Fetch combined analysis
+      const combined = await getCombinedAnalysis(combinedId);
+      currentCombinedAnalysis.value = combined;
+
+      // Fetch both analyses
+      if (combined.analysis_ids.length < 2) {
+        throw new Error('Combined analysis must have at least 2 analysis IDs');
+      }
+      const [a1, a2] = await Promise.all([
+        getAnalysisStatus(combined.analysis_ids[0]!),
+        getAnalysisStatus(combined.analysis_ids[1]!)
+      ]);
+
+      analysis1.value = a1;
+      analysis2.value = a2;
+
+      // Fetch video metadata for both
+      const [v1Meta, v2Meta] = await Promise.all([
+        getVideoMetadata(a1.video_id),
+        getVideoMetadata(a2.video_id)
+      ]);
+
+      // Create video objects
+      video1.value = {
+        id: a1.video_id,
+        filename: '',
+        upload_date: '',
+        file_path: '',
+        metadata: v1Meta
+      };
+
+      video2.value = {
+        id: a2.video_id,
+        filename: '',
+        upload_date: '',
+        file_path: '',
+        metadata: v2Meta
+      };
+
+      // Calculate max synced frame (min of both)
+      const frames1 = v1Meta.total_frames ?? 0;
+      const frames2 = v2Meta.total_frames ?? 0;
+      maxSyncedFrame.value = Math.min(frames1, frames2) - 1;
+
+      // Initialize synced position
+      syncedFrame.value = 0;
+      currentFrame.value = 0;
+
+      // Switch to combined view
+      combinedViewMode.value = 'combined';
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to select combined analysis';
+      console.error('Failed to select combined analysis:', err);
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function createCombinedAnalysisAction(name: string, analysisId1: string, analysisId2: string) {
+    try {
+      isLoading.value = true;
+      error.value = null;
+
+      // Validate first
+      const validation = await validateCombination(analysisId1, analysisId2);
+
+      if (!validation.compatible) {
+        throw new Error(`Incompatible analyses: ${validation.errors.join(', ')}`);
+      }
+
+      // Show warnings if present
+      if (validation.warnings.length > 0) {
+        console.warn('Combination warnings:', validation.warnings);
+      }
+
+      // Create
+      const combined = await createCombinedAnalysis({
+        name,
+        analysis_ids: [analysisId1, analysisId2]
+      });
+
+      // Refresh list
+      await loadCombinedAnalyses();
+
+      // Auto-select
+      await selectCombinedAnalysis(combined.id);
+
+      return combined;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to create combined analysis';
+      console.error('Failed to create combined analysis:', err);
+      throw err;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  function seekToSyncedFrame(frame: number) {
+    // Clamp to valid range
+    if (maxSyncedFrame.value !== null) {
+      frame = Math.max(0, Math.min(frame, maxSyncedFrame.value));
+    }
+
+    syncedFrame.value = frame;
+    currentFrame.value = frame;
+  }
+
+  function exitCombinedMode() {
+    currentCombinedAnalysis.value = null;
+    analysis1.value = null;
+    analysis2.value = null;
+    video1.value = null;
+    video2.value = null;
+    syncedFrame.value = null;
+    maxSyncedFrame.value = null;
+    combinedViewMode.value = 'combined';
+  }
+
+  function setCombinedViewMode(mode: 'analysis1' | 'analysis2' | 'combined') {
+    combinedViewMode.value = mode;
+  }
+
   return {
     // State
     videos,
@@ -894,10 +1097,23 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isDetectingContractions,
     contractionDetectionError,
     isUserSeeking,
+    // Combined analyses state
+    combinedAnalyses,
+    currentCombinedAnalysis,
+    combinedViewMode,
+    analysis1,
+    analysis2,
+    video1,
+    video2,
+    syncedFrame,
+    maxSyncedFrame,
     // Computed
     isProcessing,
     isCompleted,
     hasResults,
+    isInCombinedMode,
+    activeAnalysis,
+    activeVideo,
     // Actions
     loadVideos,
     handleVideoUpload,
@@ -922,6 +1138,13 @@ export const useAnalysisStore = defineStore('analysis', () => {
     setUserSeeking,
     seekToFrame,
     reset,
+    // Combined analyses actions
+    loadCombinedAnalyses,
+    selectCombinedAnalysis,
+    createCombinedAnalysis: createCombinedAnalysisAction,
+    seekToSyncedFrame,
+    exitCombinedMode,
+    setCombinedViewMode,
   };
 });
 

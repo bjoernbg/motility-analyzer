@@ -212,3 +212,42 @@ class ContractionDetectionResult(BaseModel):
     parameters_used: ContractionDetectionParameters = Field(description="Parameters used for detection")
     total_events: int = Field(description="Total number of events detected")
 
+
+class CombinedAnalysisMetadata(BaseModel):
+    """Metadata about compatibility checks for combined analysis."""
+    validated: bool = Field(description="Whether compatibility validation passed")
+    warnings: List[str] = Field(default_factory=list, description="Validation warnings")
+    frame_count_diff: int = Field(description="Absolute difference in frame counts")
+    duration_diff: float = Field(description="Absolute difference in duration (seconds)")
+
+
+class CombinedAnalysisCreate(BaseModel):
+    """Request model for creating a combined analysis."""
+    name: str = Field(min_length=1, max_length=200, description="User-provided name for the combination")
+    analysis_ids: List[str] = Field(min_length=2, max_length=2, description="Exactly 2 analysis IDs to combine")
+
+    @validator('analysis_ids')
+    def validate_exactly_two_ids(cls, v):
+        if len(v) != 2:
+            raise ValueError('Must provide exactly 2 analysis IDs')
+        if v[0] == v[1]:
+            raise ValueError('Cannot combine an analysis with itself')
+        return v
+
+
+class CombinedAnalysis(BaseModel):
+    """Model for a combined analysis."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str = Field(description="User-provided name for the combination")
+    analysis_ids: List[str] = Field(description="List of 2 analysis IDs")
+    created_at: datetime = Field(default_factory=datetime.now)
+    metadata: Optional[CombinedAnalysisMetadata] = Field(default=None, description="Compatibility check metadata")
+
+
+class CompatibilityCheckResult(BaseModel):
+    """Result of compatibility check between two analyses."""
+    compatible: bool = Field(description="Whether the analyses can be combined")
+    errors: List[str] = Field(default_factory=list, description="Compatibility errors (prevent combination)")
+    warnings: List[str] = Field(default_factory=list, description="Warnings (allow combination but inform user)")
+    details: Dict[str, Any] = Field(default_factory=dict, description="Additional details about the check")
+

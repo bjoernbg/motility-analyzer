@@ -477,6 +477,33 @@ export interface ContractionDetectionResult {
   total_events: number;
 }
 
+export interface CombinedAnalysisMetadata {
+  validated: boolean;
+  warnings: string[];
+  frame_count_diff: number;
+  duration_diff: number;
+}
+
+export interface CombinedAnalysisCreate {
+  name: string;
+  analysis_ids: string[];
+}
+
+export interface CombinedAnalysis {
+  id: string;
+  name: string;
+  analysis_ids: string[];
+  created_at: string;
+  metadata?: CombinedAnalysisMetadata | null;
+}
+
+export interface CompatibilityCheckResult {
+  compatible: boolean;
+  errors: string[];
+  warnings: string[];
+  details: Record<string, unknown>;
+}
+
 export async function detectContractions(
   analysisId: string,
   parameters?: ContractionDetectionParameters
@@ -531,4 +558,75 @@ export async function getSuggestedDisplaySettings(
       endpointKey: `displaySettingsSuggestions:${analysisId}`,
     }
   );
+}
+
+// Combined Analyses API
+
+export async function validateCombination(
+  analysisId1: string,
+  analysisId2: string
+): Promise<CompatibilityCheckResult> {
+  return fetchJson<CompatibilityCheckResult>(
+    `/api/combined-analyses/validate?analysis_id_1=${encodeURIComponent(analysisId1)}&analysis_id_2=${encodeURIComponent(analysisId2)}`,
+    {
+      method: 'POST',
+      endpointKey: `validateCombination:${analysisId1}:${analysisId2}`,
+    }
+  );
+}
+
+export async function createCombinedAnalysis(
+  data: CombinedAnalysisCreate
+): Promise<CombinedAnalysis> {
+  return fetchJson<CombinedAnalysis>('/api/combined-analyses', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function listCombinedAnalyses(): Promise<CombinedAnalysis[]> {
+  return fetchJson<CombinedAnalysis[]>('/api/combined-analyses', {
+    endpointKey: 'listCombinedAnalyses',
+  });
+}
+
+export async function getCombinedAnalysis(combinedId: string): Promise<CombinedAnalysis> {
+  return fetchJson<CombinedAnalysis>(`/api/combined-analyses/${encodeURIComponent(combinedId)}`, {
+    endpointKey: `combinedAnalysis:${combinedId}`,
+  });
+}
+
+export async function deleteCombinedAnalysis(combinedId: string): Promise<void> {
+  await fetchJson(`/api/combined-analyses/${encodeURIComponent(combinedId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function getHeatmapDiffMetadata(combinedId: string): Promise<HeatmapMeta> {
+  return fetchJson<HeatmapMeta>(
+    `/api/combined-analyses/${encodeURIComponent(combinedId)}/heatmap-diff/metadata`,
+    {
+      endpointKey: `heatmapDiffMetadata:${combinedId}`,
+    }
+  );
+}
+
+export async function getHeatmapDiffRaw(combinedId: string): Promise<Float32Array> {
+  const controller = getAbortController(`heatmapDiffRaw:${combinedId}`);
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/combined-analyses/${encodeURIComponent(combinedId)}/heatmap-diff/raw`,
+      { signal: controller.signal }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return new Float32Array(arrayBuffer);
+  } finally {
+    cleanupAbortController(`heatmapDiffRaw:${combinedId}`);
+  }
 }

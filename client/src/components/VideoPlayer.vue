@@ -11,6 +11,7 @@ import { debounce } from '../lib/utils';
 import { PIXEL_TO_MM_FACTOR } from '../lib/constants';
 
 const props = defineProps<{
+  analysisId?: string;  // Optional: specify which analysis to render
   overlay?: boolean;
   highlightPointIndex?: number | null;
   showCanvasOverlay?: boolean;
@@ -26,13 +27,33 @@ const store = useAnalysisStore();
 const imageRef = ref<HTMLImageElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
-const videoFps = computed(() => store.currentVideo?.metadata?.fps ?? 30);
+
+// Get target analysis and video based on analysisId prop or fall back to current
+const targetAnalysis = computed(() => {
+  if (props.analysisId) {
+    // In combined mode, find matching analysis
+    if (store.analysis1?.id === props.analysisId) return store.analysis1;
+    if (store.analysis2?.id === props.analysisId) return store.analysis2;
+  }
+  return store.currentAnalysis;
+});
+
+const targetVideo = computed(() => {
+  if (props.analysisId) {
+    // In combined mode, find matching video
+    if (store.analysis1?.id === props.analysisId) return store.video1;
+    if (store.analysis2?.id === props.analysisId) return store.video2;
+  }
+  return store.currentVideo;
+});
+
+const videoFps = computed(() => targetVideo.value?.metadata?.fps ?? 30);
 const conversionFactor = computed(() => props.pixelToMmFactor ?? PIXEL_TO_MM_FACTOR);
 const currentParameters = ref<AnalysisParameters | null>(null);
 
 // Debounced analysis function for parameter changes
 const debouncedAnalyzeParams = debounce(async (params: AnalysisParameters) => {
-  if (!params || !store.currentVideo || store.isProcessing) {
+  if (!params || !targetVideo.value || store.isProcessing) {
     return;
   }
 
@@ -44,7 +65,7 @@ const debouncedAnalyzeParams = debounce(async (params: AnalysisParameters) => {
 
 // Watch for parameter changes from store (set by AnalysisParams or from analysis)
 watch(() => store.currentParameters, (params) => {
-  if (!params || !store.currentVideo || store.isProcessing) {
+  if (!params || !targetVideo.value || store.isProcessing) {
     return;
   }
 
@@ -130,7 +151,7 @@ function updateCanvasSize() {
 
 // Analyze current frame if video is ready and parameters are available
 async function analyzeCurrentFrameIfReady() {
-  if (!store.currentVideo || store.isProcessing || store.isAnalysisSwitching) {
+  if (!targetVideo.value || store.isProcessing || store.isAnalysisSwitching) {
     return;
   }
 
@@ -169,7 +190,7 @@ function getDefaultParameters(): AnalysisParameters {
 }
 
 // Watch for video changes
-watch(() => store.currentVideo, async (newVideo, oldVideo) => {
+watch(() => targetVideo.value, async (newVideo, oldVideo) => {
   // Skip if video hasn't actually changed
   if (newVideo?.id === oldVideo?.id) {
     return;
@@ -182,7 +203,7 @@ watch(() => store.currentVideo, async (newVideo, oldVideo) => {
 
   // Only reset to frame 0 if we're actually switching videos (not on initial mount)
   // On initial mount, oldVideo will be undefined, so we should preserve the current frame
-  if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id) {
+  if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id && !props.analysisId) {
     store.currentFrame = 0;
   }
 
@@ -191,7 +212,7 @@ watch(() => store.currentVideo, async (newVideo, oldVideo) => {
 }, { immediate: true });
 
 // Watch for metadata updates separately (when video ID hasn't changed)
-watch(() => store.currentVideo?.metadata, async (newMetadata, oldMetadata) => {
+watch(() => targetVideo.value?.metadata, async (newMetadata, oldMetadata) => {
   // Skip if metadata hasn't actually changed
   if (newMetadata === oldMetadata) {
     return;
@@ -303,7 +324,7 @@ function updateCanvas() {
   ctx.value.clearRect(0, 0, canvas.width, canvas.height);
 
   // Get video metadata for scaling
-  const metadata = store.currentVideo?.metadata;
+  const metadata = targetVideo.value?.metadata;
   if (!metadata) {
     return; // Metadata not available yet
   }
@@ -491,7 +512,7 @@ function updateCanvas() {
 
 // Computed property for frame image URL
 const frameImageUrl = computed(() => {
-  if (!store.currentVideo) {
+  if (!targetVideo.value) {
     return null;
   }
   // Always use current frame (we seek to it when clicking)
@@ -500,7 +521,14 @@ const frameImageUrl = computed(() => {
   if (frameNum === null) {
     return null;
   }
-  return getFrameImageUrl(store.currentVideo.id, frameNum);
+
+  // Get video ID from targetVideo (handles both single and combined modes)
+  const videoId = props.analysisId ? targetAnalysis.value?.video_id : targetVideo.value.id;
+  if (!videoId) {
+    return null;
+  }
+
+  return getFrameImageUrl(videoId, frameNum);
 });
 
 // Computed property for aspect ratio from video metadata
@@ -602,7 +630,10 @@ async function detectWindow() {
 
   isDetectingWindow.value = true;
   try {
-    const result = await detectHorizontalWindow(store.currentVideo.id, currentFrame);
+    if (!targetVideo.value) return;
+    const videoId = props.analysisId ? targetAnalysis.value?.video_id : targetVideo.value.id;
+    if (!videoId) return;
+    const result = await detectHorizontalWindow(videoId, currentFrame);
     const left = result.x_left >= 0 ? result.x_left : null;
     const right = result.x_right >= 0 ? result.x_right : null;
 
@@ -644,7 +675,7 @@ async function detectWindow() {
       <Slider v-model="windowSliderModel" :min="0" :max="videoWidth" :step="1" class="window-slider"
         track-class="!bg-transparent" range-class="!bg-white" thumb-class="!bg-white !border-white/80" />
     </div>
-    <div v-if="!store.currentVideo" class="no-video">
+    <div v-if="!targetVideo" class="no-video">
       Please select a video to display.
     </div>
     <div v-else class="player-container">
@@ -659,7 +690,7 @@ async function detectWindow() {
         />
         <canvas v-if="overlay || showCanvasOverlay" ref="canvasRef" class="overlay-canvas" />
         <!-- Badge showing when no analysis data is available for current frame -->
-        <div v-if="!hasFrameData && store.currentFrame !== null && store.currentVideo" class="no-data-badge">
+        <div v-if="!hasFrameData && store.currentFrame !== null && targetVideo" class="no-data-badge">
           No analysis data for this frame
         </div>
       </div>

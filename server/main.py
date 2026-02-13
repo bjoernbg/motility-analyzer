@@ -19,7 +19,7 @@ from .costmap import costmap_calculation
 from .edge_detection_1d import edge_detection_1d_calculation
 from .edge_detection_canny import edge_detection_canny_calculation
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
-from .database import init_database
+from .database import init_database, CombinedAnalysisDB
 from .encoder import reencode_video
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -38,11 +38,16 @@ from .models import (
     ContractionDetectionResult,
     ContractionEvent,
     ContractionEventLineFit,
+    CombinedAnalysis,
+    CombinedAnalysisCreate,
+    CombinedAnalysisMetadata,
+    CompatibilityCheckResult,
 )
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_all_video_caches
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
 from .contraction_detection import detect_contractions, calculate_physical_spacing
+from .combination_validation import validate_compatibility
 
 # Initialize database on startup
 init_database()
@@ -1129,7 +1134,191 @@ async def delete_analysis(analysis_id: str):
         del task_manager.analyses[analysis_id]
     if analysis_id in task_manager.tasks:
         del task_manager.tasks[analysis_id]
-    
+
     return {"message": "Analysis deleted successfully"}
+
+
+# Combined Analyses Endpoints
+
+combined_analysis_db = CombinedAnalysisDB()
+
+
+@app.post("/api/combined-analyses/validate", response_model=CompatibilityCheckResult)
+async def validate_combination(analysis_id_1: str, analysis_id_2: str):
+    """Validate if two analyses can be combined."""
+    # Fetch analyses
+    analysis_storage = AnalysisStorage()
+    analysis1 = analysis_storage.get_analysis(analysis_id_1)
+    analysis2 = analysis_storage.get_analysis(analysis_id_2)
+
+    if not analysis1 or not analysis2:
+        raise HTTPException(status_code=404, detail="One or both analyses not found")
+
+    # Fetch video metadata
+    video_storage = VideoStorage()
+    video1 = video_storage.get_video(analysis1.video_id)
+    video2 = video_storage.get_video(analysis2.video_id)
+
+    if not video1 or not video2:
+        raise HTTPException(status_code=404, detail="One or both videos not found")
+
+    metadata1 = get_video_metadata(video1.file_path)
+    metadata2 = get_video_metadata(video2.file_path)
+
+    # Validate compatibility
+    result = validate_compatibility(analysis1, analysis2, metadata1, metadata2)
+    return result
+
+
+@app.post("/api/combined-analyses", response_model=CombinedAnalysis)
+async def create_combined_analysis(body: CombinedAnalysisCreate):
+    """Create a new combined analysis."""
+    # Validate first
+    validation = await validate_combination(body.analysis_ids[0], body.analysis_ids[1])
+
+    if not validation.compatible:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Incompatible analyses: {', '.join(validation.errors)}"
+        )
+
+    # Create metadata
+    metadata = CombinedAnalysisMetadata(
+        validated=True,
+        warnings=validation.warnings,
+        frame_count_diff=validation.details.get('frame_count_diff', 0),
+        duration_diff=validation.details.get('duration_diff', 0.0)
+    )
+
+    # Create combined analysis
+    combined = CombinedAnalysis(
+        name=body.name,
+        analysis_ids=body.analysis_ids,
+        metadata=metadata
+    )
+
+    # Convert to dict for database
+    combined_dict = {
+        "id": combined.id,
+        "name": combined.name,
+        "analysis_ids": combined.analysis_ids,
+        "created_at": combined.created_at.isoformat(),
+        "metadata": combined.metadata.model_dump() if combined.metadata else None
+    }
+
+    combined_analysis_db.create_combined_analysis(combined_dict)
+    return combined
+
+
+@app.get("/api/combined-analyses", response_model=list[CombinedAnalysis])
+async def list_combined_analyses(limit: int = 100, offset: int = 0):
+    """List all combined analyses."""
+    results = combined_analysis_db.list_combined_analyses(limit, offset)
+
+    # Convert database results to Pydantic models
+    return [
+        CombinedAnalysis(
+            id=r["id"],
+            name=r["name"],
+            analysis_ids=r["analysis_ids"],
+            created_at=datetime.fromisoformat(r["created_at"]),
+            metadata=CombinedAnalysisMetadata(**r["metadata"]) if r["metadata"] else None
+        )
+        for r in results
+    ]
+
+
+@app.get("/api/combined-analyses/{combined_id}", response_model=CombinedAnalysis)
+async def get_combined_analysis(combined_id: str):
+    """Get a specific combined analysis."""
+    result = combined_analysis_db.get_combined_analysis(combined_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Combined analysis not found")
+
+    return CombinedAnalysis(
+        id=result["id"],
+        name=result["name"],
+        analysis_ids=result["analysis_ids"],
+        created_at=datetime.fromisoformat(result["created_at"]),
+        metadata=CombinedAnalysisMetadata(**result["metadata"]) if result["metadata"] else None
+    )
+
+
+@app.delete("/api/combined-analyses/{combined_id}")
+async def delete_combined_analysis(combined_id: str):
+    """Delete a combined analysis."""
+    # Check if it exists first
+    result = combined_analysis_db.get_combined_analysis(combined_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Combined analysis not found")
+
+    combined_analysis_db.delete_combined_analysis(combined_id)
+    return {"message": "Combined analysis deleted successfully"}
+
+
+@app.get("/api/combined-analyses/{combined_id}/heatmap-diff/metadata", response_model=HeatmapMeta)
+async def get_heatmap_diff_metadata(combined_id: str):
+    """Get metadata for the heatmap difference."""
+    # Get combined analysis
+    result = combined_analysis_db.get_combined_analysis(combined_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Combined analysis not found")
+
+    analysis_id_1, analysis_id_2 = result["analysis_ids"]
+
+    # Build diff matrix
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    diff_matrix, min_val, max_val = db.build_heatmap_diff_matrix(analysis_id_1, analysis_id_2)
+
+    # Get FPS from first analysis
+    analysis_storage = AnalysisStorage()
+    analysis1 = analysis_storage.get_analysis(analysis_id_1)
+    if not analysis1:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    video_storage = VideoStorage()
+    video1 = video_storage.get_video(analysis1.video_id)
+    if not video1:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    metadata1 = get_video_metadata(video1.file_path)
+
+    return HeatmapMeta(
+        width=diff_matrix.shape[0] if diff_matrix.size > 0 else 0,
+        height=diff_matrix.shape[1] if diff_matrix.size > 0 else 0,
+        dtype="float32",
+        min=min_val,
+        max=max_val,
+        fps=metadata1.fps
+    )
+
+
+@app.get("/api/combined-analyses/{combined_id}/heatmap-diff/raw")
+async def get_heatmap_diff_raw(combined_id: str):
+    """Get raw heatmap difference data as binary float32 array."""
+    # Get combined analysis
+    result = combined_analysis_db.get_combined_analysis(combined_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Combined analysis not found")
+
+    analysis_id_1, analysis_id_2 = result["analysis_ids"]
+
+    # Build diff matrix
+    results_storage = ResultsStorage()
+    db = results_storage.db
+    diff_matrix, _, _ = db.build_heatmap_diff_matrix(analysis_id_1, analysis_id_2)
+
+    # Convert to bytes
+    binary_data = diff_matrix.tobytes()
+
+    return Response(
+        content=binary_data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(len(binary_data)),
+            "Cache-Control": "public, max-age=3600"
+        }
+    )
 
 
