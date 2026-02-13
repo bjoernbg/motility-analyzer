@@ -294,6 +294,15 @@ export interface HorizontalWindowDetectionResult {
   y_mid: number;
 }
 
+export interface CalibrationResult {
+  pixel_to_mm_factor: number;
+  tube_width_px: number;
+  x_start: number;
+  x_end: number;
+  y_top: number;
+  y_bottom: number;
+}
+
 export async function analyzeFrame(
   videoId: string,
   frameNumber: number,
@@ -324,6 +333,24 @@ export async function detectHorizontalWindow(
   return fetchJson<HorizontalWindowDetectionResult>(`/api/analysis/detect-window?${params.toString()}`, {
     method: 'POST',
   });
+}
+
+export async function calibrateVideo(
+  videoId: string,
+  frameNumber: number = 0,
+  tubeWidthMm: number = 11.0
+): Promise<CalibrationResult> {
+  const params = new URLSearchParams({
+    frame_number: frameNumber.toString(),
+    tube_width_mm: tubeWidthMm.toString(),
+  });
+  return fetchJson<CalibrationResult>(
+    `/api/videos/${encodeURIComponent(videoId)}/calibrate?${params.toString()}`,
+    {
+      method: 'POST',
+      endpointKey: `calibrate:${videoId}`,
+    }
+  );
 }
 
 export async function getVideoSettings(videoId: string): Promise<AnalysisParameters | null> {
@@ -529,6 +556,22 @@ export async function clearContractionEvents(analysisId: string): Promise<void> 
 
 export async function clearAllData(): Promise<{ message: string; tasks_cancelled: number; files_deleted: number }> {
   return fetchJson('/api/clear-all-data', { method: 'DELETE' });
+}
+
+export async function getVideoDisplaySettings(videoId: string): Promise<DisplaySettings> {
+  return fetchJson<DisplaySettings>(`/api/videos/${encodeURIComponent(videoId)}/display-settings`, {
+    endpointKey: `videoDisplaySettings:${videoId}`,
+  });
+}
+
+export async function updateVideoDisplaySettings(
+  videoId: string,
+  settings: DisplaySettings
+): Promise<DisplaySettings> {
+  return fetchJson<DisplaySettings>(`/api/videos/${encodeURIComponent(videoId)}/display-settings`, {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function getDisplaySettings(analysisId: string): Promise<DisplaySettings> {

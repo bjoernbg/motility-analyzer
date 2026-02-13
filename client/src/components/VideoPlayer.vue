@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import { detectHorizontalWindow, getFrameImageUrl } from '../lib/api';
-import type { FrameData, AnalysisParameters } from '../lib/api';
+import type { FrameData, AnalysisParameters, CalibrationResult } from '../lib/api';
 import { Slider } from './ui/slider';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
@@ -16,6 +16,7 @@ const props = defineProps<{
   highlightPointIndex?: number | null;
   showCanvasOverlay?: boolean;
   pixelToMmFactor?: number;
+  calibrationRegion?: CalibrationResult | null;
 }>();
 
 const emit = defineEmits<{
@@ -503,6 +504,23 @@ function updateCanvas() {
       ctx.value.stroke();
       ctx.value.setLineDash([]); // Reset dash
     }
+  }
+
+  // Draw calibration region overlay
+  if (props.calibrationRegion) {
+    const r = props.calibrationRegion;
+    const rx = r.x_start * scaleX;
+    const ry = r.y_top * scaleY;
+    const rw = (r.x_end - r.x_start) * scaleX;
+    const rh = (r.y_bottom - r.y_top) * scaleY;
+
+    ctx.value.fillStyle = 'rgba(0, 200, 255, 0.25)';
+    ctx.value.fillRect(rx, ry, rw, rh);
+
+    ctx.value.strokeStyle = '#00c8ff';
+    ctx.value.lineWidth = 2;
+    ctx.value.setLineDash([]);
+    ctx.value.strokeRect(rx, ry, rw, rh);
   }
 }
 

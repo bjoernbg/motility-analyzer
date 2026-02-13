@@ -34,16 +34,6 @@
       Distance: {{ hoverInfo.value.toFixed(3) }} px<br />
       Distance: {{ hoverInfo.valueMm.toFixed(3) }} mm
     </div>
-    <div v-if="!isLoading && !error && !compact" class="color-scale-info">
-      <div class="color-scale-label">Color Scale:</div>
-      <div class="color-scale-range">
-        <span class="color-indicator red"></span>
-        <span>{{ heatmapMinMm }} mm</span>
-        <span class="color-indicator violet"></span>
-        <span>{{ heatmapMaxMm }} mm</span>
-      </div>
-      <div class="conversion-factor">Conversion: 1 mm = {{ pixelToMmFactor }} px</div>
-    </div>
   </div>
 </template>
 
@@ -53,6 +43,7 @@ import { getHeatmapMeta, getHeatmapRaw, type HeatmapMeta } from "../lib/api";
 import { useHeatmapCache } from "../composables/useHeatmapCache";
 import { useAnalysisStore } from "../stores/analysis";
 import { PIXEL_TO_MM_FACTOR, HEATMAP_MIN_MM, HEATMAP_MAX_MM } from "../lib/constants";
+import { createColormap } from "../lib/colormap";
 
 const props = defineProps<{
   analysisId: string;
@@ -384,51 +375,6 @@ function calculateInitialScale() {
     offsetX.value = 0;
     offsetY.value = 0;
   }
-}
-
-/**
- * Precompute a color map: value in [0, 1] → RGB
- * Red → Orange → Yellow → Green → Cyan → Blue → Violet/Ultraviolet gradient
- */
-function createColormap(): Uint8Array {
-  const map = new Uint8Array(256 * 3);
-  
-  // Key color points in the spectrum (RGB values)
-  const colors: [number, number, number][] = [
-    [255, 0, 0],     // Red
-    [255, 127, 0],   // Orange
-    [255, 255, 0],   // Yellow
-    [0, 255, 0],     // Green
-    [0, 255, 255],   // Cyan
-    [0, 0, 255],     // Blue
-    [148, 0, 211],   // Violet/Ultraviolet
-  ];
-  
-  const numSegments = colors.length - 1;
-  
-  for (let i = 0; i < 256; i++) {
-    const t = i / 255; // 0..1
-    
-    // Find which segment we're in
-    const segmentSize = 1 / numSegments;
-    const segmentIndex = Math.min(Math.floor(t / segmentSize), numSegments - 1);
-    const localT = (t - segmentIndex * segmentSize) / segmentSize; // 0..1 within segment
-    
-    // Interpolate between the two colors in this segment
-    const color1 = colors[segmentIndex];
-    const color2 = colors[segmentIndex + 1];
-    
-    if (!color1 || !color2) continue; // Safety check (should never happen)
-    
-    const r = Math.round(color1[0] + (color2[0] - color1[0]) * localT);
-    const g = Math.round(color1[1] + (color2[1] - color1[1]) * localT);
-    const b = Math.round(color1[2] + (color2[2] - color1[2]) * localT);
-    
-    map[i * 3 + 0] = r;
-    map[i * 3 + 1] = g;
-    map[i * 3 + 2] = b;
-  }
-  return map;
 }
 
 const colormap = createColormap();
@@ -979,53 +925,5 @@ function setupMouseMove() {
   margin: 1rem;
 }
 
-.color-scale-info {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid var(--border-light);
-  border-radius: 4px;
-  padding: 8px 12px;
-  font-size: 11px;
-  z-index: 100;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.color-scale-label {
-  font-weight: 600;
-  margin-bottom: 4px;
-  color: var(--text-primary);
-}
-
-.color-scale-range {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-  color: var(--text-secondary);
-}
-
-.color-indicator {
-  display: inline-block;
-  width: 16px;
-  height: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  border-radius: 2px;
-}
-
-.color-indicator.red {
-  background: rgb(255, 0, 0);
-}
-
-.color-indicator.violet {
-  background: rgb(148, 0, 211);
-}
-
-.conversion-factor {
-  font-size: 10px;
-  color: var(--text-secondary);
-  font-style: italic;
-}
 </style>
 

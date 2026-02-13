@@ -194,6 +194,16 @@ class ContractionDetectionResult(BaseModel):
     total_events: int = Field(description="Total number of events detected")
 
 
+class CalibrationResult(BaseModel):
+    """Result of tube-based calibration."""
+    pixel_to_mm_factor: float = Field(description="Computed pixels per millimeter")
+    tube_width_px: float = Field(description="Measured tube width in pixels")
+    x_start: int = Field(description="Left edge of measurement region (pixels)")
+    x_end: int = Field(description="Right edge of measurement region (pixels)")
+    y_top: float = Field(description="Top edge of tube (median, pixels)")
+    y_bottom: float = Field(description="Bottom edge of tube (median, pixels)")
+
+
 class CombinedAnalysisMetadata(BaseModel):
     """Metadata about compatibility checks for combined analysis."""
     validated: bool = Field(description="Whether compatibility validation passed")

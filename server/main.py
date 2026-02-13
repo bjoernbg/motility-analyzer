@@ -14,6 +14,7 @@ from brotli_asgi import BrotliMiddleware
 import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
+from .calibration import calibrate_tube_width
 from .config import MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .database import init_database, clear_all_data, CombinedAnalysisDB
@@ -23,6 +24,7 @@ from .metadata import get_video_metadata
 from .models import (
     Analysis,
     AnalysisParameters,
+    CalibrationResult,
     DisplaySettings,
     FrameData,
     HeatmapMeta,
@@ -78,6 +80,35 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Width", "X-Height", "X-Dtype"],
 )
+
+
+def _load_video_display_settings(video_path: Path) -> DisplaySettings:
+    """Load display settings from the per-video JSON file."""
+    settings_path = video_path.with_suffix('.json')
+    if settings_path.exists():
+        try:
+            with open(settings_path, 'r') as f:
+                all_data = json.load(f)
+                if 'display_settings' in all_data:
+                    return DisplaySettings(**all_data['display_settings'])
+        except (json.JSONDecodeError, IOError, ValueError):
+            pass
+    return DisplaySettings(pixel_to_mm_factor=PIXEL_TO_MM_FACTOR, heatmap_min_mm=3.0, heatmap_max_mm=30.0)
+
+
+def _save_video_display_settings(video_path: Path, settings: DisplaySettings) -> None:
+    """Save display settings to the per-video JSON file, preserving other keys."""
+    settings_path = video_path.with_suffix('.json')
+    existing_data = {}
+    if settings_path.exists():
+        try:
+            with open(settings_path, 'r') as f:
+                existing_data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            existing_data = {}
+    existing_data['display_settings'] = settings.model_dump()
+    with open(settings_path, 'w') as f:
+        json.dump(existing_data, f, indent=2, default=str)
 
 
 @app.get("/")
@@ -353,12 +384,8 @@ def get_heatmap_meta(analysis_id: str):
     db = results_storage.db
     matrix, min_val, max_val = db.build_heatmap_matrix(analysis_id)
 
-    # Get display settings from analysis or use defaults
-    display_settings = None
-    if analysis.global_data and "display_settings" in analysis.global_data:
-        display_settings = DisplaySettings(**analysis.global_data["display_settings"])
-    else:
-        display_settings = DisplaySettings()  # Use defaults from model
+    # Get display settings from video JSON
+    display_settings = _load_video_display_settings(video_path)
 
     if matrix.size == 0:
         # No data available - explicitly delete empty matrix
@@ -503,50 +530,26 @@ def get_heatmap_raw(analysis_id: str):
 
 @app.get("/api/analysis/{analysis_id}/display-settings", response_model=DisplaySettings)
 def get_display_settings(analysis_id: str):
-    """Get current display settings for an analysis."""
+    """Get current display settings for an analysis (delegates to video-level settings)."""
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    # Extract from global_data or use defaults
-    if analysis.global_data and "display_settings" in analysis.global_data:
-        return DisplaySettings(**analysis.global_data["display_settings"])
-    else:
-        # Return defaults from config
-        return DisplaySettings(
-            pixel_to_mm_factor=PIXEL_TO_MM_FACTOR,
-            heatmap_min_mm=3.0,
-            heatmap_max_mm=30.0,
-        )
+    video_path = VideoStorage.get_video_path(analysis.video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    return _load_video_display_settings(video_path)
 
 
 @app.put("/api/analysis/{analysis_id}/display-settings", response_model=DisplaySettings)
 def update_display_settings(analysis_id: str, settings: DisplaySettings):
-    """Update display settings for an analysis."""
+    """Update display settings for an analysis (delegates to video-level settings)."""
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    # Add timestamp
-    settings.updated_at = datetime.now().isoformat()
-
-    # Update global_data
-    global_data = analysis.global_data or {}
-    global_data["display_settings"] = settings.model_dump()
-
-    # Persist to database
-    results_storage = ResultsStorage()
-    db = results_storage.db
-    db.update_analysis(analysis_id, global_data=global_data)
-
-    # Invalidate heatmap metadata cache (metadata includes display settings)
-    video_path = VideoStorage.get_video_path(analysis.video_id)
-    if video_path and video_path.exists():
-        cache_file = video_path.parent / f"{video_path.stem}_analysis_{analysis_id}_heatmap_meta.json"
-        if cache_file.exists():
-            cache_file.unlink()
-
-    return settings
+    return update_video_display_settings(analysis.video_id, settings)
 
 
 @app.get("/api/analysis/{analysis_id}/display-settings/suggestions", response_model=SuggestedDisplaySettings)
@@ -556,10 +559,12 @@ def get_suggested_display_settings(analysis_id: str):
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    # Get current or default pixel_to_mm_factor
-    current_factor = PIXEL_TO_MM_FACTOR
-    if analysis.global_data and "display_settings" in analysis.global_data:
-        current_factor = analysis.global_data["display_settings"].get("pixel_to_mm_factor", PIXEL_TO_MM_FACTOR)
+    # Get current pixel_to_mm_factor from video-level display settings
+    video_path = VideoStorage.get_video_path(analysis.video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    video_display_settings = _load_video_display_settings(video_path)
+    current_factor = video_display_settings.pixel_to_mm_factor
 
     # Build heatmap matrix
     results_storage = ResultsStorage()
@@ -841,6 +846,43 @@ async def detect_horizontal_window(video_id: str, frame_number: int, y: int | No
         cap.release()
 
 
+@app.post("/api/videos/{video_id}/calibrate", response_model=CalibrationResult)
+async def calibrate_video(video_id: str, frame_number: int = 0, tube_width_mm: float = 11.0):
+    """Calibrate pixel-to-mm factor by measuring the tube at the right edge of the frame."""
+    video_path = VideoStorage.get_video_path(video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Load metadata to get frame_multiplier
+    settings_path = video_path.with_suffix('.json')
+    frame_multiplier = 1.0
+    if settings_path.exists():
+        try:
+            with open(settings_path, 'r') as f:
+                all_data = json.load(f)
+                if 'metadata' in all_data and 'frame_multiplier' in all_data['metadata']:
+                    frame_multiplier = float(all_data['metadata']['frame_multiplier'])
+        except (json.JSONDecodeError, IOError, KeyError, ValueError):
+            pass
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise HTTPException(status_code=500, detail="Failed to open video file")
+
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_number * frame_multiplier))
+        ret, frame = cap.read()
+        if not ret:
+            raise HTTPException(status_code=400, detail=f"Failed to read frame {frame_number}")
+
+        result = calibrate_tube_width(np.array(frame), tube_known_width_mm=tube_width_mm)
+        return CalibrationResult(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cap.release()
+
+
 @app.get("/api/videos/{video_id}/settings")
 def get_video_settings(video_id: str):
     """Get saved settings for a video."""
@@ -895,6 +937,36 @@ def save_video_settings(video_id: str, settings: dict):
         return {"message": "Settings saved successfully"}
     except IOError as e:
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
+
+
+@app.get("/api/videos/{video_id}/display-settings", response_model=DisplaySettings)
+def get_video_display_settings(video_id: str):
+    """Get display settings for a video."""
+    video_path = VideoStorage.get_video_path(video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _load_video_display_settings(video_path)
+
+
+@app.put("/api/videos/{video_id}/display-settings", response_model=DisplaySettings)
+def update_video_display_settings(video_id: str, settings: DisplaySettings):
+    """Update display settings for a video. Invalidates heatmap meta caches for all analyses of this video."""
+    video_path = VideoStorage.get_video_path(video_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    settings.updated_at = datetime.now().isoformat()
+    _save_video_display_settings(video_path, settings)
+
+    # Invalidate heatmap metadata cache for all analyses of this video
+    analysis_storage = AnalysisStorage()
+    analyses = analysis_storage.list_analyses(video_id=video_id, limit=1000)
+    for analysis in analyses:
+        cache_file = video_path.parent / f"{video_path.stem}_analysis_{analysis.id}_heatmap_meta.json"
+        if cache_file.exists():
+            cache_file.unlink()
+
+    return settings
 
 
 @app.post("/api/analysis/{analysis_id}/detect-contractions", response_model=ContractionDetectionResult)
