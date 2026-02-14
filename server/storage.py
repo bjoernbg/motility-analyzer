@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from .config import VIDEOS_DIR
+from .config import ALLOWED_VIDEO_EXTENSIONS, VIDEOS_DIR
 from .database import AnalysisDB, init_database
 from .models import Analysis, AnalysisResult, FrameData, Video
 
@@ -40,13 +40,10 @@ class VideoStorage:
         """List all available videos."""
         videos = []
         for file_path in VIDEOS_DIR.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in {
-                ".mp4",
-                ".avi",
-                ".mov",
-                ".mkv",
-                ".webm",
-            }:
+            if (
+                file_path.is_file()
+                and file_path.suffix.lower() in ALLOWED_VIDEO_EXTENSIONS
+            ):
                 video = Video(
                     id=file_path.stem,  # Use filename stem as ID
                     filename=file_path.name,

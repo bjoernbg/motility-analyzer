@@ -34,6 +34,7 @@ function cleanupAbortController(endpointKey: string): void {
 export interface VideoMetadata {
   total_frames: number;
   fps: number;
+  frame_multiplier: number;
   width: number;
   height: number;
   display_aspect_ratio: number | null;
@@ -489,30 +490,30 @@ export interface ContractionDetectionResult {
   total_events: number;
 }
 
-export interface CombinedAnalysisMetadata {
+export interface MultiViewSessionMetadata {
   validated: boolean;
-  warnings: string[];
   frame_count_diff: number;
   duration_diff: number;
 }
 
-export interface CombinedAnalysisCreate {
+export interface MultiViewSessionCreate {
   name: string;
-  analysis_ids: string[];
+  left_analysis_id: string;
+  right_analysis_id: string;
 }
 
-export interface CombinedAnalysis {
+export interface MultiViewSession {
   id: string;
   name: string;
-  analysis_ids: string[];
+  left_analysis_id: string;
+  right_analysis_id: string;
   created_at: string;
-  metadata?: CombinedAnalysisMetadata | null;
+  metadata?: MultiViewSessionMetadata | null;
 }
 
-export interface CompatibilityCheckResult {
+export interface MultiViewValidationResult {
   compatible: boolean;
   errors: string[];
-  warnings: string[];
   details: Record<string, unknown>;
 }
 
@@ -581,73 +582,45 @@ export async function updateDisplaySettings(
   });
 }
 
-// Combined Analyses API
+// Multi-view sessions API
 
-export async function validateCombination(
-  analysisId1: string,
-  analysisId2: string
-): Promise<CompatibilityCheckResult> {
-  return fetchJson<CompatibilityCheckResult>(
-    `/api/combined-analyses/validate?analysis_id_1=${encodeURIComponent(analysisId1)}&analysis_id_2=${encodeURIComponent(analysisId2)}`,
-    {
-      method: 'POST',
-      endpointKey: `validateCombination:${analysisId1}:${analysisId2}`,
-    }
-  );
+export async function validateMultiViewPair(
+  leftAnalysisId: string,
+  rightAnalysisId: string
+): Promise<MultiViewValidationResult> {
+  return fetchJson<MultiViewValidationResult>('/api/multi-view/validate', {
+    method: 'POST',
+    body: JSON.stringify({
+      left_analysis_id: leftAnalysisId,
+      right_analysis_id: rightAnalysisId,
+    }),
+    endpointKey: `validateMultiViewPair:${leftAnalysisId}:${rightAnalysisId}`,
+  });
 }
 
-export async function createCombinedAnalysis(
-  data: CombinedAnalysisCreate
-): Promise<CombinedAnalysis> {
-  return fetchJson<CombinedAnalysis>('/api/combined-analyses', {
+export async function createMultiViewSession(
+  data: MultiViewSessionCreate
+): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>('/api/multi-view/sessions', {
     method: 'POST',
     body: JSON.stringify(data),
   });
 }
 
-export async function listCombinedAnalyses(): Promise<CombinedAnalysis[]> {
-  return fetchJson<CombinedAnalysis[]>('/api/combined-analyses', {
-    endpointKey: 'listCombinedAnalyses',
+export async function listMultiViewSessions(): Promise<MultiViewSession[]> {
+  return fetchJson<MultiViewSession[]>('/api/multi-view/sessions', {
+    endpointKey: 'listMultiViewSessions',
   });
 }
 
-export async function getCombinedAnalysis(combinedId: string): Promise<CombinedAnalysis> {
-  return fetchJson<CombinedAnalysis>(`/api/combined-analyses/${encodeURIComponent(combinedId)}`, {
-    endpointKey: `combinedAnalysis:${combinedId}`,
+export async function getMultiViewSession(sessionId: string): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>(`/api/multi-view/sessions/${encodeURIComponent(sessionId)}`, {
+    endpointKey: `multiViewSession:${sessionId}`,
   });
 }
 
-export async function deleteCombinedAnalysis(combinedId: string): Promise<void> {
-  await fetchJson(`/api/combined-analyses/${encodeURIComponent(combinedId)}`, {
+export async function deleteMultiViewSession(sessionId: string): Promise<void> {
+  await fetchJson(`/api/multi-view/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   });
-}
-
-export async function getHeatmapDiffMetadata(combinedId: string): Promise<HeatmapMeta> {
-  return fetchJson<HeatmapMeta>(
-    `/api/combined-analyses/${encodeURIComponent(combinedId)}/heatmap-diff/metadata`,
-    {
-      endpointKey: `heatmapDiffMetadata:${combinedId}`,
-    }
-  );
-}
-
-export async function getHeatmapDiffRaw(combinedId: string): Promise<Float32Array> {
-  const controller = getAbortController(`heatmapDiffRaw:${combinedId}`);
-
-  try {
-    const response = await fetch(
-      `${API_BASE_URL}/api/combined-analyses/${encodeURIComponent(combinedId)}/heatmap-diff/raw`,
-      { signal: controller.signal }
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    return new Float32Array(arrayBuffer);
-  } finally {
-    cleanupAbortController(`heatmapDiffRaw:${combinedId}`);
-  }
 }

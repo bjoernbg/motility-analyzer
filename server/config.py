@@ -15,7 +15,7 @@ VIDEOS_DIR.mkdir(exist_ok=True)
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # Allowed video file extensions
-ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mts"}
 
 # Maximum upload size (100MB)
 MAX_UPLOAD_SIZE = 1000 * 1024 * 1024

@@ -12,28 +12,33 @@ from .config import DATABASE_PATH
 from .models import Analysis, AnalysisResult, FrameData
 
 
-def migrate_database_for_combined_analyses() -> None:
-    """Create combined_analyses table if it doesn't exist."""
+def migrate_database_for_multi_view_sessions() -> None:
+    """Create multi_view_sessions table and remove legacy combined_analyses table."""
     db_path = Path(DATABASE_PATH)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
 
     try:
+        # Drop legacy table from removed combination feature.
+        cursor.execute("DROP TABLE IF EXISTS combined_analyses")
+
         # Check if table exists
         cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='combined_analyses'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='multi_view_sessions'"
         )
         if cursor.fetchone():
             # Table already exists
+            conn.commit()
             return
 
         # Create table
         cursor.execute("""
-            CREATE TABLE combined_analyses (
+            CREATE TABLE multi_view_sessions (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                analysis_ids TEXT NOT NULL,
+                left_analysis_id TEXT NOT NULL,
+                right_analysis_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 metadata TEXT
             )
@@ -41,10 +46,10 @@ def migrate_database_for_combined_analyses() -> None:
 
         # Create indexes
         cursor.execute(
-            "CREATE INDEX idx_combined_analyses_created_at ON combined_analyses(created_at)"
+            "CREATE INDEX idx_multi_view_sessions_created_at ON multi_view_sessions(created_at)"
         )
         cursor.execute(
-            "CREATE INDEX idx_combined_analyses_name ON combined_analyses(name)"
+            "CREATE INDEX idx_multi_view_sessions_name ON multi_view_sessions(name)"
         )
 
         conn.commit()
@@ -130,8 +135,8 @@ def init_database() -> None:
     conn.commit()
     conn.close()
 
-    # Run migration for combined analyses table
-    migrate_database_for_combined_analyses()
+    # Run migration for multi-view sessions table
+    migrate_database_for_multi_view_sessions()
 
 
 def clear_all_data() -> None:
@@ -145,6 +150,7 @@ def clear_all_data() -> None:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DROP TABLE IF EXISTS contraction_events")
         conn.execute("DROP TABLE IF EXISTS frames")
+        conn.execute("DROP TABLE IF EXISTS multi_view_sessions")
         conn.execute("DROP TABLE IF EXISTS combined_analyses")
         conn.execute("DROP TABLE IF EXISTS analyses")
         conn.commit()
@@ -842,47 +848,6 @@ class AnalysisDB:
         finally:
             conn.close()
 
-    def build_heatmap_diff_matrix(
-        self, analysis_id_1: str, analysis_id_2: str
-    ) -> tuple[np.ndarray, float, float]:
-        """Build signed difference heatmap: matrix1 - matrix2.
-
-        Args:
-            analysis_id_1: First analysis ID
-            analysis_id_2: Second analysis ID
-
-        Returns:
-            Tuple of (diff_matrix, min_value, max_value)
-            - Shape: (min_frames, num_points)
-            - Truncated to shorter video if frame counts differ
-        """
-        matrix1, min1, max1 = self.build_heatmap_matrix(analysis_id_1)
-        matrix2, min2, max2 = self.build_heatmap_matrix(analysis_id_2)
-
-        # Handle empty matrices
-        if matrix1.size == 0 or matrix2.size == 0:
-            return np.array([], dtype=np.float32).reshape(0, 0), 0.0, 0.0
-
-        # Truncate to shorter length
-        min_frames = min(matrix1.shape[0], matrix2.shape[0])
-        min_points = min(matrix1.shape[1], matrix2.shape[1])
-
-        matrix1_truncated = matrix1[:min_frames, :min_points]
-        matrix2_truncated = matrix2[:min_frames, :min_points]
-
-        # Compute signed difference
-        diff_matrix = matrix1_truncated - matrix2_truncated
-
-        # Calculate min/max for colormap scaling
-        if diff_matrix.size > 0:
-            min_val = float(np.min(diff_matrix))
-            max_val = float(np.max(diff_matrix))
-        else:
-            min_val = 0.0
-            max_val = 0.0
-
-        return diff_matrix, min_val, max_val
-
     def save_contraction_events(self, analysis_id: str, events: list[dict]) -> None:
         """Store contraction events for an analysis."""
         from uuid import uuid4
@@ -1020,8 +985,8 @@ class AnalysisDB:
             conn.close()
 
 
-class CombinedAnalysisDB:
-    """Database operations for combined analyses."""
+class MultiViewSessionDB:
+    """Database operations for persisted multi-view sessions."""
 
     def __init__(self, db_path: str = DATABASE_PATH):
         """Initialize with database path."""
@@ -1037,28 +1002,26 @@ class CombinedAnalysisDB:
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
-    def create_combined_analysis(self, combined: dict) -> None:
-        """Insert a new combined analysis.
-
-        Args:
-            combined: Dictionary with keys: id, name, analysis_ids, created_at, metadata
-        """
+    def create_session(self, session: dict) -> None:
+        """Insert a new multi-view session."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute(
                 """
-                INSERT INTO combined_analyses (id, name, analysis_ids, created_at, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO multi_view_sessions
+                (id, name, left_analysis_id, right_analysis_id, created_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
-                    combined["id"],
-                    combined["name"],
-                    json.dumps(combined["analysis_ids"]),
-                    combined["created_at"],
-                    json.dumps(combined.get("metadata"))
-                    if combined.get("metadata")
+                    session["id"],
+                    session["name"],
+                    session["left_analysis_id"],
+                    session["right_analysis_id"],
+                    session["created_at"],
+                    json.dumps(session.get("metadata"))
+                    if session.get("metadata")
                     else None,
                 ),
             )
@@ -1066,26 +1029,19 @@ class CombinedAnalysisDB:
         finally:
             conn.close()
 
-    def get_combined_analysis(self, combined_id: str) -> Optional[dict]:
-        """Retrieve a combined analysis by ID.
-
-        Args:
-            combined_id: Combined analysis ID
-
-        Returns:
-            Dictionary with combined analysis data or None if not found
-        """
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """Retrieve a multi-view session by ID."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute(
                 """
-                SELECT id, name, analysis_ids, created_at, metadata
-                FROM combined_analyses
+                SELECT id, name, left_analysis_id, right_analysis_id, created_at, metadata
+                FROM multi_view_sessions
                 WHERE id = ?
             """,
-                (combined_id,),
+                (session_id,),
             )
 
             row = cursor.fetchone()
@@ -1095,31 +1051,24 @@ class CombinedAnalysisDB:
             return {
                 "id": row["id"],
                 "name": row["name"],
-                "analysis_ids": json.loads(row["analysis_ids"]),
+                "left_analysis_id": row["left_analysis_id"],
+                "right_analysis_id": row["right_analysis_id"],
                 "created_at": row["created_at"],
                 "metadata": json.loads(row["metadata"]) if row["metadata"] else None,
             }
         finally:
             conn.close()
 
-    def list_combined_analyses(self, limit: int = 100, offset: int = 0) -> list[dict]:
-        """List all combined analyses.
-
-        Args:
-            limit: Maximum number of results to return
-            offset: Number of results to skip
-
-        Returns:
-            List of combined analysis dictionaries
-        """
+    def list_sessions(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """List all multi-view sessions."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute(
                 """
-                SELECT id, name, analysis_ids, created_at, metadata
-                FROM combined_analyses
+                SELECT id, name, left_analysis_id, right_analysis_id, created_at, metadata
+                FROM multi_view_sessions
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
             """,
@@ -1131,7 +1080,8 @@ class CombinedAnalysisDB:
                 {
                     "id": row["id"],
                     "name": row["name"],
-                    "analysis_ids": json.loads(row["analysis_ids"]),
+                    "left_analysis_id": row["left_analysis_id"],
+                    "right_analysis_id": row["right_analysis_id"],
                     "created_at": row["created_at"],
                     "metadata": json.loads(row["metadata"])
                     if row["metadata"]
@@ -1142,59 +1092,13 @@ class CombinedAnalysisDB:
         finally:
             conn.close()
 
-    def delete_combined_analysis(self, combined_id: str) -> None:
-        """Delete a combined analysis.
-
-        Args:
-            combined_id: Combined analysis ID to delete
-        """
+    def delete_session(self, session_id: str) -> None:
+        """Delete a multi-view session."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
-            cursor.execute("DELETE FROM combined_analyses WHERE id = ?", (combined_id,))
+            cursor.execute("DELETE FROM multi_view_sessions WHERE id = ?", (session_id,))
             conn.commit()
-        finally:
-            conn.close()
-
-    def find_combinations_using_analysis(self, analysis_id: str) -> list[dict]:
-        """Find all combinations that include a specific analysis.
-
-        Args:
-            analysis_id: Analysis ID to search for
-
-        Returns:
-            List of combined analysis dictionaries
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        try:
-            # Query where analysis_ids JSON contains the analysis_id
-            # This uses SQLite's JSON support (available in SQLite 3.38+)
-            # For compatibility, we use LIKE pattern matching on the JSON string
-            cursor.execute(
-                """
-                SELECT id, name, analysis_ids, created_at, metadata
-                FROM combined_analyses
-                WHERE json_extract(analysis_ids, '$') LIKE ?
-                ORDER BY created_at DESC
-            """,
-                (f'%"{analysis_id}"%',),
-            )
-
-            rows = cursor.fetchall()
-            return [
-                {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "analysis_ids": json.loads(row["analysis_ids"]),
-                    "created_at": row["created_at"],
-                    "metadata": json.loads(row["metadata"])
-                    if row["metadata"]
-                    else None,
-                }
-                for row in rows
-            ]
         finally:
             conn.close()

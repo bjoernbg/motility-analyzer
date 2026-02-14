@@ -1,6 +1,6 @@
 /** Pinia store for video analysis state. */
 import { defineStore } from 'pinia';
-import { ref, computed, shallowRef, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type {
   Video,
   Analysis,
@@ -10,8 +10,8 @@ import type {
   ContractionDetectionResult,
   ContractionEvent,
   ReencodeStatistics,
-  CombinedAnalysis,
-  CompatibilityCheckResult,
+  MultiViewSession,
+  MultiViewValidationResult,
 } from '../lib/api';
 import { useHeatmapCache } from '../composables/useHeatmapCache';
 import {
@@ -33,11 +33,11 @@ import {
   detectContractions,
   getContractionEvents,
   clearContractionEvents,
-  validateCombination,
-  createCombinedAnalysis,
-  listCombinedAnalyses,
-  getCombinedAnalysis,
-  deleteCombinedAnalysis,
+  validateMultiViewPair,
+  createMultiViewSession,
+  listMultiViewSessions,
+  getMultiViewSession,
+  deleteMultiViewSession,
   calibrateVideo,
   getVideoDisplaySettings,
   updateVideoDisplaySettings,
@@ -78,22 +78,17 @@ export const useAnalysisStore = defineStore('analysis', () => {
   // Track if user is actively seeking (dragging slider, etc.) to prevent auto-seek conflicts
   const isUserSeeking = ref(false);
 
-  // Combined analyses state
-  const combinedAnalyses = ref<CombinedAnalysis[]>([]);
-  const currentCombinedAnalysis = ref<CombinedAnalysis | null>(null);
-  const combinedViewMode = ref<'analysis1' | 'analysis2' | 'combined'>('combined');
+  // Multi-view sessions state
+  const multiViewSessions = ref<MultiViewSession[]>([]);
+  const currentMultiViewSession = ref<MultiViewSession | null>(null);
+  const leftAnalysis = ref<Analysis | null>(null);
+  const rightAnalysis = ref<Analysis | null>(null);
+  const leftVideo = ref<Video | null>(null);
+  const rightVideo = ref<Video | null>(null);
+  const syncedTimeSec = ref(0);
+  const maxSyncedTimeSec = ref(0);
 
-  // Dual-analysis state (when in combined mode)
-  const analysis1 = ref<Analysis | null>(null);
-  const analysis2 = ref<Analysis | null>(null);
-  const video1 = ref<Video | null>(null);
-  const video2 = ref<Video | null>(null);
-
-  // Synced playback for combined mode
-  const syncedFrame = ref<number | null>(null);
-  const maxSyncedFrame = ref<number | null>(null);
-
-  // Simple LRU cache for frame data (max 20 frames, increased to 40 in combined mode)
+  // Simple LRU cache for frame data (max 20 frames)
   interface FrameCacheEntry {
     data: FrameData;
     lastAccessed: number;
@@ -134,42 +129,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
     return (currentAnalysis.value?.global_data !== null && currentAnalysis.value?.global_data !== undefined) || liveFrameData.value.size > 0;
   });
 
-  // Combined mode computed properties
-  const isInCombinedMode = computed(() => currentCombinedAnalysis.value !== null);
-
-  const activeAnalysis = computed(() => {
-    if (!isInCombinedMode.value) {
-      return currentAnalysis.value;
-    }
-
-    switch (combinedViewMode.value) {
-      case 'analysis1':
-        return analysis1.value;
-      case 'analysis2':
-        return analysis2.value;
-      case 'combined':
-        return analysis1.value; // Default to first analysis
-      default:
-        return analysis1.value;
-    }
-  });
-
-  const activeVideo = computed(() => {
-    if (!isInCombinedMode.value) {
-      return currentVideo.value;
-    }
-
-    switch (combinedViewMode.value) {
-      case 'analysis1':
-        return video1.value;
-      case 'analysis2':
-        return video2.value;
-      case 'combined':
-        return video1.value; // Default to first video
-      default:
-        return video1.value;
-    }
-  });
+  // Multi-view computed properties
+  const isInMultiViewMode = computed(() => currentMultiViewSession.value !== null);
+  const activeAnalysis = computed(() => currentAnalysis.value);
+  const activeVideo = computed(() => currentVideo.value);
 
   // Actions
   async function loadVideos() {
@@ -942,14 +905,14 @@ export const useAnalysisStore = defineStore('analysis', () => {
       reset();
       videos.value = [];
       availableAnalyses.value = [];
-      combinedAnalyses.value = [];
-      currentCombinedAnalysis.value = null;
-      analysis1.value = null;
-      analysis2.value = null;
-      video1.value = null;
-      video2.value = null;
-      syncedFrame.value = null;
-      maxSyncedFrame.value = null;
+      multiViewSessions.value = [];
+      currentMultiViewSession.value = null;
+      leftAnalysis.value = null;
+      rightAnalysis.value = null;
+      leftVideo.value = null;
+      rightVideo.value = null;
+      syncedTimeSec.value = 0;
+      maxSyncedTimeSec.value = 0;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to clear all data';
       throw err;
@@ -990,147 +953,143 @@ export const useAnalysisStore = defineStore('analysis', () => {
     { deep: true }
   );
 
-  // Combined Analysis Actions
-  async function loadCombinedAnalyses() {
+  // Multi-view session actions
+  async function validateMultiViewSelection(
+    leftAnalysisId: string,
+    rightAnalysisId: string
+  ): Promise<MultiViewValidationResult> {
+    return validateMultiViewPair(leftAnalysisId, rightAnalysisId);
+  }
+
+  async function loadMultiViewSessions() {
     try {
-      combinedAnalyses.value = await listCombinedAnalyses();
+      multiViewSessions.value = await listMultiViewSessions();
     } catch (err) {
-      console.error('Failed to load combined analyses:', err);
-      error.value = err instanceof Error ? err.message : 'Failed to load combined analyses';
+      console.error('Failed to load multi-view sessions:', err);
+      error.value = err instanceof Error ? err.message : 'Failed to load multi-view sessions';
     }
   }
 
-  async function selectCombinedAnalysis(combinedId: string) {
+  async function selectMultiViewSession(sessionId: string) {
     try {
       isLoading.value = true;
       error.value = null;
 
-      // Clear single-analysis state
-      currentAnalysis.value = null;
-      currentVideo.value = null;
-      liveFrameData.value.clear();
-      stopPolling();
+      const session = await getMultiViewSession(sessionId);
+      currentMultiViewSession.value = session;
 
-      // Fetch combined analysis
-      const combined = await getCombinedAnalysis(combinedId);
-      currentCombinedAnalysis.value = combined;
+      const [left, right] = await Promise.all([
+        getAnalysisStatus(session.left_analysis_id),
+        getAnalysisStatus(session.right_analysis_id),
+      ]);
+      leftAnalysis.value = left;
+      rightAnalysis.value = right;
 
-      // Fetch both analyses
-      if (combined.analysis_ids.length < 2) {
-        throw new Error('Combined analysis must have at least 2 analysis IDs');
-      }
-      const [a1, a2] = await Promise.all([
-        getAnalysisStatus(combined.analysis_ids[0]!),
-        getAnalysisStatus(combined.analysis_ids[1]!)
+      const [leftMeta, rightMeta] = await Promise.all([
+        getVideoMetadata(left.video_id),
+        getVideoMetadata(right.video_id),
       ]);
 
-      analysis1.value = a1;
-      analysis2.value = a2;
-
-      // Fetch video metadata for both
-      const [v1Meta, v2Meta] = await Promise.all([
-        getVideoMetadata(a1.video_id),
-        getVideoMetadata(a2.video_id)
-      ]);
-
-      // Create video objects
-      video1.value = {
-        id: a1.video_id,
-        filename: '',
-        upload_date: '',
-        file_path: '',
-        metadata: v1Meta
-      };
-
-      video2.value = {
-        id: a2.video_id,
-        filename: '',
-        upload_date: '',
-        file_path: '',
-        metadata: v2Meta
-      };
-
-      // Calculate max synced frame (min of both)
-      const frames1 = v1Meta.total_frames ?? 0;
-      const frames2 = v2Meta.total_frames ?? 0;
-      maxSyncedFrame.value = Math.min(frames1, frames2) - 1;
-
-      // Initialize synced position
-      syncedFrame.value = 0;
-      currentFrame.value = 0;
-
-      // Switch to combined view
-      combinedViewMode.value = 'combined';
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to select combined analysis';
-      console.error('Failed to select combined analysis:', err);
-    } finally {
-      isLoading.value = false;
-    }
-  }
-
-  async function createCombinedAnalysisAction(name: string, analysisId1: string, analysisId2: string) {
-    try {
-      isLoading.value = true;
-      error.value = null;
-
-      // Validate first
-      const validation = await validateCombination(analysisId1, analysisId2);
-
-      if (!validation.compatible) {
-        throw new Error(`Incompatible analyses: ${validation.errors.join(', ')}`);
+      const videosById = new Map(videos.value.map((video) => [video.id, video]));
+      const fallbackVideos = videosById.size === 0 ? await listVideos() : [];
+      for (const video of fallbackVideos) {
+        videosById.set(video.id, video);
+      }
+      if (fallbackVideos.length > 0) {
+        videos.value = fallbackVideos;
       }
 
-      // Show warnings if present
-      if (validation.warnings.length > 0) {
-        console.warn('Combination warnings:', validation.warnings);
-      }
+      const leftKnownVideo = videosById.get(left.video_id);
+      const rightKnownVideo = videosById.get(right.video_id);
 
-      // Create
-      const combined = await createCombinedAnalysis({
-        name,
-        analysis_ids: [analysisId1, analysisId2]
-      });
+      leftVideo.value = {
+        id: left.video_id,
+        filename: leftKnownVideo?.filename ?? left.video_id,
+        upload_date: leftKnownVideo?.upload_date ?? new Date().toISOString(),
+        file_path: leftKnownVideo?.file_path ?? '',
+        metadata: leftMeta,
+      };
+      rightVideo.value = {
+        id: right.video_id,
+        filename: rightKnownVideo?.filename ?? right.video_id,
+        upload_date: rightKnownVideo?.upload_date ?? new Date().toISOString(),
+        file_path: rightKnownVideo?.file_path ?? '',
+        metadata: rightMeta,
+      };
 
-      // Refresh list
-      await loadCombinedAnalyses();
-
-      // Auto-select
-      await selectCombinedAnalysis(combined.id);
-
-      return combined;
+      syncedTimeSec.value = 0;
+      maxSyncedTimeSec.value = Math.max(
+        0,
+        Math.min(leftMeta.duration ?? 0, rightMeta.duration ?? 0)
+      );
     } catch (err) {
-      error.value = err instanceof Error ? err.message : 'Failed to create combined analysis';
-      console.error('Failed to create combined analysis:', err);
+      error.value = err instanceof Error ? err.message : 'Failed to select multi-view session';
+      console.error('Failed to select multi-view session:', err);
       throw err;
     } finally {
       isLoading.value = false;
     }
   }
 
-  function seekToSyncedFrame(frame: number) {
-    // Clamp to valid range
-    if (maxSyncedFrame.value !== null) {
-      frame = Math.max(0, Math.min(frame, maxSyncedFrame.value));
+  async function createMultiViewSessionAction(
+    name: string,
+    leftAnalysisId: string,
+    rightAnalysisId: string
+  ) {
+    try {
+      isLoading.value = true;
+      error.value = null;
+
+      const validation = await validateMultiViewPair(leftAnalysisId, rightAnalysisId);
+      if (!validation.compatible) {
+        throw new Error(`Incompatible analyses: ${validation.errors.join(', ')}`);
+      }
+
+      const session = await createMultiViewSession({
+        name,
+        left_analysis_id: leftAnalysisId,
+        right_analysis_id: rightAnalysisId,
+      });
+
+      await loadMultiViewSessions();
+      await selectMultiViewSession(session.id);
+
+      return session;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to create multi-view session';
+      console.error('Failed to create multi-view session:', err);
+      throw err;
+    } finally {
+      isLoading.value = false;
     }
-
-    syncedFrame.value = frame;
-    currentFrame.value = frame;
   }
 
-  function exitCombinedMode() {
-    currentCombinedAnalysis.value = null;
-    analysis1.value = null;
-    analysis2.value = null;
-    video1.value = null;
-    video2.value = null;
-    syncedFrame.value = null;
-    maxSyncedFrame.value = null;
-    combinedViewMode.value = 'combined';
+  async function deleteMultiViewSessionById(sessionId: string) {
+    try {
+      await deleteMultiViewSession(sessionId);
+      multiViewSessions.value = multiViewSessions.value.filter((session) => session.id !== sessionId);
+      if (currentMultiViewSession.value?.id === sessionId) {
+        exitMultiViewMode();
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete multi-view session';
+      throw err;
+    }
   }
 
-  function setCombinedViewMode(mode: 'analysis1' | 'analysis2' | 'combined') {
-    combinedViewMode.value = mode;
+  function setSyncedTime(timeSec: number) {
+    const bounded = Math.max(0, Math.min(timeSec, maxSyncedTimeSec.value));
+    syncedTimeSec.value = bounded;
+  }
+
+  function exitMultiViewMode() {
+    currentMultiViewSession.value = null;
+    leftAnalysis.value = null;
+    rightAnalysis.value = null;
+    leftVideo.value = null;
+    rightVideo.value = null;
+    syncedTimeSec.value = 0;
+    maxSyncedTimeSec.value = 0;
   }
 
   return {
@@ -1154,21 +1113,20 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isDetectingContractions,
     contractionDetectionError,
     isUserSeeking,
-    // Combined analyses state
-    combinedAnalyses,
-    currentCombinedAnalysis,
-    combinedViewMode,
-    analysis1,
-    analysis2,
-    video1,
-    video2,
-    syncedFrame,
-    maxSyncedFrame,
+    // Multi-view state
+    multiViewSessions,
+    currentMultiViewSession,
+    leftAnalysis,
+    rightAnalysis,
+    leftVideo,
+    rightVideo,
+    syncedTimeSec,
+    maxSyncedTimeSec,
     // Computed
     isProcessing,
     isCompleted,
     hasResults,
-    isInCombinedMode,
+    isInMultiViewMode,
     activeAnalysis,
     activeVideo,
     // Actions
@@ -1196,12 +1154,13 @@ export const useAnalysisStore = defineStore('analysis', () => {
     seekToFrame,
     reset,
     clearAllData,
-    // Combined analyses actions
-    loadCombinedAnalyses,
-    selectCombinedAnalysis,
-    createCombinedAnalysis: createCombinedAnalysisAction,
-    seekToSyncedFrame,
-    exitCombinedMode,
-    setCombinedViewMode,
+    // Multi-view session actions
+    validateMultiViewSelection,
+    loadMultiViewSessions,
+    selectMultiViewSession,
+    createMultiViewSession: createMultiViewSessionAction,
+    deleteMultiViewSessionById,
+    setSyncedTime,
+    exitMultiViewMode,
   };
 });

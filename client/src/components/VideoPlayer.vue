@@ -11,7 +11,6 @@ import { debounce } from '../lib/utils';
 import { PIXEL_TO_MM_FACTOR } from '../lib/constants';
 
 const props = defineProps<{
-  analysisId?: string;  // Optional: specify which analysis to render
   overlay?: boolean;
   highlightPointIndex?: number | null;
   showCanvasOverlay?: boolean;
@@ -29,24 +28,7 @@ const imageRef = ref<HTMLImageElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
 
-// Get target analysis and video based on analysisId prop or fall back to current
-const targetAnalysis = computed(() => {
-  if (props.analysisId) {
-    // In combined mode, find matching analysis
-    if (store.analysis1?.id === props.analysisId) return store.analysis1;
-    if (store.analysis2?.id === props.analysisId) return store.analysis2;
-  }
-  return store.currentAnalysis;
-});
-
-const targetVideo = computed(() => {
-  if (props.analysisId) {
-    // In combined mode, find matching video
-    if (store.analysis1?.id === props.analysisId) return store.video1;
-    if (store.analysis2?.id === props.analysisId) return store.video2;
-  }
-  return store.currentVideo;
-});
+const targetVideo = computed(() => store.currentVideo);
 
 const videoFps = computed(() => targetVideo.value?.metadata?.fps ?? 30);
 const conversionFactor = computed(() => props.pixelToMmFactor ?? PIXEL_TO_MM_FACTOR);
@@ -201,7 +183,7 @@ watch(() => targetVideo.value, async (newVideo, oldVideo) => {
 
   // Only reset to frame 0 if we're actually switching videos (not on initial mount)
   // On initial mount, oldVideo will be undefined, so we should preserve the current frame
-  if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id && !props.analysisId) {
+  if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id) {
     store.currentFrame = 0;
   }
 
@@ -537,8 +519,7 @@ const frameImageUrl = computed(() => {
     return null;
   }
 
-  // Get video ID from targetVideo (handles both single and combined modes)
-  const videoId = props.analysisId ? targetAnalysis.value?.video_id : targetVideo.value.id;
+  const videoId = targetVideo.value.id;
   if (!videoId) {
     return null;
   }
@@ -549,7 +530,7 @@ const frameImageUrl = computed(() => {
 // Computed property for aspect ratio from video metadata
 // Uses display_aspect_ratio if available (handles non-square pixels), falls back to width/height
 const aspectRatio = computed(() => {
-  const metadata = store.currentVideo?.metadata;
+  const metadata = targetVideo.value?.metadata;
   if (!metadata) {
     return null;
   }
@@ -646,7 +627,7 @@ async function detectWindow() {
   isDetectingWindow.value = true;
   try {
     if (!targetVideo.value) return;
-    const videoId = props.analysisId ? targetAnalysis.value?.video_id : targetVideo.value.id;
+    const videoId = targetVideo.value.id;
     if (!videoId) return;
     const result = await detectHorizontalWindow(videoId, currentFrame);
     const left = result.x_left >= 0 ? result.x_left : null;

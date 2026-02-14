@@ -16,6 +16,7 @@ const isReencoding = ref(false);
 const showSuccessModal = ref(false);
 const encodeStats = ref<ReencodeStatistics | null>(null);
 const isClearingAll = ref(false);
+const VIDEO_UPLOAD_ACCEPT = '.mp4,.avi,.mov,.mkv,.webm,.mts,video/*';
 
 // Check if current video needs re-encoding
 const needsReencoding = computed(() => {
@@ -353,7 +354,7 @@ function closeSuccessModal() {
                 id="file-input"
                 ref="fileInput"
                 type="file"
-                accept="video/*"
+                :accept="VIDEO_UPLOAD_ACCEPT"
                 @change="handleFileSelect"
                 style="display: none"
               />
@@ -891,4 +892,3 @@ h3 {
   }
 }
 </style>
-

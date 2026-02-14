@@ -8,28 +8,16 @@ import { Icon } from './ui/icon';
 
 const store = useAnalysisStore();
 
-// Get current frame and total frames from store
-// In combined mode, use synced frame and max synced frame
 const currentFrame = computed(() => {
-  if (store.isInCombinedMode) {
-    return store.syncedFrame ?? 0;
-  }
   return store.currentFrame ?? 0;
 });
 
 const totalFrames = computed(() => {
-  if (store.isInCombinedMode) {
-    // Use max synced frame (min of both videos)
-    return store.maxSyncedFrame !== null ? store.maxSyncedFrame + 1 : 1;
-  }
   const frames = store.currentVideo?.metadata?.total_frames;
   return frames && frames > 0 ? frames : 1; // Ensure at least 1 to avoid division by zero
 });
 
 const videoFps = computed(() => {
-  if (store.isInCombinedMode && store.video1) {
-    return store.video1.metadata?.fps ?? 30;
-  }
   return store.currentVideo?.metadata?.fps ?? 30;
 });
 
@@ -57,12 +45,7 @@ function handleTimelineChange() {
     const frame = Math.round(timelineValue.value[0]);
     const clampedFrame = Math.max(0, Math.min(frame, totalFrames.value - 1));
     if (clampedFrame !== currentFrame.value) {
-      // In combined mode, use synced seek
-      if (store.isInCombinedMode) {
-        store.seekToSyncedFrame(clampedFrame);
-      } else {
-        emit('seek', clampedFrame);
-      }
+      emit('seek', clampedFrame);
     }
   }
 }
@@ -89,12 +72,7 @@ function handlePointerCancel() {
 // Frame stepping functions
 function stepFrame(delta: number) {
   const newFrame = Math.max(0, Math.min(totalFrames.value - 1, currentFrame.value + delta));
-  // In combined mode, use synced seek
-  if (store.isInCombinedMode) {
-    store.seekToSyncedFrame(newFrame);
-  } else {
-    emit('seek', newFrame);
-  }
+  emit('seek', newFrame);
 }
 
 function stepBack50() {

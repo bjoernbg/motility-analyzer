@@ -17,9 +17,9 @@ import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .calibration import calibrate_tube_width
-from .config import MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
+from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
-from .database import init_database, clear_all_data, CombinedAnalysisDB
+from .database import MultiViewSessionDB, clear_all_data, init_database
 from .encoder import reencode_video
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -39,10 +39,11 @@ from .models import (
     ContractionDetectionResult,
     ContractionEvent,
     ContractionEventLineFit,
-    CombinedAnalysis,
-    CombinedAnalysisCreate,
-    CombinedAnalysisMetadata,
-    CompatibilityCheckResult,
+    MultiViewSession,
+    MultiViewSessionCreate,
+    MultiViewSessionMetadata,
+    MultiViewValidationRequest,
+    MultiViewValidationResult,
 )
 from .storage import (
     AnalysisStorage,
@@ -54,7 +55,7 @@ from .storage import (
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
 from .contraction_detection import detect_contractions, calculate_physical_spacing
-from .combination_validation import validate_compatibility
+from .multiview_validation import validate_multi_view_pair
 
 # Initialize database on startup
 init_database()
@@ -173,8 +174,12 @@ async def upload_video(file: Annotated[UploadFile, File(...)]):
 
     # Check file extension
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in {".mp4", ".avi", ".mov", ".mkv", ".webm"}:
-        raise HTTPException(status_code=400, detail="Invalid file type")
+    if file_ext not in ALLOWED_VIDEO_EXTENSIONS:
+        allowed_extensions = ", ".join(sorted(ALLOWED_VIDEO_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed extensions: {allowed_extensions}",
+        )
 
     # Save file
     file_path = VideoStorage.save_uploaded_file(contents, file.filename)
@@ -1299,43 +1304,48 @@ async def clear_all_data_endpoint():
     }
 
 
-# Combined Analyses Endpoints
+# Multi-View Session Endpoints
 
-combined_analysis_db = CombinedAnalysisDB()
+multi_view_session_db = MultiViewSessionDB()
 
 
-@app.post("/api/combined-analyses/validate", response_model=CompatibilityCheckResult)
-async def validate_combination(analysis_id_1: str, analysis_id_2: str):
-    """Validate if two analyses can be combined."""
-    # Fetch analyses
+@app.post("/api/multi-view/validate", response_model=MultiViewValidationResult)
+async def validate_multi_view_pair_endpoint(body: MultiViewValidationRequest):
+    """Validate whether two analyses can be used in one multi-view session."""
     analysis_storage = AnalysisStorage()
-    analysis1 = analysis_storage.get_analysis(analysis_id_1)
-    analysis2 = analysis_storage.get_analysis(analysis_id_2)
+    left_analysis = analysis_storage.get_analysis(body.left_analysis_id)
+    right_analysis = analysis_storage.get_analysis(body.right_analysis_id)
 
-    if not analysis1 or not analysis2:
+    if not left_analysis or not right_analysis:
         raise HTTPException(status_code=404, detail="One or both analyses not found")
 
-    # Fetch video metadata
     video_storage = VideoStorage()
-    video1 = video_storage.get_video(analysis1.video_id)
-    video2 = video_storage.get_video(analysis2.video_id)
+    left_video = video_storage.get_video(left_analysis.video_id)
+    right_video = video_storage.get_video(right_analysis.video_id)
 
-    if not video1 or not video2:
+    if not left_video or not right_video:
         raise HTTPException(status_code=404, detail="One or both videos not found")
 
-    metadata1 = get_video_metadata(video1.file_path)
-    metadata2 = get_video_metadata(video2.file_path)
+    left_metadata = get_video_metadata(Path(left_video.file_path))
+    right_metadata = get_video_metadata(Path(right_video.file_path))
 
-    # Validate compatibility
-    result = validate_compatibility(analysis1, analysis2, metadata1, metadata2)
-    return result
+    return validate_multi_view_pair(
+        left_analysis,
+        right_analysis,
+        left_metadata,
+        right_metadata,
+    )
 
 
-@app.post("/api/combined-analyses", response_model=CombinedAnalysis)
-async def create_combined_analysis(body: CombinedAnalysisCreate):
-    """Create a new combined analysis."""
-    # Validate first
-    validation = await validate_combination(body.analysis_ids[0], body.analysis_ids[1])
+@app.post("/api/multi-view/sessions", response_model=MultiViewSession)
+async def create_multi_view_session(body: MultiViewSessionCreate):
+    """Create a persisted multi-view session after validation."""
+    validation = await validate_multi_view_pair_endpoint(
+        MultiViewValidationRequest(
+            left_analysis_id=body.left_analysis_id,
+            right_analysis_id=body.right_analysis_id,
+        )
+    )
 
     if not validation.compatible:
         raise HTTPException(
@@ -1343,45 +1353,44 @@ async def create_combined_analysis(body: CombinedAnalysisCreate):
             detail=f"Incompatible analyses: {', '.join(validation.errors)}",
         )
 
-    # Create metadata
-    metadata = CombinedAnalysisMetadata(
+    metadata = MultiViewSessionMetadata(
         validated=True,
-        warnings=validation.warnings,
-        frame_count_diff=validation.details.get("frame_count_diff", 0),
-        duration_diff=validation.details.get("duration_diff", 0.0),
+        frame_count_diff=int(validation.details.get("frame_count_diff", 0)),
+        duration_diff=float(validation.details.get("duration_diff", 0.0)),
     )
 
-    # Create combined analysis
-    combined = CombinedAnalysis(
-        name=body.name, analysis_ids=body.analysis_ids, metadata=metadata
+    session = MultiViewSession(
+        name=body.name,
+        left_analysis_id=body.left_analysis_id,
+        right_analysis_id=body.right_analysis_id,
+        metadata=metadata,
     )
 
-    # Convert to dict for database
-    combined_dict = {
-        "id": combined.id,
-        "name": combined.name,
-        "analysis_ids": combined.analysis_ids,
-        "created_at": combined.created_at.isoformat(),
-        "metadata": combined.metadata.model_dump() if combined.metadata else None,
+    session_dict = {
+        "id": session.id,
+        "name": session.name,
+        "left_analysis_id": session.left_analysis_id,
+        "right_analysis_id": session.right_analysis_id,
+        "created_at": session.created_at.isoformat(),
+        "metadata": session.metadata.model_dump() if session.metadata else None,
     }
 
-    combined_analysis_db.create_combined_analysis(combined_dict)
-    return combined
+    multi_view_session_db.create_session(session_dict)
+    return session
 
 
-@app.get("/api/combined-analyses", response_model=list[CombinedAnalysis])
-async def list_combined_analyses(limit: int = 100, offset: int = 0):
-    """List all combined analyses."""
-    results = combined_analysis_db.list_combined_analyses(limit, offset)
-
-    # Convert database results to Pydantic models
+@app.get("/api/multi-view/sessions", response_model=list[MultiViewSession])
+async def list_multi_view_sessions(limit: int = 100, offset: int = 0):
+    """List persisted multi-view sessions."""
+    results = multi_view_session_db.list_sessions(limit, offset)
     return [
-        CombinedAnalysis(
+        MultiViewSession(
             id=r["id"],
             name=r["name"],
-            analysis_ids=r["analysis_ids"],
+            left_analysis_id=r["left_analysis_id"],
+            right_analysis_id=r["right_analysis_id"],
             created_at=datetime.fromisoformat(r["created_at"]),
-            metadata=CombinedAnalysisMetadata(**r["metadata"])
+            metadata=MultiViewSessionMetadata(**r["metadata"])
             if r["metadata"]
             else None,
         )
@@ -1389,102 +1398,31 @@ async def list_combined_analyses(limit: int = 100, offset: int = 0):
     ]
 
 
-@app.get("/api/combined-analyses/{combined_id}", response_model=CombinedAnalysis)
-async def get_combined_analysis(combined_id: str):
-    """Get a specific combined analysis."""
-    result = combined_analysis_db.get_combined_analysis(combined_id)
+@app.get("/api/multi-view/sessions/{session_id}", response_model=MultiViewSession)
+async def get_multi_view_session(session_id: str):
+    """Get one persisted multi-view session."""
+    result = multi_view_session_db.get_session(session_id)
     if not result:
-        raise HTTPException(status_code=404, detail="Combined analysis not found")
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
 
-    return CombinedAnalysis(
+    return MultiViewSession(
         id=result["id"],
         name=result["name"],
-        analysis_ids=result["analysis_ids"],
+        left_analysis_id=result["left_analysis_id"],
+        right_analysis_id=result["right_analysis_id"],
         created_at=datetime.fromisoformat(result["created_at"]),
-        metadata=CombinedAnalysisMetadata(**result["metadata"])
+        metadata=MultiViewSessionMetadata(**result["metadata"])
         if result["metadata"]
         else None,
     )
 
 
-@app.delete("/api/combined-analyses/{combined_id}")
-async def delete_combined_analysis(combined_id: str):
-    """Delete a combined analysis."""
-    # Check if it exists first
-    result = combined_analysis_db.get_combined_analysis(combined_id)
+@app.delete("/api/multi-view/sessions/{session_id}")
+async def delete_multi_view_session(session_id: str):
+    """Delete a persisted multi-view session."""
+    result = multi_view_session_db.get_session(session_id)
     if not result:
-        raise HTTPException(status_code=404, detail="Combined analysis not found")
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
 
-    combined_analysis_db.delete_combined_analysis(combined_id)
-    return {"message": "Combined analysis deleted successfully"}
-
-
-@app.get(
-    "/api/combined-analyses/{combined_id}/heatmap-diff/metadata",
-    response_model=HeatmapMeta,
-)
-async def get_heatmap_diff_metadata(combined_id: str):
-    """Get metadata for the heatmap difference."""
-    # Get combined analysis
-    result = combined_analysis_db.get_combined_analysis(combined_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Combined analysis not found")
-
-    analysis_id_1, analysis_id_2 = result["analysis_ids"]
-
-    # Build diff matrix
-    results_storage = ResultsStorage()
-    db = results_storage.db
-    diff_matrix, min_val, max_val = db.build_heatmap_diff_matrix(
-        analysis_id_1, analysis_id_2
-    )
-
-    # Get FPS from first analysis
-    analysis_storage = AnalysisStorage()
-    analysis1 = analysis_storage.get_analysis(analysis_id_1)
-    if not analysis1:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-
-    video_storage = VideoStorage()
-    video1 = video_storage.get_video(analysis1.video_id)
-    if not video1:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    metadata1 = get_video_metadata(video1.file_path)
-
-    return HeatmapMeta(
-        width=diff_matrix.shape[0] if diff_matrix.size > 0 else 0,
-        height=diff_matrix.shape[1] if diff_matrix.size > 0 else 0,
-        dtype="float32",
-        min=min_val,
-        max=max_val,
-        fps=metadata1.fps,
-    )
-
-
-@app.get("/api/combined-analyses/{combined_id}/heatmap-diff/raw")
-async def get_heatmap_diff_raw(combined_id: str):
-    """Get raw heatmap difference data as binary float32 array."""
-    # Get combined analysis
-    result = combined_analysis_db.get_combined_analysis(combined_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Combined analysis not found")
-
-    analysis_id_1, analysis_id_2 = result["analysis_ids"]
-
-    # Build diff matrix
-    results_storage = ResultsStorage()
-    db = results_storage.db
-    diff_matrix, _, _ = db.build_heatmap_diff_matrix(analysis_id_1, analysis_id_2)
-
-    # Convert to bytes
-    binary_data = diff_matrix.tobytes()
-
-    return Response(
-        content=binary_data,
-        media_type="application/octet-stream",
-        headers={
-            "Content-Length": str(len(binary_data)),
-            "Cache-Control": "public, max-age=3600",
-        },
-    )
+    multi_view_session_db.delete_session(session_id)
+    return {"message": "Multi-view session deleted successfully"}
