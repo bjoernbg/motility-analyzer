@@ -12,6 +12,9 @@ class Video(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     filename: str
+    display_name: Optional[str] = Field(
+        default=None, description="User-defined display name shown in the UI"
+    )
     upload_date: datetime = Field(default_factory=datetime.now)
     file_path: str
 
@@ -139,6 +142,9 @@ class Analysis(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     video_id: str
+    display_name: Optional[str] = Field(
+        default=None, description="User-defined display name shown in the UI"
+    )
     parameters: Dict[str, Any]
     status: str = "pending"  # pending, processing, completed, failed
     progress: float = 0.0  # 0.0 to 100.0
@@ -380,6 +386,26 @@ class MultiViewSessionCreate(BaseModel):
         if left_analysis_id and left_analysis_id == v:
             raise ValueError("Cannot combine an analysis with itself")
         return v
+
+
+class DisplayNameUpdate(BaseModel):
+    """Request model for updating display names."""
+
+    display_name: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Optional display name to set. Empty/whitespace clears the custom name.",
+    )
+
+
+class MultiViewSessionNameUpdate(BaseModel):
+    """Request model for renaming an existing multi-view session."""
+
+    name: str = Field(
+        min_length=1,
+        max_length=200,
+        description="Updated session name",
+    )
 
 
 class MultiViewSession(BaseModel):

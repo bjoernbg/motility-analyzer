@@ -30,6 +30,9 @@ const validationResult = ref<MultiViewValidationResult | null>(null);
 const isValidating = ref(false);
 const isCreating = ref(false);
 const deletingSessionId = ref<string | null>(null);
+const editingSessionId = ref<string | null>(null);
+const sessionRenameDraft = ref('');
+const isRenamingSession = ref(false);
 
 let validationTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -55,6 +58,7 @@ function resetForm() {
   leftCompletedAnalyses.value = [];
   rightCompletedAnalyses.value = [];
   validationResult.value = null;
+  cancelRenameSession();
 }
 
 async function loadCompletedAnalysesForVideo(videoId: string): Promise<Analysis[]> {
@@ -66,9 +70,20 @@ async function loadCompletedAnalysesForVideo(videoId: string): Promise<Analysis[
 }
 
 function formatAnalysisLabel(analysis: Analysis): string {
+  const customName = analysis.display_name?.trim();
   const createdAt = new Date(analysis.created_at).toLocaleString();
   const trackingPoints = analysis.parameters?.num_tracking_points ?? 'unknown';
-  return `${createdAt} · ${trackingPoints} pts`;
+  const metadataLabel = `${createdAt} · ${trackingPoints} pts`;
+  return customName && customName.length > 0
+    ? `${customName} (${metadataLabel})`
+    : metadataLabel;
+}
+
+function formatVideoLabel(video: { filename: string; display_name?: string | null }): string {
+  const customName = video.display_name?.trim();
+  return customName && customName.length > 0
+    ? `${customName} (${video.filename})`
+    : video.filename;
 }
 
 async function runValidation() {
@@ -131,6 +146,29 @@ async function deleteSession(sessionId: string) {
     console.error('Failed to delete multi-view session:', err);
   } finally {
     deletingSessionId.value = null;
+  }
+}
+
+function startRenameSession(sessionId: string, currentName: string) {
+  editingSessionId.value = sessionId;
+  sessionRenameDraft.value = currentName;
+}
+
+function cancelRenameSession() {
+  editingSessionId.value = null;
+  sessionRenameDraft.value = '';
+}
+
+async function saveSessionRename(sessionId: string) {
+  if (isRenamingSession.value) return;
+  try {
+    isRenamingSession.value = true;
+    await store.renameMultiViewSession(sessionId, sessionRenameDraft.value.trim());
+    cancelRenameSession();
+  } catch (err) {
+    console.error('Failed to rename multi-view session:', err);
+  } finally {
+    isRenamingSession.value = false;
   }
 }
 
@@ -198,7 +236,7 @@ watch([leftAnalysisId, rightAnalysisId], () => {
                 <select id="left-video" v-model="leftVideoId" class="select-input">
                   <option value="">Select video</option>
                   <option v-for="video in store.videos" :key="video.id" :value="video.id">
-                    {{ video.filename }}
+                    {{ formatVideoLabel(video) }}
                   </option>
                 </select>
               </div>
@@ -221,7 +259,7 @@ watch([leftAnalysisId, rightAnalysisId], () => {
                 <select id="right-video" v-model="rightVideoId" class="select-input">
                   <option value="">Select video</option>
                   <option v-for="video in store.videos" :key="video.id" :value="video.id">
-                    {{ video.filename }}
+                    {{ formatVideoLabel(video) }}
                   </option>
                 </select>
               </div>
@@ -267,10 +305,33 @@ watch([leftAnalysisId, rightAnalysisId], () => {
             <div v-else class="session-list">
               <div v-for="session in store.multiViewSessions" :key="session.id" class="session-item">
                 <div class="session-info">
-                  <div class="session-name">{{ session.name }}</div>
+                  <div v-if="editingSessionId === session.id" class="session-rename-row">
+                    <Input
+                      v-model="sessionRenameDraft"
+                      maxlength="200"
+                      placeholder="Combined analysis name"
+                      @keyup.enter="saveSessionRename(session.id)"
+                      @keyup.escape="cancelRenameSession"
+                    />
+                    <Button size="sm" variant="outline" :disabled="isRenamingSession" @click="saveSessionRename(session.id)">
+                      Save
+                    </Button>
+                    <Button size="sm" variant="outline" :disabled="isRenamingSession" @click="cancelRenameSession">
+                      Cancel
+                    </Button>
+                  </div>
+                  <div v-else class="session-name">{{ session.name }}</div>
                   <div class="session-date">{{ new Date(session.created_at).toLocaleString() }}</div>
                 </div>
                 <div class="session-actions">
+                  <Button
+                    v-if="editingSessionId !== session.id"
+                    size="sm"
+                    variant="outline"
+                    @click="startRenameSession(session.id, session.name)"
+                  >
+                    Rename
+                  </Button>
                   <Button size="sm" variant="outline" @click="openSession(session.id)">
                     Open
                   </Button>
@@ -450,6 +511,13 @@ watch([leftAnalysisId, rightAnalysisId], () => {
 
 .session-name {
   font-weight: 600;
+}
+
+.session-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .session-date {

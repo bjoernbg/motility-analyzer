@@ -217,6 +217,16 @@ function formatTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}.${millis.toString().padStart(3, '0')}`;
 }
 
+function getVideoDisplayName(video: { filename: string; display_name?: string | null }): string {
+  const customName = video.display_name?.trim();
+  return customName && customName.length > 0 ? customName : video.filename;
+}
+
+function hasCustomVideoName(video: { filename: string; display_name?: string | null }): boolean {
+  const customName = video.display_name?.trim();
+  return Boolean(customName && customName.length > 0);
+}
+
 function drawAllOverlays() {
   drawOverlay(
     leftOverlayCanvasRef.value,
@@ -368,7 +378,12 @@ function drawOverlay(
 
       <div class="comparison-grid">
         <section class="comparison-column">
-          <h3>{{ store.leftVideo.filename }}</h3>
+          <div class="comparison-heading">
+            <h3>{{ getVideoDisplayName(store.leftVideo) }}</h3>
+            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.leftVideo) }">
+              {{ hasCustomVideoName(store.leftVideo) ? `File: ${store.leftVideo.filename}` : ' ' }}
+            </p>
+          </div>
           <div class="video-frame-wrapper" :style="{ aspectRatio: `${leftAspectRatio}` }">
             <img
               v-if="leftFrameImageUrl"
@@ -390,7 +405,12 @@ function drawOverlay(
         </section>
 
         <section class="comparison-column">
-          <h3>{{ store.rightVideo.filename }}</h3>
+          <div class="comparison-heading">
+            <h3>{{ getVideoDisplayName(store.rightVideo) }}</h3>
+            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.rightVideo) }">
+              {{ hasCustomVideoName(store.rightVideo) ? `File: ${store.rightVideo.filename}` : ' ' }}
+            </p>
+          </div>
           <div class="video-frame-wrapper" :style="{ aspectRatio: `${rightAspectRatio}` }">
             <img
               v-if="rightFrameImageUrl"
@@ -485,12 +505,31 @@ function drawOverlay(
   gap: 0.6rem;
 }
 
+.comparison-heading {
+  min-height: 2.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
 .comparison-column h3 {
   margin: 0;
   font-size: 0.95rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.video-original-name {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.1;
+  min-height: 0.9rem;
+}
+
+.video-original-name-hidden {
+  visibility: hidden;
 }
 
 .video-frame-wrapper {

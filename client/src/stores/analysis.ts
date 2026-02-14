@@ -38,7 +38,10 @@ import {
   listMultiViewSessions,
   getMultiViewSession,
   deleteMultiViewSession,
+  updateMultiViewSessionName,
   calibrateVideo,
+  updateAnalysisDisplayName,
+  updateVideoDisplayName,
   getVideoDisplaySettings,
   updateVideoDisplaySettings,
   type HorizontalWindowDetectionResult,
@@ -133,6 +136,57 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isInMultiViewMode = computed(() => currentMultiViewSession.value !== null);
   const activeAnalysis = computed(() => currentAnalysis.value);
   const activeVideo = computed(() => currentVideo.value);
+
+  function applyVideoUpdate(updatedVideo: Video): void {
+    const videoIndex = videos.value.findIndex((video) => video.id === updatedVideo.id);
+    if (videoIndex !== -1) {
+      videos.value[videoIndex] = { ...videos.value[videoIndex], ...updatedVideo };
+    }
+
+    if (currentVideo.value?.id === updatedVideo.id) {
+      currentVideo.value = { ...currentVideo.value, ...updatedVideo };
+    }
+
+    if (leftVideo.value?.id === updatedVideo.id) {
+      leftVideo.value = { ...leftVideo.value, ...updatedVideo };
+    }
+
+    if (rightVideo.value?.id === updatedVideo.id) {
+      rightVideo.value = { ...rightVideo.value, ...updatedVideo };
+    }
+  }
+
+  function applyAnalysisUpdate(updatedAnalysis: Analysis): void {
+    const analysisIndex = availableAnalyses.value.findIndex((analysis) => analysis.id === updatedAnalysis.id);
+    if (analysisIndex !== -1) {
+      availableAnalyses.value[analysisIndex] = { ...availableAnalyses.value[analysisIndex], ...updatedAnalysis };
+    }
+
+    if (currentAnalysis.value?.id === updatedAnalysis.id) {
+      currentAnalysis.value = { ...currentAnalysis.value, ...updatedAnalysis };
+    }
+
+    if (leftAnalysis.value?.id === updatedAnalysis.id) {
+      leftAnalysis.value = { ...leftAnalysis.value, ...updatedAnalysis };
+    }
+
+    if (rightAnalysis.value?.id === updatedAnalysis.id) {
+      rightAnalysis.value = { ...rightAnalysis.value, ...updatedAnalysis };
+    }
+  }
+
+  function applyMultiViewSessionUpdate(updatedSession: MultiViewSession): void {
+    const sessionIndex = multiViewSessions.value.findIndex((session) => session.id === updatedSession.id);
+    if (sessionIndex !== -1) {
+      multiViewSessions.value[sessionIndex] = { ...multiViewSessions.value[sessionIndex], ...updatedSession };
+    } else {
+      multiViewSessions.value.unshift(updatedSession);
+    }
+
+    if (currentMultiViewSession.value?.id === updatedSession.id) {
+      currentMultiViewSession.value = { ...currentMultiViewSession.value, ...updatedSession };
+    }
+  }
 
   // Actions
   async function loadVideos() {
@@ -789,6 +843,30 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function renameVideo(videoId: string, displayName: string | null) {
+    try {
+      error.value = null;
+      const updatedVideo = await updateVideoDisplayName(videoId, displayName);
+      applyVideoUpdate(updatedVideo);
+      return updatedVideo;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to rename video';
+      throw err;
+    }
+  }
+
+  async function renameAnalysis(analysisId: string, displayName: string | null) {
+    try {
+      error.value = null;
+      const updatedAnalysis = await updateAnalysisDisplayName(analysisId, displayName);
+      applyAnalysisUpdate(updatedAnalysis);
+      return updatedAnalysis;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to rename analysis';
+      throw err;
+    }
+  }
+
   async function deleteAnalysisById(analysisId: string) {
     try {
       error.value = null;
@@ -970,6 +1048,18 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function renameMultiViewSession(sessionId: string, name: string) {
+    try {
+      error.value = null;
+      const updatedSession = await updateMultiViewSessionName(sessionId, name);
+      applyMultiViewSessionUpdate(updatedSession);
+      return updatedSession;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to rename combined analysis';
+      throw err;
+    }
+  }
+
   async function selectMultiViewSession(sessionId: string) {
     try {
       isLoading.value = true;
@@ -1005,6 +1095,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       leftVideo.value = {
         id: left.video_id,
         filename: leftKnownVideo?.filename ?? left.video_id,
+        display_name: leftKnownVideo?.display_name ?? null,
         upload_date: leftKnownVideo?.upload_date ?? new Date().toISOString(),
         file_path: leftKnownVideo?.file_path ?? '',
         metadata: leftMeta,
@@ -1012,6 +1103,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       rightVideo.value = {
         id: right.video_id,
         filename: rightKnownVideo?.filename ?? right.video_id,
+        display_name: rightKnownVideo?.display_name ?? null,
         upload_date: rightKnownVideo?.upload_date ?? new Date().toISOString(),
         file_path: rightKnownVideo?.file_path ?? '',
         metadata: rightMeta,
@@ -1143,6 +1235,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     getFrameData,
     detectHorizontalWindowForCurrentFrame,
     saveCurrentSettings,
+    renameVideo,
+    renameAnalysis,
     loadAnalysesForVideo,
     selectAnalysis,
     findMatchingAnalysis,
@@ -1157,6 +1251,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     // Multi-view session actions
     validateMultiViewSelection,
     loadMultiViewSessions,
+    renameMultiViewSession,
     selectMultiViewSession,
     createMultiViewSession: createMultiViewSessionAction,
     deleteMultiViewSessionById,

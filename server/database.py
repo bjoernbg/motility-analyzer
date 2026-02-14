@@ -12,6 +12,20 @@ from .config import DATABASE_PATH
 from .models import Analysis, AnalysisResult, FrameData
 
 
+def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    )
+    return cursor.fetchone() is not None
+
+
+def _column_exists(cursor: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    columns = cursor.fetchall()
+    return any(row[1] == column_name for row in columns)
+
+
 def migrate_database_for_multi_view_sessions() -> None:
     """Create multi_view_sessions table and remove legacy combined_analyses table."""
     db_path = Path(DATABASE_PATH)
@@ -57,6 +71,35 @@ def migrate_database_for_multi_view_sessions() -> None:
         conn.close()
 
 
+def migrate_database_for_display_names() -> None:
+    """Add display-name persistence schema for videos and analyses."""
+    db_path = Path(DATABASE_PATH)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    try:
+        if _table_exists(cursor, "analyses") and not _column_exists(
+            cursor, "analyses", "display_name"
+        ):
+            cursor.execute("ALTER TABLE analyses ADD COLUMN display_name TEXT")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS video_labels (
+                video_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_video_labels_updated_at ON video_labels(updated_at)"
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_database() -> None:
     """Initialize the database and create tables if they don't exist."""
     db_path = Path(DATABASE_PATH)
@@ -76,6 +119,7 @@ def init_database() -> None:
         CREATE TABLE IF NOT EXISTS analyses (
             id TEXT PRIMARY KEY,
             video_id TEXT NOT NULL,
+            display_name TEXT,
             parameters TEXT NOT NULL,
             status TEXT NOT NULL,
             progress REAL NOT NULL DEFAULT 0.0,
@@ -121,6 +165,14 @@ def init_database() -> None:
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS video_labels (
+            video_id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
     # Create indexes for efficient queries
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_id ON analyses(video_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON analyses(status)")
@@ -131,12 +183,16 @@ def init_database() -> None:
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_contraction_events_analysis_id ON contraction_events(analysis_id)"
     )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_video_labels_updated_at ON video_labels(updated_at)"
+    )
 
     conn.commit()
     conn.close()
 
     # Run migration for multi-view sessions table
     migrate_database_for_multi_view_sessions()
+    migrate_database_for_display_names()
 
 
 def clear_all_data() -> None:
@@ -152,6 +208,7 @@ def clear_all_data() -> None:
         conn.execute("DROP TABLE IF EXISTS frames")
         conn.execute("DROP TABLE IF EXISTS multi_view_sessions")
         conn.execute("DROP TABLE IF EXISTS combined_analyses")
+        conn.execute("DROP TABLE IF EXISTS video_labels")
         conn.execute("DROP TABLE IF EXISTS analyses")
         conn.commit()
         conn.execute("VACUUM")
@@ -189,12 +246,13 @@ class AnalysisDB:
         try:
             cursor.execute(
                 """
-                INSERT INTO analyses (id, video_id, parameters, status, progress, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO analyses (id, video_id, display_name, parameters, status, progress, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     analysis.id,
                     analysis.video_id,
+                    analysis.display_name,
                     json.dumps(analysis.parameters),
                     analysis.status,
                     analysis.progress,
@@ -213,7 +271,7 @@ class AnalysisDB:
         try:
             cursor.execute(
                 """
-                SELECT id, video_id, parameters, status, progress, created_at, completed_at, error_message, global_data
+                SELECT id, video_id, display_name, parameters, status, progress, created_at, completed_at, error_message, global_data
                 FROM analyses
                 WHERE id = ?
             """,
@@ -240,6 +298,7 @@ class AnalysisDB:
             return Analysis(
                 id=row["id"],
                 video_id=row["video_id"],
+                display_name=row["display_name"],
                 parameters=json.loads(row["parameters"]),
                 status=row["status"],
                 progress=row["progress"],
@@ -426,7 +485,7 @@ class AnalysisDB:
 
         try:
             query = """
-                SELECT id, video_id, parameters, status, progress, created_at, completed_at, error_message, global_data
+                SELECT id, video_id, display_name, parameters, status, progress, created_at, completed_at, error_message, global_data
                 FROM analyses
                 WHERE 1=1
             """
@@ -467,6 +526,7 @@ class AnalysisDB:
                     Analysis(
                         id=row["id"],
                         video_id=row["video_id"],
+                        display_name=row["display_name"],
                         parameters=json.loads(row["parameters"]),
                         status=row["status"],
                         progress=row["progress"],
@@ -985,6 +1045,78 @@ class AnalysisDB:
             conn.close()
 
 
+class VideoLabelDB:
+    """Database operations for persisted video display names."""
+
+    def __init__(self, db_path: str = DATABASE_PATH):
+        self.db_path = db_path
+
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        return conn
+
+    def set_display_name(self, video_id: str, display_name: Optional[str]) -> None:
+        """Set or clear a custom display name for a video."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            if display_name is None:
+                cursor.execute("DELETE FROM video_labels WHERE video_id = ?", (video_id,))
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO video_labels (video_id, display_name, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(video_id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        updated_at = excluded.updated_at
+                """,
+                    (video_id, display_name, datetime.now().isoformat()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_display_name(self, video_id: str) -> Optional[str]:
+        """Get custom display name for one video."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT display_name FROM video_labels WHERE video_id = ?",
+                (video_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return str(row["display_name"])
+        finally:
+            conn.close()
+
+    def list_display_names(self, video_ids: list[str]) -> dict[str, str]:
+        """Get display names for the provided video IDs."""
+        if not video_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in video_ids)
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                f"SELECT video_id, display_name FROM video_labels WHERE video_id IN ({placeholders})",
+                tuple(video_ids),
+            )
+            rows = cursor.fetchall()
+            return {str(row["video_id"]): str(row["display_name"]) for row in rows}
+        finally:
+            conn.close()
+
+
 class MultiViewSessionDB:
     """Database operations for persisted multi-view sessions."""
 
@@ -1100,5 +1232,20 @@ class MultiViewSessionDB:
         try:
             cursor.execute("DELETE FROM multi_view_sessions WHERE id = ?", (session_id,))
             conn.commit()
+        finally:
+            conn.close()
+
+    def update_session_name(self, session_id: str, name: str) -> bool:
+        """Update a persisted session name."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                "UPDATE multi_view_sessions SET name = ? WHERE id = ?",
+                (name, session_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()

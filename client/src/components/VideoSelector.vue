@@ -16,6 +16,9 @@ const isReencoding = ref(false);
 const showSuccessModal = ref(false);
 const encodeStats = ref<ReencodeStatistics | null>(null);
 const isClearingAll = ref(false);
+const editingVideoId = ref<string | null>(null);
+const videoNameDraft = ref('');
+const isSavingVideoName = ref(false);
 const VIDEO_UPLOAD_ACCEPT = '.mp4,.avi,.mov,.mkv,.webm,.mts,video/*';
 
 // Check if current video needs re-encoding
@@ -106,6 +109,43 @@ function openModal() {
 
 function closeModal() {
   showModal.value = false;
+}
+
+function getVideoPrimaryName(video: Video): string {
+  const customName = video.display_name?.trim();
+  return customName && customName.length > 0 ? customName : video.filename;
+}
+
+function hasCustomVideoName(video: Video): boolean {
+  const customName = video.display_name?.trim();
+  return Boolean(customName && customName.length > 0);
+}
+
+function startRenameVideo(video: Video) {
+  editingVideoId.value = video.id;
+  videoNameDraft.value = video.display_name?.trim() || video.filename;
+}
+
+function cancelRenameVideo() {
+  editingVideoId.value = null;
+  videoNameDraft.value = '';
+}
+
+async function saveRenameVideo(videoId: string) {
+  if (isSavingVideoName.value) {
+    return;
+  }
+
+  try {
+    isSavingVideoName.value = true;
+    const trimmed = videoNameDraft.value.trim();
+    await store.renameVideo(videoId, trimmed.length > 0 ? trimmed : null);
+    cancelRenameVideo();
+  } catch (error) {
+    console.error('Failed to rename video:', error);
+  } finally {
+    isSavingVideoName.value = false;
+  }
 }
 
 async function handleFileSelect(event: Event) {
@@ -227,7 +267,29 @@ function closeSuccessModal() {
   <div class="video-selector">
     <div class="current-video-display">
       <div v-if="store.currentVideo" class="video-info">
-        <div class="video-name">{{ store.currentVideo.filename }}</div>
+        <div v-if="editingVideoId === store.currentVideo.id" class="video-rename-row">
+          <input
+            v-model="videoNameDraft"
+            class="rename-input"
+            type="text"
+            maxlength="200"
+            placeholder="Display name (empty to reset)"
+            @keyup.enter="saveRenameVideo(store.currentVideo.id)"
+            @keyup.escape="cancelRenameVideo"
+          />
+          <button class="rename-save-button" :disabled="isSavingVideoName" @click="saveRenameVideo(store.currentVideo.id)">
+            Save
+          </button>
+          <button class="rename-cancel-button" :disabled="isSavingVideoName" @click="cancelRenameVideo">
+            Cancel
+          </button>
+        </div>
+        <template v-else>
+          <div class="video-name">{{ getVideoPrimaryName(store.currentVideo) }}</div>
+          <div v-if="hasCustomVideoName(store.currentVideo)" class="video-original-name">
+            File: {{ store.currentVideo.filename }}
+          </div>
+        </template>
         <div class="video-date">
           {{ new Date(store.currentVideo.upload_date).toLocaleDateString() }}
         </div>
@@ -239,6 +301,19 @@ function closeSuccessModal() {
         No video selected
       </div>
       <div class="button-group">
+        <button
+          v-if="store.currentVideo && editingVideoId !== store.currentVideo.id"
+          class="rename-button"
+          @click="startRenameVideo(store.currentVideo)"
+          :disabled="store.isLoading || store.isLoadingMetadata"
+          title="Rename video"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"></path>
+            <path d="m16.5 3.5 4 4L7 21H3v-4z"></path>
+          </svg>
+        </button>
         <button
           v-if="store.currentVideo && needsReencoding"
           class="reencode-button"
@@ -369,25 +444,61 @@ function closeSuccessModal() {
                 No videos available. Upload a video to get started.
               </div>
               <div v-else class="video-items">
-                <button
+                <div
                   v-for="video in store.videos"
                   :key="video.id"
                   class="video-item"
                   :class="{ 
                     active: store.currentVideo?.id === video.id,
-                    loading: selectingVideoId === video.id || (store.isLoadingMetadata && store.currentVideo?.id === video.id)
+                    loading: selectingVideoId === video.id || (store.isLoadingMetadata && store.currentVideo?.id === video.id),
+                    editing: editingVideoId === video.id
                   }"
-                  :disabled="store.isLoadingMetadata || selectingVideoId === video.id"
-                  @click="selectVideo(video)"
                 >
-                  <div class="video-name">{{ video.filename }}</div>
-                  <div class="video-date">
-                    {{ new Date(video.upload_date).toLocaleDateString() }}
+                  <button
+                    class="video-select-button"
+                    :disabled="store.isLoadingMetadata || selectingVideoId === video.id || editingVideoId === video.id"
+                    @click="selectVideo(video)"
+                  >
+                    <div class="video-name">{{ getVideoPrimaryName(video) }}</div>
+                    <div v-if="hasCustomVideoName(video)" class="video-original-name">
+                      File: {{ video.filename }}
+                    </div>
+                    <div class="video-date">
+                      {{ new Date(video.upload_date).toLocaleDateString() }}
+                    </div>
+                    <div v-if="selectingVideoId === video.id || (store.isLoadingMetadata && store.currentVideo?.id === video.id)" class="loading-indicator">
+                      Loading metadata...
+                    </div>
+                  </button>
+
+                  <div class="video-item-actions">
+                    <template v-if="editingVideoId === video.id">
+                      <input
+                        v-model="videoNameDraft"
+                        class="rename-input"
+                        type="text"
+                        maxlength="200"
+                        placeholder="Display name (empty to reset)"
+                        @keyup.enter="saveRenameVideo(video.id)"
+                        @keyup.escape="cancelRenameVideo"
+                      />
+                      <button class="rename-save-button" :disabled="isSavingVideoName" @click="saveRenameVideo(video.id)">
+                        Save
+                      </button>
+                      <button class="rename-cancel-button" :disabled="isSavingVideoName" @click="cancelRenameVideo">
+                        Cancel
+                      </button>
+                    </template>
+                    <button
+                      v-else
+                      class="rename-inline-button"
+                      :disabled="isSavingVideoName"
+                      @click="startRenameVideo(video)"
+                    >
+                      Rename
+                    </button>
                   </div>
-                  <div v-if="selectingVideoId === video.id || (store.isLoadingMetadata && store.currentVideo?.id === video.id)" class="loading-indicator">
-                    Loading metadata...
-                  </div>
-                </button>
+                </div>
               </div>
             </div>
 
@@ -440,9 +551,22 @@ function closeSuccessModal() {
   white-space: nowrap;
 }
 
+.video-original-name {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.2rem;
+}
+
 .video-info .video-date {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.video-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
 }
 
 .no-video-placeholder {
@@ -460,6 +584,7 @@ function closeSuccessModal() {
 }
 
 .change-button,
+.rename-button,
 .reencode-button {
   display: flex;
   align-items: center;
@@ -481,6 +606,12 @@ function closeSuccessModal() {
   color: var(--color-success-500);
 }
 
+.rename-button:hover:not(:disabled) {
+  background: var(--color-neutral-200);
+  border-color: var(--color-success-500);
+  color: var(--color-success-500);
+}
+
 .reencode-button:hover:not(:disabled) {
   background: var(--color-neutral-200);
   border-color: #f97316;
@@ -488,6 +619,7 @@ function closeSuccessModal() {
 }
 
 .change-button:disabled,
+.rename-button:disabled,
 .reencode-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -634,16 +766,14 @@ h3 {
 }
 
 .video-item {
-  padding: 0.75rem;
+  padding: 0.65rem;
   border: 1px solid var(--border-light);
   border-radius: 4px;
   background: var(--bg-primary);
-  cursor: pointer;
-  text-align: left;
   transition: all 0.2s;
 }
 
-.video-item:hover:not(:disabled) {
+.video-item:hover {
   border-color: var(--color-success-500);
   background: var(--bg-secondary);
 }
@@ -658,7 +788,20 @@ h3 {
   cursor: wait;
 }
 
-.video-item:disabled {
+.video-item.editing {
+  border-color: var(--color-success-500);
+}
+
+.video-select-button {
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+
+.video-select-button:disabled {
   cursor: not-allowed;
 }
 
@@ -677,6 +820,54 @@ h3 {
   color: var(--color-success-500);
   margin-top: 0.25rem;
   font-style: italic;
+}
+
+.video-item-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 180px;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.rename-save-button,
+.rename-cancel-button,
+.rename-inline-button {
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.rename-save-button {
+  border-color: var(--color-success-500);
+  color: var(--color-success-600);
+}
+
+.rename-cancel-button:hover,
+.rename-inline-button:hover {
+  background: var(--bg-secondary);
+}
+
+.rename-save-button:disabled,
+.rename-cancel-button:disabled,
+.rename-inline-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .error {

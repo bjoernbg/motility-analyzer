@@ -61,6 +61,7 @@ export interface ReencodeResult {
 export interface Video {
   id: string;
   filename: string;
+  display_name?: string | null;
   upload_date: string;
   file_path: string;
   metadata?: VideoMetadata;
@@ -88,6 +89,7 @@ export interface AnalysisParameters {
 export interface Analysis {
   id: string;
   video_id: string;
+  display_name?: string | null;
   parameters: Record<string, unknown>;
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
   progress: number;
@@ -204,6 +206,16 @@ export async function reencodeVideo(videoId: string): Promise<ReencodeResult> {
   });
 }
 
+export async function updateVideoDisplayName(
+  videoId: string,
+  displayName: string | null
+): Promise<Video> {
+  return fetchJson<Video>(`/api/videos/${encodeURIComponent(videoId)}/display-name`, {
+    method: 'PUT',
+    body: JSON.stringify({ display_name: displayName }),
+  });
+}
+
 export function videoNeedsReencoding(metadata: VideoMetadata | undefined): boolean {
   if (!metadata || !metadata.codec) {
     return true;  // Unknown codec, assume it needs re-encoding
@@ -231,6 +243,16 @@ export async function startAnalysis(
 export async function getAnalysisStatus(analysisId: string): Promise<Analysis> {
   return fetchJson<Analysis>(`/api/analysis/${analysisId}/status`, {
     endpointKey: `status:${analysisId}`,
+  });
+}
+
+export async function updateAnalysisDisplayName(
+  analysisId: string,
+  displayName: string | null
+): Promise<Analysis> {
+  return fetchJson<Analysis>(`/api/analysis/${encodeURIComponent(analysisId)}/display-name`, {
+    method: 'PUT',
+    body: JSON.stringify({ display_name: displayName }),
   });
 }
 
@@ -616,6 +638,16 @@ export async function listMultiViewSessions(): Promise<MultiViewSession[]> {
 export async function getMultiViewSession(sessionId: string): Promise<MultiViewSession> {
   return fetchJson<MultiViewSession>(`/api/multi-view/sessions/${encodeURIComponent(sessionId)}`, {
     endpointKey: `multiViewSession:${sessionId}`,
+  });
+}
+
+export async function updateMultiViewSessionName(
+  sessionId: string,
+  name: string
+): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>(`/api/multi-view/sessions/${encodeURIComponent(sessionId)}/name`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
   });
 }
 

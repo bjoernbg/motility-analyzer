@@ -19,7 +19,12 @@ from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .calibration import calibrate_tube_width
 from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
-from .database import MultiViewSessionDB, clear_all_data, init_database
+from .database import (
+    MultiViewSessionDB,
+    VideoLabelDB,
+    clear_all_data,
+    init_database,
+)
 from .encoder import reencode_video
 from .horizontal_window_detection import horizontal_window_detection
 from .metadata import get_video_metadata
@@ -41,9 +46,11 @@ from .models import (
     ContractionEventLineFit,
     MultiViewSession,
     MultiViewSessionCreate,
+    MultiViewSessionNameUpdate,
     MultiViewSessionMetadata,
     MultiViewValidationRequest,
     MultiViewValidationResult,
+    DisplayNameUpdate,
 )
 from .storage import (
     AnalysisStorage,
@@ -64,6 +71,7 @@ app = FastAPI(title="Video Analysis API", version="1.0.0")
 
 # Initialize video handle pool for efficient frame extraction
 video_pool = VideoHandlePool(max_handles=5, idle_timeout=60.0)
+video_label_db = VideoLabelDB()
 
 # Compression middleware (supports gzip and brotli)
 # Compresses responses larger than 500 bytes, especially useful for JSON data
@@ -120,6 +128,14 @@ def _save_video_display_settings(video_path: Path, settings: DisplaySettings) ->
     existing_data["display_settings"] = settings.model_dump()
     with open(settings_path, "w") as f:
         json.dump(existing_data, f, indent=2, default=str)
+
+
+def _normalize_optional_display_name(raw_name: str | None) -> str | None:
+    """Normalize optional display names; empty values clear the custom name."""
+    if raw_name is None:
+        return None
+    cleaned = raw_name.strip()
+    return cleaned if cleaned else None
 
 
 @app.get("/")
@@ -198,7 +214,24 @@ async def upload_video(file: Annotated[UploadFile, File(...)]):
 @app.get("/api/videos", response_model=list[Video])
 def list_videos():
     """List all available videos."""
-    return VideoStorage.list_videos()
+    videos = VideoStorage.list_videos()
+    display_name_map = video_label_db.list_display_names([video.id for video in videos])
+    for video in videos:
+        video.display_name = display_name_map.get(video.id)
+    return videos
+
+
+@app.put("/api/videos/{video_id}/display-name", response_model=Video)
+def update_video_display_name(video_id: str, body: DisplayNameUpdate):
+    """Update or clear a custom video display name."""
+    video = VideoStorage.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    display_name = _normalize_optional_display_name(body.display_name)
+    video_label_db.set_display_name(video_id, display_name)
+    video.display_name = display_name
+    return video
 
 
 @app.get("/api/videos/{video_id}/metadata", response_model=VideoMetadata)
@@ -281,6 +314,7 @@ async def reencode_video_endpoint(video_id: str):
         updated_video = Video(
             id=new_video_path.stem,
             filename=new_video_path.name,
+            display_name=video_label_db.get_display_name(new_video_path.stem),
             file_path=str(new_video_path),
         )
 
@@ -342,6 +376,21 @@ def get_analysis_status(analysis_id: str):
     analysis = task_manager.get_analysis(analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    return analysis
+
+
+@app.put("/api/analysis/{analysis_id}/display-name", response_model=Analysis)
+def update_analysis_display_name(analysis_id: str, body: DisplayNameUpdate):
+    """Update or clear a custom analysis display name."""
+    analysis = task_manager.get_analysis(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    display_name = _normalize_optional_display_name(body.display_name)
+    analysis_storage = AnalysisStorage()
+    analysis_storage.update_analysis(analysis_id, display_name=display_name)
+    analysis.display_name = display_name
+    task_manager.analyses[analysis_id] = analysis
     return analysis
 
 
@@ -1340,6 +1389,10 @@ async def validate_multi_view_pair_endpoint(body: MultiViewValidationRequest):
 @app.post("/api/multi-view/sessions", response_model=MultiViewSession)
 async def create_multi_view_session(body: MultiViewSessionCreate):
     """Create a persisted multi-view session after validation."""
+    normalized_name = body.name.strip()
+    if not normalized_name:
+        raise HTTPException(status_code=422, detail="Session name cannot be empty")
+
     validation = await validate_multi_view_pair_endpoint(
         MultiViewValidationRequest(
             left_analysis_id=body.left_analysis_id,
@@ -1360,7 +1413,7 @@ async def create_multi_view_session(body: MultiViewSessionCreate):
     )
 
     session = MultiViewSession(
-        name=body.name,
+        name=normalized_name,
         left_analysis_id=body.left_analysis_id,
         right_analysis_id=body.right_analysis_id,
         metadata=metadata,
@@ -1401,6 +1454,39 @@ async def list_multi_view_sessions(limit: int = 100, offset: int = 0):
 @app.get("/api/multi-view/sessions/{session_id}", response_model=MultiViewSession)
 async def get_multi_view_session(session_id: str):
     """Get one persisted multi-view session."""
+    result = multi_view_session_db.get_session(session_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
+
+    return MultiViewSession(
+        id=result["id"],
+        name=result["name"],
+        left_analysis_id=result["left_analysis_id"],
+        right_analysis_id=result["right_analysis_id"],
+        created_at=datetime.fromisoformat(result["created_at"]),
+        metadata=MultiViewSessionMetadata(**result["metadata"])
+        if result["metadata"]
+        else None,
+    )
+
+
+@app.put("/api/multi-view/sessions/{session_id}/name", response_model=MultiViewSession)
+async def update_multi_view_session_name(
+    session_id: str, body: MultiViewSessionNameUpdate
+):
+    """Rename a persisted multi-view session."""
+    normalized_name = body.name.strip()
+    if not normalized_name:
+        raise HTTPException(status_code=422, detail="Session name cannot be empty")
+
+    result = multi_view_session_db.get_session(session_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
+
+    updated = multi_view_session_db.update_session_name(session_id, normalized_name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
+
     result = multi_view_session_db.get_session(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="Multi-view session not found")

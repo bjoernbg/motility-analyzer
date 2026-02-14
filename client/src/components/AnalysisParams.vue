@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onUnmounted } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import type { AnalysisParameters } from '../lib/api';
+import type { AnalysisParameters, Analysis } from '../lib/api';
 import { Slider } from './ui/slider';
 import { debounce } from '../lib/utils';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
@@ -257,6 +257,9 @@ const totalFrames = computed(() => { return store.currentVideo?.metadata?.total_
 const deletingAnalysisId = ref<string | null>(null);
 // Track open state for each analysis's delete popover using reactive object
 const deletePopoverOpen = reactive<Record<string, boolean>>({});
+const renamingAnalysisId = ref<string | null>(null);
+const analysisNameDraft = ref('');
+const isSavingAnalysisName = ref(false);
 
 function formatAnalysisDate(createdAt: string): string {
   const date = new Date(createdAt);
@@ -267,13 +270,56 @@ function formatAnalysisDate(createdAt: string): string {
 
 async function handleAnalysisClick(analysisId: string, event?: Event) {
   // Prevent click if clicking on delete button or other interactive elements
-  if (event && (event.target as HTMLElement).closest('button, [role="button"]')) {
+  if (event && (event.target as HTMLElement).closest('button, [role="button"], input, textarea')) {
     return;
   }
 
   if (analysisId && analysisId !== store.currentAnalysis?.id && !store.isProcessing) {
     // Select analysis directly - parameters will be auto-loaded
     await store.selectAnalysis(analysisId);
+  }
+}
+
+function getAnalysisPrimaryName(analysis: Analysis): string {
+  const customName = analysis.display_name?.trim();
+  if (customName && customName.length > 0) {
+    return customName;
+  }
+  return formatAnalysisDate(analysis.created_at);
+}
+
+function hasCustomAnalysisName(analysis: Analysis): boolean {
+  const customName = analysis.display_name?.trim();
+  return Boolean(customName && customName.length > 0);
+}
+
+function startRenameAnalysis(analysis: Analysis, event: Event) {
+  event.stopPropagation();
+  renamingAnalysisId.value = analysis.id;
+  analysisNameDraft.value = analysis.display_name?.trim() ?? '';
+}
+
+function cancelRenameAnalysis(event?: Event) {
+  event?.stopPropagation();
+  renamingAnalysisId.value = null;
+  analysisNameDraft.value = '';
+}
+
+async function saveRenameAnalysis(analysisId: string, event?: Event) {
+  event?.stopPropagation();
+  if (isSavingAnalysisName.value) {
+    return;
+  }
+
+  try {
+    isSavingAnalysisName.value = true;
+    const trimmed = analysisNameDraft.value.trim();
+    await store.renameAnalysis(analysisId, trimmed.length > 0 ? trimmed : null);
+    cancelRenameAnalysis();
+  } catch (error) {
+    console.error('Failed to rename analysis:', error);
+  } finally {
+    isSavingAnalysisName.value = false;
   }
 }
 
@@ -350,7 +396,30 @@ async function confirmDeleteAnalysis() {
                   : 'mdi:file-outline'" />
           </span>
           <div class="analysis-item-info">
-            <p class="text-sm">{{ formatAnalysisDate(analysis.created_at) }}</p>
+            <div v-if="renamingAnalysisId === analysis.id" class="analysis-rename-row">
+              <input
+                v-model="analysisNameDraft"
+                class="analysis-rename-input"
+                type="text"
+                maxlength="200"
+                placeholder="Display name (empty to reset)"
+                @click.stop
+                @keyup.enter="saveRenameAnalysis(analysis.id, $event)"
+                @keyup.escape="cancelRenameAnalysis($event)"
+              />
+              <Button type="button" variant="outline" size="sm" @click="saveRenameAnalysis(analysis.id, $event)"
+                :disabled="isSavingAnalysisName">
+                Save
+              </Button>
+              <Button type="button" variant="outline" size="sm" @click="cancelRenameAnalysis($event)"
+                :disabled="isSavingAnalysisName">
+                Cancel
+              </Button>
+            </div>
+            <template v-else>
+              <p class="analysis-name">{{ getAnalysisPrimaryName(analysis) }}</p>
+              <p class="text-sm" v-if="hasCustomAnalysisName(analysis)">{{ formatAnalysisDate(analysis.created_at) }}</p>
+            </template>
             <p class="text-xs frame-count" v-if="totalFrames > 0">
               {{ getProcessedFrames(analysis) }} / {{ totalFrames }} frames
             </p>
@@ -369,6 +438,12 @@ async function confirmDeleteAnalysis() {
               </span>
             </div>
           </div>
+
+          <Button v-if="renamingAnalysisId !== analysis.id" type="button" variant="ghost" size="sm"
+            class="analysis-rename-button" @click="startRenameAnalysis(analysis, $event)"
+            :disabled="isRunning || store.isProcessing">
+            <Icon name="mdi:pencil" :size="16" />
+          </Button>
 
           <!-- Delete button - only visible on hover -->
           <Popover v-model:open="deletePopoverOpen[analysis.id]">
@@ -837,6 +912,33 @@ h3:not(:first-child) {
   gap: 0.25rem;
 }
 
+.analysis-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0;
+  padding-right: 5.5rem;
+}
+
+.analysis-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  padding-right: 5.5rem;
+}
+
+.analysis-rename-input {
+  min-width: 200px;
+  flex: 1;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.8rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
 .frame-count {
   color: var(--text-secondary);
   font-size: 0.75rem;
@@ -886,6 +988,22 @@ h3:not(:first-child) {
   border: 1px solid var(--border-light);
 }
 
+.analysis-rename-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 2.75rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+}
+
+.analysis-rename-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--color-primary-300);
+}
+
 .analysis-delete-button:hover {
   background: var(--color-error-50);
   color: var(--color-error-600);
@@ -893,6 +1011,11 @@ h3:not(:first-child) {
 }
 
 .analysis-item:hover .analysis-delete-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.analysis-item:hover .analysis-rename-button {
   opacity: 1;
   pointer-events: auto;
 }
