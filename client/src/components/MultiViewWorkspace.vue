@@ -9,7 +9,6 @@ import {
 } from '../lib/api';
 import HeatmapViewer from './HeatmapViewer.vue';
 import { Slider } from './ui/slider';
-import { Button } from './ui/button';
 
 const store = useAnalysisStore();
 
@@ -350,7 +349,6 @@ function drawOverlay(
         <h2>{{ store.currentMultiViewSession?.name ?? 'Combined Analysis' }}</h2>
         <p class="subtitle">Synchronized dual-angle playback and heatmap comparison</p>
       </div>
-      <Button variant="outline" @click="store.exitMultiViewMode()">Exit Combined View</Button>
     </div>
 
     <div v-if="!store.leftVideo || !store.rightVideo || !store.leftAnalysis || !store.rightAnalysis" class="empty-state">

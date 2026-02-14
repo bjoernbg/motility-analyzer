@@ -47,8 +47,12 @@ import {
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
+type WorkspaceEntityType = 'video' | 'combined' | null;
+
 export const useAnalysisStore = defineStore('analysis', () => {
   // State
+  const activeEntityType = ref<WorkspaceEntityType>(null);
+  const activeEntityId = ref<string | null>(null);
   const videos = ref<Video[]>([]);
   const currentVideo = ref<Video | null>(null);
   const currentAnalysis = ref<Analysis | null>(null);
@@ -132,10 +136,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
     return (currentAnalysis.value?.global_data !== null && currentAnalysis.value?.global_data !== undefined) || liveFrameData.value.size > 0;
   });
 
-  // Multi-view computed properties
-  const isInMultiViewMode = computed(() => currentMultiViewSession.value !== null);
-  const activeAnalysis = computed(() => currentAnalysis.value);
-  const activeVideo = computed(() => currentVideo.value);
+  const isInVideoMode = computed(() => activeEntityType.value === 'video' && activeEntityId.value !== null);
+  const isInCombinedMode = computed(() => activeEntityType.value === 'combined' && activeEntityId.value !== null);
+  const isInMultiViewMode = computed(() => isInCombinedMode.value);
+  const activeAnalysis = computed(() => (isInVideoMode.value ? currentAnalysis.value : null));
+  const activeVideo = computed(() => (isInVideoMode.value ? currentVideo.value : null));
 
   function applyVideoUpdate(updatedVideo: Video): void {
     const videoIndex = videos.value.findIndex((video) => video.id === updatedVideo.id);
@@ -186,6 +191,38 @@ export const useAnalysisStore = defineStore('analysis', () => {
     if (currentMultiViewSession.value?.id === updatedSession.id) {
       currentMultiViewSession.value = { ...currentMultiViewSession.value, ...updatedSession };
     }
+  }
+
+  function clearVideoSelection(): void {
+    currentVideo.value = null;
+    currentAnalysis.value = null;
+    availableAnalyses.value = [];
+    liveFrameData.value.clear();
+    frameDataCache.value.clear();
+    progress.value = 0;
+    progressStatus.value = 'pending';
+    currentFrame.value = null;
+    totalFrames.value = null;
+    currentParameters.value = null;
+    contractionEvents.value = [];
+    contractionDetectionError.value = null;
+    isUserSeeking.value = false;
+    stopPolling();
+  }
+
+  function clearCombinedSelection(): void {
+    currentMultiViewSession.value = null;
+    leftAnalysis.value = null;
+    rightAnalysis.value = null;
+    leftVideo.value = null;
+    rightVideo.value = null;
+    syncedTimeSec.value = 0;
+    maxSyncedTimeSec.value = 0;
+  }
+
+  function setActiveEntity(type: WorkspaceEntityType, id: string | null): void {
+    activeEntityType.value = type;
+    activeEntityId.value = id;
   }
 
   // Actions
@@ -244,7 +281,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
         await autoCalibrateVideoDisplaySettings(video.id);
 
         // Only set currentVideo after metadata is loaded
+        clearCombinedSelection();
         currentVideo.value = video;
+        setActiveEntity('video', video.id);
         
         // Load saved settings for this video (with deduplication)
         try {
@@ -287,6 +326,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
   }
 
   async function selectVideo(video: Video) {
+    clearCombinedSelection();
+
     // Reset analysis state before loading metadata
     currentAnalysis.value = null;
     liveFrameData.value.clear();
@@ -305,6 +346,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       video.metadata = metadata;
       // Only set currentVideo after metadata is loaded
       currentVideo.value = video;
+      setActiveEntity('video', video.id);
       
       // Load saved settings for this video (with deduplication)
       try {
@@ -360,6 +402,28 @@ export const useAnalysisStore = defineStore('analysis', () => {
     } finally {
       isLoadingMetadata.value = false;
     }
+  }
+
+  async function selectVideoEntity(videoId: string) {
+    if (!videoId) {
+      throw new Error('Video ID is required');
+    }
+
+    if (videos.value.length === 0) {
+      await loadVideos();
+    }
+
+    let video = videos.value.find((item) => item.id === videoId);
+    if (!video) {
+      await loadVideos();
+      video = videos.value.find((item) => item.id === videoId);
+    }
+
+    if (!video) {
+      throw new Error('Video not found');
+    }
+
+    await selectVideo(video);
   }
 
   async function reencodeCurrentVideo(): Promise<ReencodeStatistics> {
@@ -959,20 +1023,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
   }
 
   function reset() {
-    currentVideo.value = null;
-    currentAnalysis.value = null;
-    liveFrameData.value.clear();
-    frameDataCache.value.clear();
-    progress.value = 0;
-    progressStatus.value = 'pending';
-    currentFrame.value = null;
-    totalFrames.value = null;
+    clearVideoSelection();
+    clearCombinedSelection();
+    setActiveEntity(null, null);
     error.value = null;
-    currentParameters.value = null;
-    contractionEvents.value = [];
-    contractionDetectionError.value = null;
-    isUserSeeking.value = false;
-    stopPolling();
   }
 
   async function clearAllData() {
@@ -982,15 +1036,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       // Reset all state
       reset();
       videos.value = [];
-      availableAnalyses.value = [];
       multiViewSessions.value = [];
-      currentMultiViewSession.value = null;
-      leftAnalysis.value = null;
-      rightAnalysis.value = null;
-      leftVideo.value = null;
-      rightVideo.value = null;
-      syncedTimeSec.value = 0;
-      maxSyncedTimeSec.value = 0;
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to clear all data';
       throw err;
@@ -1064,56 +1110,69 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       isLoading.value = true;
       error.value = null;
+      stopPolling();
 
       const session = await getMultiViewSession(sessionId);
       currentMultiViewSession.value = session;
+      setActiveEntity('combined', session.id);
 
-      const [left, right] = await Promise.all([
-        getAnalysisStatus(session.left_analysis_id),
-        getAnalysisStatus(session.right_analysis_id),
-      ]);
-      leftAnalysis.value = left;
-      rightAnalysis.value = right;
+      try {
+        const [left, right] = await Promise.all([
+          getAnalysisStatus(session.left_analysis_id),
+          getAnalysisStatus(session.right_analysis_id),
+        ]);
+        leftAnalysis.value = left;
+        rightAnalysis.value = right;
 
-      const [leftMeta, rightMeta] = await Promise.all([
-        getVideoMetadata(left.video_id),
-        getVideoMetadata(right.video_id),
-      ]);
+        const [leftMeta, rightMeta] = await Promise.all([
+          getVideoMetadata(left.video_id),
+          getVideoMetadata(right.video_id),
+        ]);
 
-      const videosById = new Map(videos.value.map((video) => [video.id, video]));
-      const fallbackVideos = videosById.size === 0 ? await listVideos() : [];
-      for (const video of fallbackVideos) {
-        videosById.set(video.id, video);
+        const videosById = new Map(videos.value.map((video) => [video.id, video]));
+        const fallbackVideos = videosById.size === 0 ? await listVideos() : [];
+        for (const video of fallbackVideos) {
+          videosById.set(video.id, video);
+        }
+        if (fallbackVideos.length > 0) {
+          videos.value = fallbackVideos;
+        }
+
+        const leftKnownVideo = videosById.get(left.video_id);
+        const rightKnownVideo = videosById.get(right.video_id);
+
+        leftVideo.value = {
+          id: left.video_id,
+          filename: leftKnownVideo?.filename ?? left.video_id,
+          display_name: leftKnownVideo?.display_name ?? null,
+          upload_date: leftKnownVideo?.upload_date ?? new Date().toISOString(),
+          file_path: leftKnownVideo?.file_path ?? '',
+          metadata: leftMeta,
+        };
+        rightVideo.value = {
+          id: right.video_id,
+          filename: rightKnownVideo?.filename ?? right.video_id,
+          display_name: rightKnownVideo?.display_name ?? null,
+          upload_date: rightKnownVideo?.upload_date ?? new Date().toISOString(),
+          file_path: rightKnownVideo?.file_path ?? '',
+          metadata: rightMeta,
+        };
+
+        syncedTimeSec.value = 0;
+        maxSyncedTimeSec.value = Math.max(
+          0,
+          Math.min(leftMeta.duration ?? 0, rightMeta.duration ?? 0)
+        );
+      } catch (err) {
+        leftAnalysis.value = null;
+        rightAnalysis.value = null;
+        leftVideo.value = null;
+        rightVideo.value = null;
+        syncedTimeSec.value = 0;
+        maxSyncedTimeSec.value = 0;
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        error.value = `Combined analysis "${session.name}" is stale: one or more source analyses or videos are missing (${message}).`;
       }
-      if (fallbackVideos.length > 0) {
-        videos.value = fallbackVideos;
-      }
-
-      const leftKnownVideo = videosById.get(left.video_id);
-      const rightKnownVideo = videosById.get(right.video_id);
-
-      leftVideo.value = {
-        id: left.video_id,
-        filename: leftKnownVideo?.filename ?? left.video_id,
-        display_name: leftKnownVideo?.display_name ?? null,
-        upload_date: leftKnownVideo?.upload_date ?? new Date().toISOString(),
-        file_path: leftKnownVideo?.file_path ?? '',
-        metadata: leftMeta,
-      };
-      rightVideo.value = {
-        id: right.video_id,
-        filename: rightKnownVideo?.filename ?? right.video_id,
-        display_name: rightKnownVideo?.display_name ?? null,
-        upload_date: rightKnownVideo?.upload_date ?? new Date().toISOString(),
-        file_path: rightKnownVideo?.file_path ?? '',
-        metadata: rightMeta,
-      };
-
-      syncedTimeSec.value = 0;
-      maxSyncedTimeSec.value = Math.max(
-        0,
-        Math.min(leftMeta.duration ?? 0, rightMeta.duration ?? 0)
-      );
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to select multi-view session';
       console.error('Failed to select multi-view session:', err);
@@ -1144,7 +1203,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
       });
 
       await loadMultiViewSessions();
-      await selectMultiViewSession(session.id);
+      await selectCombinedEntity(session.id);
 
       return session;
     } catch (err) {
@@ -1160,8 +1219,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       await deleteMultiViewSession(sessionId);
       multiViewSessions.value = multiViewSessions.value.filter((session) => session.id !== sessionId);
-      if (currentMultiViewSession.value?.id === sessionId) {
-        exitMultiViewMode();
+      if (activeEntityType.value === 'combined' && activeEntityId.value === sessionId) {
+        clearActiveEntity();
+      } else if (currentMultiViewSession.value?.id === sessionId) {
+        clearCombinedSelection();
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to delete multi-view session';
@@ -1169,23 +1230,38 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function selectCombinedEntity(sessionId: string) {
+    if (!sessionId) {
+      throw new Error('Combined analysis ID is required');
+    }
+
+    if (multiViewSessions.value.length === 0) {
+      await loadMultiViewSessions();
+    }
+
+    await selectMultiViewSession(sessionId);
+  }
+
   function setSyncedTime(timeSec: number) {
     const bounded = Math.max(0, Math.min(timeSec, maxSyncedTimeSec.value));
     syncedTimeSec.value = bounded;
   }
 
+  function clearActiveEntity() {
+    clearVideoSelection();
+    clearCombinedSelection();
+    setActiveEntity(null, null);
+    error.value = null;
+  }
+
   function exitMultiViewMode() {
-    currentMultiViewSession.value = null;
-    leftAnalysis.value = null;
-    rightAnalysis.value = null;
-    leftVideo.value = null;
-    rightVideo.value = null;
-    syncedTimeSec.value = 0;
-    maxSyncedTimeSec.value = 0;
+    clearActiveEntity();
   }
 
   return {
     // State
+    activeEntityType,
+    activeEntityId,
     videos,
     currentVideo,
     currentAnalysis,
@@ -1218,6 +1294,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isProcessing,
     isCompleted,
     hasResults,
+    isInVideoMode,
+    isInCombinedMode,
     isInMultiViewMode,
     activeAnalysis,
     activeVideo,
@@ -1225,6 +1303,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     loadVideos,
     handleVideoUpload,
     selectVideo,
+    selectVideoEntity,
     reencodeCurrentVideo,
     runAnalysis,
     startPolling,
@@ -1253,9 +1332,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
     loadMultiViewSessions,
     renameMultiViewSession,
     selectMultiViewSession,
+    selectCombinedEntity,
     createMultiViewSession: createMultiViewSessionAction,
     deleteMultiViewSessionById,
     setSyncedTime,
+    clearActiveEntity,
     exitMultiViewMode,
   };
 });

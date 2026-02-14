@@ -15,6 +15,11 @@ const router = createRouter({
       component: HomeView,
     },
     {
+      path: '/combined/:sessionId',
+      name: 'combined',
+      component: HomeView,
+    },
+    {
       path: '/about',
       name: 'about',
       // route level code-splitting

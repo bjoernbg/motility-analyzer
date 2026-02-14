@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from 'vue';
-import VideoSelector from '../components/VideoSelector.vue';
+import WorkspaceEntitySelector from '../components/WorkspaceEntitySelector.vue';
+import CombinedAnalysisSidebar from '../components/CombinedAnalysisSidebar.vue';
 import AnalysisParams from '../components/AnalysisParams.vue';
 import MediaViewer from '../components/MediaViewer.vue';
 import MediaController from '../components/MediaController.vue';
@@ -8,16 +9,18 @@ import AnalysisResults from '../components/AnalysisResults.vue';
 import MultiViewStartModal from '../components/MultiViewStartModal.vue';
 import MultiViewWorkspace from '../components/MultiViewWorkspace.vue';
 import { useAnalysisStore } from '../stores/analysis';
+import { useWorkspaceEntityRouting } from '../composables/useWorkspaceEntityRouting';
 
 const store = useAnalysisStore();
 const showMultiViewModal = ref(false);
+
+useWorkspaceEntityRouting();
 
 function handleSeek(frame: number) {
   store.seekToFrame(frame);
 }
 
 onUnmounted(() => {
-  // Cleanup polling when leaving the view
   store.stopPolling();
 });
 </script>
@@ -27,24 +30,31 @@ onUnmounted(() => {
     <div class="container">
       <div class="header-row">
         <h1 class="text-2xl">Motility Analyzer</h1>
-        <button class="start-combined-button" @click="showMultiViewModal = true">
-          Start Combined Analysis
-        </button>
       </div>
-      
+
       <div class="layout">
         <div class="left-panel">
-          <VideoSelector />
-          <AnalysisParams />
+          <WorkspaceEntitySelector @create-combined="showMultiViewModal = true" />
+
+          <AnalysisParams v-if="store.isInVideoMode" />
+          <CombinedAnalysisSidebar v-else-if="store.isInCombinedMode" />
+          <div v-else class="empty-panel">
+            Select a video or combined analysis to begin.
+          </div>
         </div>
-        
+
         <div class="right-panel">
-          <MultiViewWorkspace v-if="store.isInMultiViewMode" />
-          <template v-else>
+          <template v-if="store.isInVideoMode">
             <MediaViewer />
             <MediaController @seek="handleSeek" />
             <AnalysisResults />
           </template>
+
+          <MultiViewWorkspace v-else-if="store.isInCombinedMode" />
+
+          <div v-else class="empty-workspace">
+            Choose an entity from the sidebar to open a workspace.
+          </div>
         </div>
       </div>
     </div>
@@ -79,24 +89,9 @@ h1 {
   gap: 1rem;
 }
 
-.start-combined-button {
-  border: 1px solid var(--border-light);
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  border-radius: 6px;
-  padding: 0.55rem 0.9rem;
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.start-combined-button:hover {
-  background: var(--bg-secondary);
-}
-
 .layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 320px 1fr;
   gap: 1rem;
 }
 
@@ -107,10 +102,30 @@ h1 {
   gap: 1rem;
 }
 
+.empty-panel,
+.empty-workspace {
+  border: 1px dashed var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  padding: 1rem;
+}
+
+.empty-workspace {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 @media (max-width: 1200px) {
   .layout {
     grid-template-columns: 1fr;
   }
-}
 
+  .empty-workspace {
+    min-height: 200px;
+  }
+}
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import { listAnalyses, type Analysis, type MultiViewValidationResult } from '../lib/api';
 import { Button } from './ui/button';
@@ -22,17 +22,11 @@ const leftVideoId = ref('');
 const rightVideoId = ref('');
 const leftAnalysisId = ref('');
 const rightAnalysisId = ref('');
-
 const leftCompletedAnalyses = ref<Analysis[]>([]);
 const rightCompletedAnalyses = ref<Analysis[]>([]);
-
 const validationResult = ref<MultiViewValidationResult | null>(null);
 const isValidating = ref(false);
 const isCreating = ref(false);
-const deletingSessionId = ref<string | null>(null);
-const editingSessionId = ref<string | null>(null);
-const sessionRenameDraft = ref('');
-const isRenamingSession = ref(false);
 
 let validationTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -58,11 +52,13 @@ function resetForm() {
   leftCompletedAnalyses.value = [];
   rightCompletedAnalyses.value = [];
   validationResult.value = null;
-  cancelRenameSession();
 }
 
 async function loadCompletedAnalysesForVideo(videoId: string): Promise<Analysis[]> {
-  if (!videoId) return [];
+  if (!videoId) {
+    return [];
+  }
+
   const analyses = await listAnalyses(videoId, 'completed', 200, 0);
   return analyses
     .filter((analysis) => analysis.status === 'completed')
@@ -111,7 +107,9 @@ async function runValidation() {
 }
 
 async function createSession() {
-  if (!canCreate.value) return;
+  if (!canCreate.value) {
+    return;
+  }
 
   try {
     isCreating.value = true;
@@ -129,58 +127,14 @@ async function createSession() {
   }
 }
 
-async function openSession(sessionId: string) {
-  try {
-    await store.selectMultiViewSession(sessionId);
-    closeModal();
-  } catch (err) {
-    console.error('Failed to open multi-view session:', err);
-  }
-}
-
-async function deleteSession(sessionId: string) {
-  try {
-    deletingSessionId.value = sessionId;
-    await store.deleteMultiViewSessionById(sessionId);
-  } catch (err) {
-    console.error('Failed to delete multi-view session:', err);
-  } finally {
-    deletingSessionId.value = null;
-  }
-}
-
-function startRenameSession(sessionId: string, currentName: string) {
-  editingSessionId.value = sessionId;
-  sessionRenameDraft.value = currentName;
-}
-
-function cancelRenameSession() {
-  editingSessionId.value = null;
-  sessionRenameDraft.value = '';
-}
-
-async function saveSessionRename(sessionId: string) {
-  if (isRenamingSession.value) return;
-  try {
-    isRenamingSession.value = true;
-    await store.renameMultiViewSession(sessionId, sessionRenameDraft.value.trim());
-    cancelRenameSession();
-  } catch (err) {
-    console.error('Failed to rename multi-view session:', err);
-  } finally {
-    isRenamingSession.value = false;
-  }
-}
-
 watch(
   () => props.modelValue,
   async (isOpen) => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      return;
+    }
 
-    await Promise.all([
-      store.loadVideos(),
-      store.loadMultiViewSessions(),
-    ]);
+    await store.loadVideos();
 
     if (!sessionName.value) {
       sessionName.value = `Multi-View ${new Date().toLocaleString()}`;
@@ -206,8 +160,14 @@ watch([leftAnalysisId, rightAnalysisId], () => {
   }
 
   validationTimeout = setTimeout(() => {
-    runValidation();
+    void runValidation();
   }, 300);
+});
+
+onUnmounted(() => {
+  if (validationTimeout) {
+    clearTimeout(validationTimeout);
+  }
 });
 </script>
 
@@ -295,57 +255,6 @@ watch([leftAnalysisId, rightAnalysisId], () => {
             class="validation-box validation-success"
           >
             Analyses are compatible and ready for combined view.
-          </div>
-
-          <div class="sessions-section">
-            <h3>Saved Sessions</h3>
-            <div v-if="store.multiViewSessions.length === 0" class="empty-state">
-              No saved sessions yet.
-            </div>
-            <div v-else class="session-list">
-              <div v-for="session in store.multiViewSessions" :key="session.id" class="session-item">
-                <div class="session-info">
-                  <div v-if="editingSessionId === session.id" class="session-rename-row">
-                    <Input
-                      v-model="sessionRenameDraft"
-                      maxlength="200"
-                      placeholder="Combined analysis name"
-                      @keyup.enter="saveSessionRename(session.id)"
-                      @keyup.escape="cancelRenameSession"
-                    />
-                    <Button size="sm" variant="outline" :disabled="isRenamingSession" @click="saveSessionRename(session.id)">
-                      Save
-                    </Button>
-                    <Button size="sm" variant="outline" :disabled="isRenamingSession" @click="cancelRenameSession">
-                      Cancel
-                    </Button>
-                  </div>
-                  <div v-else class="session-name">{{ session.name }}</div>
-                  <div class="session-date">{{ new Date(session.created_at).toLocaleString() }}</div>
-                </div>
-                <div class="session-actions">
-                  <Button
-                    v-if="editingSessionId !== session.id"
-                    size="sm"
-                    variant="outline"
-                    @click="startRenameSession(session.id, session.name)"
-                  >
-                    Rename
-                  </Button>
-                  <Button size="sm" variant="outline" @click="openSession(session.id)">
-                    Open
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    :disabled="deletingSessionId === session.id"
-                    @click="deleteSession(session.id)"
-                  >
-                    {{ deletingSessionId === session.id ? 'Deleting...' : 'Delete' }}
-                  </Button>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -476,58 +385,6 @@ watch([leftAnalysisId, rightAnalysisId], () => {
 .validation-error ul {
   margin: 0.45rem 0 0 1.15rem;
   padding: 0;
-}
-
-.sessions-section {
-  border-top: 1px solid var(--border-light);
-  padding-top: 0.8rem;
-}
-
-.sessions-section h3 {
-  margin: 0 0 0.7rem;
-  font-size: 0.95rem;
-}
-
-.empty-state {
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
-.session-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.session-item {
-  border: 1px solid var(--border-light);
-  border-radius: 8px;
-  padding: 0.65rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.session-name {
-  font-weight: 600;
-}
-
-.session-rename-row {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-}
-
-.session-date {
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-}
-
-.session-actions {
-  display: flex;
-  gap: 0.5rem;
 }
 
 .modal-footer {
