@@ -9,12 +9,16 @@ import {
 } from '../lib/api';
 import HeatmapViewer from './HeatmapViewer.vue';
 import { Slider } from './ui/slider';
+import { ButtonGroup } from './ui/button-group';
+import { Button } from './ui/button';
+import { Icon } from './ui/icon';
 
 const store = useAnalysisStore();
 
 const isDragging = ref(false);
 const sliderValue = ref([0]);
 const highlightedPointIndex = ref<number | null>(null);
+const showDetectedEdges = ref(true);
 
 const leftFrameData = ref<FrameData | null>(null);
 const rightFrameData = ref<FrameData | null>(null);
@@ -129,6 +133,7 @@ watch(
 
 watch(
   () => [
+    showDetectedEdges.value,
     highlightedPointIndex.value,
     leftFrame.value,
     rightFrame.value,
@@ -136,8 +141,9 @@ watch(
     store.rightAnalysis?.id,
   ],
   async () => {
+    const shouldLoadFrameData = showDetectedEdges.value || highlightedPointIndex.value !== null;
     if (
-      highlightedPointIndex.value === null ||
+      !shouldLoadFrameData ||
       !store.leftAnalysis?.id ||
       !store.rightAnalysis?.id
     ) {
@@ -176,6 +182,7 @@ watch(
 
 watch(
   () => [
+    showDetectedEdges.value,
     highlightedPointIndex.value,
     leftFrameData.value,
     rightFrameData.value,
@@ -224,6 +231,33 @@ function getVideoDisplayName(video: { filename: string; display_name?: string | 
 function hasCustomVideoName(video: { filename: string; display_name?: string | null }): boolean {
   const customName = video.display_name?.trim();
   return Boolean(customName && customName.length > 0);
+}
+
+function drawPath(
+  ctx: CanvasRenderingContext2D,
+  scaleX: number,
+  scaleY: number,
+  points: Array<[number, number]>
+) {
+  if (points.length === 0) {
+    return;
+  }
+
+  const firstPoint = points[0];
+  if (!firstPoint) {
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(firstPoint[0] * scaleX, firstPoint[1] * scaleY);
+  for (let i = 1; i < points.length; i++) {
+    const point = points[i];
+    if (!point) {
+      continue;
+    }
+    ctx.lineTo(point[0] * scaleX, point[1] * scaleY);
+  }
+  ctx.stroke();
 }
 
 function drawAllOverlays() {
@@ -278,12 +312,30 @@ function drawOverlay(
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cssWidth, cssHeight);
 
+  if (!frameData || !videoWidth || !videoHeight) {
+    return;
+  }
+
+  const scaleX = cssWidth / videoWidth;
+  const scaleY = cssHeight / videoHeight;
+
+  if (showDetectedEdges.value) {
+    ctx.strokeStyle = '#000000';
+    ctx.globalAlpha = 0.2;
+    ctx.lineWidth = 7;
+    drawPath(ctx, scaleX, scaleY, frameData.pt);
+    drawPath(ctx, scaleX, scaleY, frameData.pb);
+
+    ctx.strokeStyle = '#00c490';
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 3;
+    drawPath(ctx, scaleX, scaleY, frameData.pt);
+    drawPath(ctx, scaleX, scaleY, frameData.pb);
+  }
+
   if (
     highlightedPointIndex.value === null ||
-    !frameData ||
     !frameData.mpp ||
-    !videoWidth ||
-    !videoHeight ||
     frameData.mpp.length <= highlightedPointIndex.value
   ) {
     return;
@@ -295,9 +347,6 @@ function drawOverlay(
   }
 
   const [, , tx, ty, bx, by, distancePx] = pair;
-
-  const scaleX = cssWidth / videoWidth;
-  const scaleY = cssHeight / videoHeight;
 
   const topX = tx * scaleX;
   const topY = ty * scaleY;
@@ -372,6 +421,20 @@ function drawOverlay(
           @pointerup="setDragging(false); commitSliderValue()"
           @pointercancel="setDragging(false)"
         />
+        <div class="sync-actions">
+          <div class="overlay-toggle">
+            <ButtonGroup>
+              <Button
+                :variant="showDetectedEdges ? 'default' : 'outline'"
+                @click="showDetectedEdges = !showDetectedEdges"
+                size="sm"
+                title="Display detected paths"
+              >
+                <Icon name="lucide:chart-scatter" size="1.1em" />
+              </Button>
+            </ButtonGroup>
+          </div>
+        </div>
       </div>
 
       <div class="comparison-grid">
@@ -489,6 +552,16 @@ function drawOverlay(
 
 .sync-slider {
   width: 100%;
+}
+
+.sync-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.overlay-toggle {
+  display: flex;
+  align-items: center;
 }
 
 .comparison-grid {
