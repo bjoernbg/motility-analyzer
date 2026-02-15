@@ -12,6 +12,7 @@ import type {
   ReencodeStatistics,
   MultiViewSession,
   MultiViewValidationResult,
+  DeleteVideoResult,
 } from '../lib/api';
 import { useHeatmapCache } from '../composables/useHeatmapCache';
 import {
@@ -29,6 +30,7 @@ import {
   getVideoSettings,
   saveVideoSettings,
   deleteAnalysis,
+  deleteVideo as deleteVideoApi,
   clearAllData as clearAllDataApi,
   detectContractions,
   getContractionEvents,
@@ -919,6 +921,54 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function deleteVideoById(videoId: string): Promise<DeleteVideoResult> {
+    try {
+      error.value = null;
+      const result = await deleteVideoApi(videoId);
+
+      videos.value = videos.value.filter((video) => video.id !== videoId);
+
+      const deletedSessionIds = new Set(result.deleted_multi_view_session_ids);
+      if (deletedSessionIds.size > 0) {
+        multiViewSessions.value = multiViewSessions.value.filter(
+          (session) => !deletedSessionIds.has(session.id)
+        );
+
+        const activeCombinedDeleted =
+          activeEntityType.value === 'combined' &&
+          activeEntityId.value !== null &&
+          deletedSessionIds.has(activeEntityId.value);
+
+        if (activeCombinedDeleted) {
+          clearActiveEntity();
+        } else if (
+          currentMultiViewSession.value &&
+          deletedSessionIds.has(currentMultiViewSession.value.id)
+        ) {
+          clearCombinedSelection();
+        }
+      }
+
+      const activeVideoDeleted =
+        activeEntityType.value === 'video' &&
+        activeEntityId.value !== null &&
+        activeEntityId.value === videoId;
+
+      if (currentVideo.value?.id === videoId) {
+        clearVideoSelection();
+      }
+
+      if (activeVideoDeleted) {
+        setActiveEntity(null, null);
+      }
+
+      return result;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete video';
+      throw err;
+    }
+  }
+
   async function renameAnalysis(analysisId: string, displayName: string | null) {
     try {
       error.value = null;
@@ -1315,6 +1365,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     detectHorizontalWindowForCurrentFrame,
     saveCurrentSettings,
     renameVideo,
+    deleteVideoById,
     renameAnalysis,
     loadAnalysesForVideo,
     selectAnalysis,

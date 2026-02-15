@@ -51,6 +51,7 @@ from .models import (
     MultiViewValidationRequest,
     MultiViewValidationResult,
     DisplayNameUpdate,
+    VideoDeleteResult,
 )
 from .storage import (
     AnalysisStorage,
@@ -232,6 +233,53 @@ def update_video_display_name(video_id: str, body: DisplayNameUpdate):
     video_label_db.set_display_name(video_id, display_name)
     video.display_name = display_name
     return video
+
+
+@app.delete("/api/videos/{video_id}", response_model=VideoDeleteResult)
+async def delete_video(video_id: str):
+    """Delete a video and all dependent analysis/session records."""
+    video = VideoStorage.get_video(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path = Path(video.file_path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    analysis_storage = AnalysisStorage()
+    analyses = analysis_storage.list_analyses(video_id=video_id, limit=1000)
+    analysis_ids = [analysis.id for analysis in analyses]
+
+    # Stop in-flight analyses for this video before deletion.
+    for analysis in analyses:
+        if analysis.status == "processing":
+            await task_manager.stop_analysis(analysis.id)
+
+    deleted_multi_view_session_ids: list[str] = []
+    if analysis_ids:
+        deleted_multi_view_session_ids = (
+            multi_view_session_db.delete_sessions_by_analysis_ids(analysis_ids)
+        )
+
+    for analysis_id in analysis_ids:
+        analysis_storage.delete_analysis(analysis_id)
+        task_manager.analyses.pop(analysis_id, None)
+        task_manager.tasks.pop(analysis_id, None)
+
+    clear_all_video_caches(video_id, analysis_ids)
+    video_label_db.set_display_name(video_id, None)
+    video_pool.close_video(video_path)
+
+    try:
+        video_path.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete video file: {exc}") from exc
+
+    return VideoDeleteResult(
+        message="Video deleted successfully",
+        deleted_analysis_ids=analysis_ids,
+        deleted_multi_view_session_ids=deleted_multi_view_session_ids,
+    )
 
 
 @app.get("/api/videos/{video_id}/metadata", response_model=VideoMetadata)

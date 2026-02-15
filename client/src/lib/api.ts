@@ -58,6 +58,12 @@ export interface ReencodeResult {
   statistics: ReencodeStatistics;
 }
 
+export interface DeleteVideoResult {
+  message: string;
+  deleted_analysis_ids: string[];
+  deleted_multi_view_session_ids: string[];
+}
+
 export interface Video {
   id: string;
   filename: string;
@@ -213,6 +219,12 @@ export async function updateVideoDisplayName(
   return fetchJson<Video>(`/api/videos/${encodeURIComponent(videoId)}/display-name`, {
     method: 'PUT',
     body: JSON.stringify({ display_name: displayName }),
+  });
+}
+
+export async function deleteVideo(videoId: string): Promise<DeleteVideoResult> {
+  return fetchJson<DeleteVideoResult>(`/api/videos/${encodeURIComponent(videoId)}`, {
+    method: 'DELETE',
   });
 }
 

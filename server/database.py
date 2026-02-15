@@ -1235,6 +1235,44 @@ class MultiViewSessionDB:
         finally:
             conn.close()
 
+    def delete_sessions_by_analysis_ids(self, analysis_ids: list[str]) -> list[str]:
+        """Delete sessions that reference any analysis in the provided IDs.
+
+        Returns:
+            IDs of deleted sessions.
+        """
+        if not analysis_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in analysis_ids)
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                f"""
+                SELECT id
+                FROM multi_view_sessions
+                WHERE left_analysis_id IN ({placeholders})
+                   OR right_analysis_id IN ({placeholders})
+            """,
+                tuple(analysis_ids + analysis_ids),
+            )
+            rows = cursor.fetchall()
+            session_ids = [str(row["id"]) for row in rows]
+            if not session_ids:
+                return []
+
+            session_placeholders = ",".join("?" for _ in session_ids)
+            cursor.execute(
+                f"DELETE FROM multi_view_sessions WHERE id IN ({session_placeholders})",
+                tuple(session_ids),
+            )
+            conn.commit()
+            return session_ids
+        finally:
+            conn.close()
+
     def update_session_name(self, session_id: str, name: str) -> bool:
         """Update a persisted session name."""
         conn = self._get_connection()

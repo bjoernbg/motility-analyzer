@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import type { Video } from '../lib/api';
 import { videoNeedsReencoding } from '../lib/api';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { Icon } from './ui/icon';
 
 const emit = defineEmits<{
   'create-combined': [];
@@ -17,20 +19,18 @@ const editingVideoId = ref<string | null>(null);
 const videoNameDraft = ref('');
 const isSavingVideoName = ref(false);
 const isReencoding = ref(false);
+const reencodingVideoId = ref<string | null>(null);
 const isClearingAll = ref(false);
+const isDeletingVideoId = ref<string | null>(null);
 const deletingSessionId = ref<string | null>(null);
 const editingSessionId = ref<string | null>(null);
 const sessionNameDraft = ref('');
 const isSavingSessionName = ref(false);
+const videosHeaderMenuOpen = ref(false);
+const videoMenuOpen = reactive<Record<string, boolean>>({});
+const sessionMenuOpen = reactive<Record<string, boolean>>({});
 
 const VIDEO_UPLOAD_ACCEPT = '.mp4,.avi,.mov,.mkv,.webm,.mts,video/*';
-
-const canReencodeCurrentVideo = computed(() => {
-  if (!store.currentVideo?.metadata) {
-    return false;
-  }
-  return videoNeedsReencoding(store.currentVideo.metadata);
-});
 
 onMounted(async () => {
   await Promise.all([store.loadVideos(), store.loadMultiViewSessions()]);
@@ -73,6 +73,11 @@ async function saveRenameVideo(videoId: string) {
   }
 }
 
+function startRenameVideoFromMenu(video: Video) {
+  videoMenuOpen[video.id] = false;
+  startRenameVideo(video);
+}
+
 async function selectVideo(videoId: string) {
   if (selectingVideoId.value === videoId || store.isLoadingMetadata) {
     return;
@@ -86,6 +91,10 @@ async function selectVideo(videoId: string) {
   } finally {
     selectingVideoId.value = null;
   }
+}
+
+function openUploadPicker() {
+  fileInput.value?.click();
 }
 
 async function handleFileSelect(event: Event) {
@@ -109,13 +118,47 @@ async function handleFileSelect(event: Event) {
   }
 }
 
-async function handleReencodeCurrentVideo() {
-  if (!store.currentVideo || isReencoding.value) {
+function canReencodeVideo(video: Video): boolean {
+  if (isReencoding.value || store.isLoadingMetadata) {
+    return false;
+  }
+
+  if (store.currentVideo?.id === video.id && store.currentVideo.metadata) {
+    return videoNeedsReencoding(store.currentVideo.metadata);
+  }
+
+  return true;
+}
+
+function isReencodingVideo(videoId: string): boolean {
+  return isReencoding.value && reencodingVideoId.value === videoId;
+}
+
+async function handleReencodeVideo(video: Video) {
+  videoMenuOpen[video.id] = false;
+
+  if (!canReencodeVideo(video)) {
     return;
   }
 
-  const filename = store.currentVideo.filename;
+  if (
+    store.currentVideo?.id !== video.id ||
+    store.activeEntityType !== 'video' ||
+    store.activeEntityId !== video.id
+  ) {
+    await selectVideo(video.id);
+  }
 
+  const currentVideo = store.currentVideo;
+  if (!currentVideo || currentVideo.id !== video.id) {
+    return;
+  }
+
+  if (!videoNeedsReencoding(currentVideo.metadata)) {
+    return;
+  }
+
+  const filename = currentVideo.filename;
   const confirmed = confirm(
     `Re-encode "${filename}"?\n\n` +
       'This will:\n' +
@@ -130,13 +173,51 @@ async function handleReencodeCurrentVideo() {
   }
 
   isReencoding.value = true;
+  reencodingVideoId.value = currentVideo.id;
   try {
     await store.reencodeCurrentVideo();
   } catch (error) {
     console.error('Re-encode failed:', error);
-    alert(`Failed to re-encode "${filename}": ${error instanceof Error ? error.message : 'Unknown error'}`);
+    alert(
+      `Failed to re-encode "${filename}": ${error instanceof Error ? error.message : 'Unknown error'}`
+    );
   } finally {
     isReencoding.value = false;
+    reencodingVideoId.value = null;
+  }
+}
+
+async function handleDeleteVideo(video: Video) {
+  videoMenuOpen[video.id] = false;
+
+  if (isDeletingVideoId.value) {
+    return;
+  }
+
+  const confirmed = confirm(
+    `Delete "${getVideoPrimaryName(video)}"?\n\n` +
+      'This will permanently delete:\n' +
+      '• The video file\n' +
+      '• All analyses for this video\n' +
+      '• Combined analyses that reference those analyses\n' +
+      '• Cached metadata and heatmaps\n\n' +
+      'This action cannot be undone.'
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    isDeletingVideoId.value = video.id;
+    await store.deleteVideoById(video.id);
+    if (editingVideoId.value === video.id) {
+      cancelRenameVideo();
+    }
+  } catch (error) {
+    console.error('Failed to delete video:', error);
+  } finally {
+    isDeletingVideoId.value = null;
   }
 }
 
@@ -154,6 +235,8 @@ async function handleClearAllData() {
     return;
   }
 
+  videosHeaderMenuOpen.value = false;
+
   try {
     isClearingAll.value = true;
     await store.clearAllData();
@@ -167,6 +250,11 @@ async function handleClearAllData() {
 function startRenameSession(sessionId: string, currentName: string) {
   editingSessionId.value = sessionId;
   sessionNameDraft.value = currentName;
+}
+
+function startRenameSessionFromMenu(sessionId: string, currentName: string) {
+  sessionMenuOpen[sessionId] = false;
+  startRenameSession(sessionId, currentName);
 }
 
 function cancelRenameSession() {
@@ -208,18 +296,29 @@ async function deleteSession(sessionId: string) {
     deletingSessionId.value = null;
   }
 }
+
+async function deleteSessionFromMenu(sessionId: string) {
+  sessionMenuOpen[sessionId] = false;
+  await deleteSession(sessionId);
+}
 </script>
 
 <template>
   <div class="workspace-entity-selector">
     <section class="entity-section">
       <div class="section-header">
-        <h3>Videos</h3>
-      </div>
+        <h3 class="section-title">Videos</h3>
+        <div class="section-actions">
+          <button
+            class="icon-button"
+            :disabled="isUploading"
+            aria-label="Upload video"
+            :title="isUploading ? 'Uploading...' : 'Upload video'"
+            @click="openUploadPicker"
+          >
+            <Icon name="mdi:upload" :class="{ spinning: isUploading }" />
+          </button>
 
-      <div class="video-actions">
-        <label class="upload-button">
-          <span>{{ isUploading ? 'Uploading...' : 'Upload Video' }}</span>
           <input
             ref="fileInput"
             type="file"
@@ -227,15 +326,28 @@ async function deleteSession(sessionId: string) {
             class="hidden-input"
             @change="handleFileSelect"
           />
-        </label>
 
-        <button
-          class="action-button"
-          :disabled="!store.currentVideo || !canReencodeCurrentVideo || isReencoding || store.isLoadingMetadata"
-          @click="handleReencodeCurrentVideo"
-        >
-          {{ isReencoding ? 'Re-encoding...' : 'Re-encode Selected' }}
-        </button>
+          <Popover v-model:open="videosHeaderMenuOpen">
+            <PopoverTrigger as-child>
+              <button
+                class="icon-button"
+                aria-label="Video actions"
+                title="Video actions"
+              >
+                <Icon name="mdi:dots-horizontal" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" class="entity-menu-content">
+              <button
+                class="menu-item danger"
+                :disabled="isClearingAll"
+                @click="handleClearAllData"
+              >
+                {{ isClearingAll ? 'Clearing...' : 'Clear All Data' }}
+              </button>
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
 
       <div v-if="store.videos.length === 0" class="empty-state">No videos yet.</div>
@@ -246,44 +358,75 @@ async function deleteSession(sessionId: string) {
           class="entity-item"
           :class="{ active: store.activeEntityType === 'video' && store.activeEntityId === video.id }"
         >
-          <button
-            class="entity-main"
-            :disabled="editingVideoId === video.id || selectingVideoId === video.id"
-            @click="selectVideo(video.id)"
-          >
-            <p class="entity-title">{{ getVideoPrimaryName(video) }}</p>
-            <p v-if="hasCustomVideoName(video)" class="entity-subtitle">File: {{ video.filename }}</p>
-            <p class="entity-meta">{{ new Date(video.upload_date).toLocaleDateString() }}</p>
-          </button>
+          <div class="entity-item-header">
+            <button
+              class="entity-main"
+              :disabled="editingVideoId === video.id || selectingVideoId === video.id || isDeletingVideoId === video.id"
+              @click="selectVideo(video.id)"
+            >
+              <p class="entity-title">{{ getVideoPrimaryName(video) }}</p>
+              <p v-if="hasCustomVideoName(video)" class="entity-subtitle">File: {{ video.filename }}</p>
+              <p class="entity-meta">{{ new Date(video.upload_date).toLocaleDateString() }}</p>
+            </button>
 
-          <div class="entity-actions-row">
-            <template v-if="editingVideoId === video.id">
-              <input
-                v-model="videoNameDraft"
-                class="rename-input"
-                type="text"
-                maxlength="200"
-                placeholder="Display name (empty to reset)"
-                @keyup.enter="saveRenameVideo(video.id)"
-                @keyup.escape="cancelRenameVideo"
-              />
-              <button class="small-button" :disabled="isSavingVideoName" @click="saveRenameVideo(video.id)">Save</button>
-              <button class="small-button" :disabled="isSavingVideoName" @click="cancelRenameVideo">Cancel</button>
-            </template>
-            <button v-else class="small-button" @click="startRenameVideo(video)">Rename</button>
+            <Popover v-model:open="videoMenuOpen[video.id]">
+              <PopoverTrigger as-child>
+                <button
+                  class="item-menu-trigger"
+                  :class="{ 'menu-open': Boolean(videoMenuOpen[video.id]) }"
+                  :disabled="editingVideoId === video.id || isDeletingVideoId === video.id"
+                  aria-label="Video item actions"
+                  title="Video item actions"
+                >
+                  <Icon name="mdi:dots-horizontal" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" class="entity-menu-content">
+                <button class="menu-item" @click="startRenameVideoFromMenu(video)">Rename</button>
+                <button class="menu-item" :disabled="!canReencodeVideo(video)" @click="handleReencodeVideo(video)">
+                  {{ isReencodingVideo(video.id) ? 'Re-encoding...' : 'Re-encode' }}
+                </button>
+                <button
+                  class="menu-item danger"
+                  :disabled="isDeletingVideoId === video.id"
+                  @click="handleDeleteVideo(video)"
+                >
+                  {{ isDeletingVideoId === video.id ? 'Deleting...' : 'Delete Video' }}
+                </button>
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          <div v-if="editingVideoId === video.id" class="entity-actions-row">
+            <input
+              v-model="videoNameDraft"
+              class="rename-input"
+              type="text"
+              maxlength="200"
+              placeholder="Display name (empty to reset)"
+              @keyup.enter="saveRenameVideo(video.id)"
+              @keyup.escape="cancelRenameVideo"
+            />
+            <button class="small-button" :disabled="isSavingVideoName" @click="saveRenameVideo(video.id)">
+              Save
+            </button>
+            <button class="small-button" :disabled="isSavingVideoName" @click="cancelRenameVideo">Cancel</button>
           </div>
         </div>
       </div>
-
-      <button class="clear-all-button" :disabled="isClearingAll" @click="handleClearAllData">
-        {{ isClearingAll ? 'Clearing...' : 'Clear All Data' }}
-      </button>
     </section>
 
     <section class="entity-section">
       <div class="section-header">
-        <h3>Combined Analyses</h3>
-        <button class="small-button" @click="emit('create-combined')">New Combined Analysis</button>
+        <h3 class="section-title">Combined Analyses</h3>
+        <button
+          class="icon-button"
+          aria-label="Create combined analysis"
+          title="Create combined analysis"
+          @click="emit('create-combined')"
+        >
+          <Icon name="mdi:plus" />
+        </button>
       </div>
 
       <div v-if="store.multiViewSessions.length === 0" class="empty-state">No combined analyses yet.</div>
@@ -294,35 +437,51 @@ async function deleteSession(sessionId: string) {
           class="entity-item"
           :class="{ active: store.activeEntityType === 'combined' && store.activeEntityId === session.id }"
         >
-          <button class="entity-main" :disabled="editingSessionId === session.id" @click="selectSession(session.id)">
-            <p class="entity-title">{{ session.name }}</p>
-            <p class="entity-meta">{{ new Date(session.created_at).toLocaleString() }}</p>
-          </button>
+          <div class="entity-item-header">
+            <button class="entity-main" :disabled="editingSessionId === session.id" @click="selectSession(session.id)">
+              <p class="entity-title">{{ session.name }}</p>
+              <p class="entity-meta">{{ new Date(session.created_at).toLocaleString() }}</p>
+            </button>
 
-          <div class="entity-actions-row">
-            <template v-if="editingSessionId === session.id">
-              <input
-                v-model="sessionNameDraft"
-                class="rename-input"
-                type="text"
-                maxlength="200"
-                placeholder="Combined analysis name"
-                @keyup.enter="saveRenameSession(session.id)"
-                @keyup.escape="cancelRenameSession"
-              />
-              <button class="small-button" :disabled="isSavingSessionName" @click="saveRenameSession(session.id)">Save</button>
-              <button class="small-button" :disabled="isSavingSessionName" @click="cancelRenameSession">Cancel</button>
-            </template>
-            <template v-else>
-              <button class="small-button" @click="startRenameSession(session.id, session.name)">Rename</button>
-              <button
-                class="small-button danger"
-                :disabled="deletingSessionId === session.id"
-                @click="deleteSession(session.id)"
-              >
-                {{ deletingSessionId === session.id ? 'Deleting...' : 'Delete' }}
-              </button>
-            </template>
+            <Popover v-model:open="sessionMenuOpen[session.id]">
+              <PopoverTrigger as-child>
+                <button
+                  class="item-menu-trigger"
+                  :class="{ 'menu-open': Boolean(sessionMenuOpen[session.id]) }"
+                  :disabled="editingSessionId === session.id || deletingSessionId === session.id"
+                  aria-label="Combined analysis actions"
+                  title="Combined analysis actions"
+                >
+                  <Icon name="mdi:dots-horizontal" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" class="entity-menu-content">
+                <button class="menu-item" @click="startRenameSessionFromMenu(session.id, session.name)">Rename</button>
+                <button
+                  class="menu-item danger"
+                  :disabled="deletingSessionId === session.id"
+                  @click="deleteSessionFromMenu(session.id)"
+                >
+                  {{ deletingSessionId === session.id ? 'Deleting...' : 'Delete' }}
+                </button>
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          <div v-if="editingSessionId === session.id" class="entity-actions-row">
+            <input
+              v-model="sessionNameDraft"
+              class="rename-input"
+              type="text"
+              maxlength="200"
+              placeholder="Combined analysis name"
+              @keyup.enter="saveRenameSession(session.id)"
+              @keyup.escape="cancelRenameSession"
+            />
+            <button class="small-button" :disabled="isSavingSessionName" @click="saveRenameSession(session.id)">
+              Save
+            </button>
+            <button class="small-button" :disabled="isSavingSessionName" @click="cancelRenameSession">Cancel</button>
           </div>
         </div>
       </div>
@@ -361,42 +520,42 @@ async function deleteSession(sessionId: string) {
   gap: 0.5rem;
 }
 
-h3 {
+.section-title {
   margin: 0;
   font-size: 0.95rem;
 }
 
-.video-actions {
+.section-actions {
   display: flex;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.35rem;
 }
 
-.upload-button,
-.action-button,
-.small-button,
-.clear-all-button {
+.icon-button {
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--border-light);
   border-radius: 6px;
   background: var(--bg-secondary);
   color: var(--text-primary);
-  font-size: 0.8rem;
   cursor: pointer;
-  padding: 0.35rem 0.55rem;
-}
-
-.upload-button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
 }
 
-.action-button,
-.clear-all-button {
-  flex: 1;
+.icon-button:hover:not(:disabled),
+.item-menu-trigger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--bg-secondary) 80%, var(--color-primary-100));
 }
 
-.clear-all-button {
-  color: var(--color-error-600);
-  border-color: var(--color-error-300);
+.icon-button:focus-visible,
+.item-menu-trigger:focus-visible,
+.menu-item:focus-visible,
+.small-button:focus-visible,
+.entity-main:focus-visible {
+  outline: 2px solid var(--color-primary-500);
+  outline-offset: 2px;
 }
 
 .hidden-input {
@@ -420,8 +579,13 @@ h3 {
   background: var(--color-primary-50);
 }
 
+.entity-item-header {
+  display: flex;
+  align-items: flex-start;
+}
+
 .entity-main {
-  width: 100%;
+  flex: 1;
   border: none;
   background: transparent;
   text-align: left;
@@ -440,6 +604,28 @@ h3 {
   margin: 0.2rem 0 0;
   font-size: 0.75rem;
   color: var(--text-secondary);
+}
+
+.item-menu-trigger {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  margin: 0.45rem 0.45rem 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.entity-item:hover .item-menu-trigger,
+.entity-item:focus-within .item-menu-trigger,
+.item-menu-trigger.menu-open {
+  opacity: 1;
 }
 
 .entity-actions-row {
@@ -461,9 +647,41 @@ h3 {
   color: var(--text-primary);
 }
 
-.small-button.danger {
+.small-button {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.35rem 0.55rem;
+}
+
+:deep(.entity-menu-content) {
+  width: 180px;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.menu-item {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.menu-item.danger {
   color: var(--color-error-600);
-  border-color: var(--color-error-300);
 }
 
 .empty-state {
@@ -486,9 +704,22 @@ button:disabled {
   cursor: not-allowed;
 }
 
-@media (max-width: 1200px) {
-  .video-actions {
-    flex-direction: column;
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .item-menu-trigger {
+    opacity: 1;
   }
 }
 </style>

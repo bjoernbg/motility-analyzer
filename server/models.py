@@ -398,6 +398,19 @@ class DisplayNameUpdate(BaseModel):
     )
 
 
+class VideoDeleteResult(BaseModel):
+    """Response model for deleting a video and its dependent records."""
+
+    message: str = Field(description="Deletion status message")
+    deleted_analysis_ids: List[str] = Field(
+        default_factory=list, description="IDs of analyses deleted with the video"
+    )
+    deleted_multi_view_session_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of multi-view sessions deleted due to analysis dependency",
+    )
+
+
 class MultiViewSessionNameUpdate(BaseModel):
     """Request model for renaming an existing multi-view session."""
 
