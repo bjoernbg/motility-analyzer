@@ -10,6 +10,7 @@ import {
   type HeatmapMeta,
 } from '../lib/api';
 import HeatmapViewer from './HeatmapViewer.vue';
+import MultiViewDiffPanel from './MultiViewDiffPanel.vue';
 import { Slider } from './ui/slider';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
@@ -17,10 +18,13 @@ import { Icon } from './ui/icon';
 
 const store = useAnalysisStore();
 
+type ComparisonViewMode = 'side-by-side' | 'diff';
+
 const isDragging = ref(false);
 const sliderValue = ref([0]);
 const highlightedPointIndex = ref<number | null>(null);
 const showDetectedEdges = ref(true);
+const comparisonMode = ref<ComparisonViewMode>('side-by-side');
 
 const leftFrameData = ref<FrameData | null>(null);
 const rightFrameData = ref<FrameData | null>(null);
@@ -263,6 +267,11 @@ function handleHeatmapClick(side: 'left' | 'right', frame: number, pointIndex: n
     return;
   }
   store.setSyncedTime(clickedTime);
+}
+
+function handleDiffHeatmapClick(syncedTimeSec: number, pointIndex: number) {
+  highlightedPointIndex.value = pointIndex;
+  store.setSyncedTime(syncedTimeSec);
 }
 
 function formatTime(seconds: number): string {
@@ -548,6 +557,25 @@ function drawOverlay(
     </div>
 
     <div v-else class="workspace-body">
+      <div class="view-mode-tabs">
+        <ButtonGroup>
+          <Button
+            size="sm"
+            :variant="comparisonMode === 'side-by-side' ? 'default' : 'outline'"
+            @click="comparisonMode = 'side-by-side'"
+          >
+            Side by Side
+          </Button>
+          <Button
+            size="sm"
+            :variant="comparisonMode === 'diff' ? 'default' : 'outline'"
+            @click="comparisonMode = 'diff'"
+          >
+            Diff
+          </Button>
+        </ButtonGroup>
+      </div>
+
       <div class="sync-controls">
         <div class="time-values">
           <span>{{ formatTime(store.syncedTimeSec) }}</span>
@@ -583,7 +611,7 @@ function drawOverlay(
         </div>
       </div>
 
-      <div class="comparison-grid">
+      <div v-if="comparisonMode === 'side-by-side'" class="comparison-grid">
         <section class="comparison-column">
           <div class="comparison-heading">
             <h3>{{ getVideoDisplayName(store.leftVideo) }}</h3>
@@ -674,6 +702,33 @@ function drawOverlay(
           />
         </section>
       </div>
+
+      <MultiViewDiffPanel
+        v-else
+        :left-analysis-id="store.leftAnalysis.id"
+        :right-analysis-id="store.rightAnalysis.id"
+        :left-frame-image-url="leftFrameImageUrl"
+        :right-frame-image-url="rightFrameImageUrl"
+        :left-frame-data="leftFrameData"
+        :right-frame-data="rightFrameData"
+        :left-video-width="store.leftVideo.metadata?.width"
+        :left-video-height="store.leftVideo.metadata?.height"
+        :right-video-width="store.rightVideo.metadata?.width"
+        :right-video-height="store.rightVideo.metadata?.height"
+        :left-fps="leftFps"
+        :right-fps="rightFps"
+        :min-synced-time-sec="store.minSyncedTimeSec"
+        :max-synced-time-sec="store.maxSyncedTimeSec"
+        :current-synced-time-sec="store.syncedTimeSec"
+        :right-time-shift-sec="store.rightTimeShiftSec"
+        :left-pixel-to-mm-factor="leftPixelToMmFactor"
+        :right-pixel-to-mm-factor="rightPixelToMmFactor"
+        :left-aspect-ratio="leftAspectRatio"
+        :show-detected-edges="showDetectedEdges"
+        :highlighted-point-index="highlightedPointIndex"
+        @frame-click="handleDiffHeatmapClick"
+        @update:show-detected-edges="showDetectedEdges = $event"
+      />
     </div>
   </div>
 </template>
@@ -716,6 +771,12 @@ function drawOverlay(
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.view-mode-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .sync-controls {
