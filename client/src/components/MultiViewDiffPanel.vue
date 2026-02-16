@@ -1,17 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { FrameData } from '../lib/api';
-import { useHeatmapDiff } from '../composables/useHeatmapDiff';
 import FrameDiffOverlay from './FrameDiffOverlay.vue';
-import HeatmapDiffViewer from './HeatmapDiffViewer.vue';
 import { Slider } from './ui/slider';
 import { Button } from './ui/button';
 import { ButtonGroup } from './ui/button-group';
 import { Icon } from './ui/icon';
 
+interface OverlayAlignmentContext {
+  isReady: boolean;
+  reason: string;
+  leftAnchorXPx?: number | null;
+  rightAnchorXPx?: number | null;
+  targetOffsetMm?: number | null;
+  targetWindowWidthMm?: number | null;
+  leftTubeEndXLeftPx?: number | null;
+  leftTubeEndXRightPx?: number | null;
+  leftTubeEndYTopPx?: number | null;
+  leftTubeEndYBottomPx?: number | null;
+  rightTubeEndXLeftPx?: number | null;
+  rightTubeEndXRightPx?: number | null;
+  rightTubeEndYTopPx?: number | null;
+  rightTubeEndYBottomPx?: number | null;
+}
+
 const props = defineProps<{
-  leftAnalysisId: string;
-  rightAnalysisId: string;
   leftFrameImageUrl: string | null;
   rightFrameImageUrl: string | null;
   leftFrameData: FrameData | null;
@@ -20,52 +33,21 @@ const props = defineProps<{
   leftVideoHeight?: number;
   rightVideoWidth?: number;
   rightVideoHeight?: number;
-  leftFps: number;
-  rightFps: number;
-  minSyncedTimeSec: number;
-  maxSyncedTimeSec: number;
-  currentSyncedTimeSec: number;
-  rightTimeShiftSec: number;
   leftPixelToMmFactor: number;
   rightPixelToMmFactor: number;
   leftAspectRatio: number;
   showDetectedEdges: boolean;
   highlightedPointIndex: number | null;
+  overlayAlignmentContext: OverlayAlignmentContext;
+  isComputingAlignment: boolean;
 }>();
 
 const emit = defineEmits<{
-  'frame-click': [syncedTimeSec: number, pointIndex: number];
   'update:show-detected-edges': [value: boolean];
+  'request-analyze-alignment': [];
 }>();
 
-const leftAnalysisIdRef = computed(() => props.leftAnalysisId);
-const rightAnalysisIdRef = computed(() => props.rightAnalysisId);
-const minSyncedTimeRef = computed(() => props.minSyncedTimeSec);
-const maxSyncedTimeRef = computed(() => props.maxSyncedTimeSec);
-const rightShiftRef = computed(() => props.rightTimeShiftSec);
-const leftFpsRef = computed(() => props.leftFps);
-const rightFpsRef = computed(() => props.rightFps);
-
-const {
-  meta,
-  leftAlignedMm,
-  rightAlignedMm,
-  diffMm,
-  isLoading,
-  error,
-  blurSigma,
-  deadbandMm,
-  overlayAlpha,
-  recompute,
-} = useHeatmapDiff({
-  leftAnalysisId: leftAnalysisIdRef,
-  rightAnalysisId: rightAnalysisIdRef,
-  minSyncedTimeSec: minSyncedTimeRef,
-  maxSyncedTimeSec: maxSyncedTimeRef,
-  rightTimeShiftSec: rightShiftRef,
-  leftFps: leftFpsRef,
-  rightFps: rightFpsRef,
-});
+const overlayAlpha = ref(0.45);
 
 const overlayAlphaModel = computed({
   get: () => [overlayAlpha.value],
@@ -75,33 +57,53 @@ const overlayAlphaModel = computed({
   },
 });
 
-const blurSigmaModel = computed({
-  get: () => [blurSigma.value],
-  set: (value: number[]) => {
-    const next = value[0] ?? 1;
-    blurSigma.value = Math.max(0, Math.min(4, next));
-  },
-});
-
-const deadbandModel = computed({
-  get: () => [deadbandMm.value],
-  set: (value: number[]) => {
-    const next = value[0] ?? 0.15;
-    deadbandMm.value = Math.max(0, Math.min(2, next));
-  },
-});
-
-function handleDiffFrameClick(frame: number, pointIndex: number) {
-  if (!meta.value || meta.value.fps <= 0) {
-    return;
+const frameAlignmentData = computed(() => {
+  if (!props.overlayAlignmentContext.isReady) {
+    return null;
   }
-  const syncedTimeSec = meta.value.minTimeSec + frame / meta.value.fps;
-  emit('frame-click', syncedTimeSec, pointIndex);
-}
+
+  const leftAnchor = props.overlayAlignmentContext.leftAnchorXPx;
+  const rightAnchor = props.overlayAlignmentContext.rightAnchorXPx;
+  const targetOffsetMm = props.overlayAlignmentContext.targetOffsetMm;
+  const targetWindowWidthMm = props.overlayAlignmentContext.targetWindowWidthMm;
+
+  if (
+    typeof leftAnchor !== 'number' ||
+    typeof rightAnchor !== 'number' ||
+    typeof targetOffsetMm !== 'number' ||
+    typeof targetWindowWidthMm !== 'number' ||
+    targetWindowWidthMm <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    leftAnchorXPx: leftAnchor,
+    rightAnchorXPx: rightAnchor,
+    targetOffsetMm,
+    targetWindowWidthMm,
+    leftTubeEndXLeftPx: props.overlayAlignmentContext.leftTubeEndXLeftPx ?? null,
+    leftTubeEndXRightPx: props.overlayAlignmentContext.leftTubeEndXRightPx ?? null,
+    leftTubeEndYTopPx: props.overlayAlignmentContext.leftTubeEndYTopPx ?? null,
+    leftTubeEndYBottomPx: props.overlayAlignmentContext.leftTubeEndYBottomPx ?? null,
+    rightTubeEndXLeftPx: props.overlayAlignmentContext.rightTubeEndXLeftPx ?? null,
+    rightTubeEndXRightPx: props.overlayAlignmentContext.rightTubeEndXRightPx ?? null,
+    rightTubeEndYTopPx: props.overlayAlignmentContext.rightTubeEndYTopPx ?? null,
+    rightTubeEndYBottomPx: props.overlayAlignmentContext.rightTubeEndYBottomPx ?? null,
+  };
+});
+
+const alignmentStatusLabel = computed(() =>
+  frameAlignmentData.value ? 'Anchor alignment ready' : 'Anchor alignment required'
+);
 </script>
 
 <template>
   <div class="diff-panel">
+    <div class="alignment-status" :class="{ ready: !!frameAlignmentData, blocked: !frameAlignmentData }">
+      {{ alignmentStatusLabel }}
+    </div>
+
     <div class="diff-controls">
       <div class="control-group">
         <span class="control-label">Detected edges</span>
@@ -124,40 +126,31 @@ function handleDiffFrameClick(frame: number, pointIndex: number) {
           <span class="control-value">{{ overlayAlpha.toFixed(2) }}</span>
         </div>
       </div>
-
-      <div class="control-group slider-group">
-        <span class="control-label">Blur sigma</span>
-        <div class="slider-row">
-          <Slider v-model="blurSigmaModel" :min="0" :max="4" :step="0.05" />
-          <span class="control-value">{{ blurSigma.toFixed(2) }}</span>
-        </div>
-      </div>
-
-      <div class="control-group slider-group">
-        <span class="control-label">Deadband (mm)</span>
-        <div class="slider-row">
-          <Slider v-model="deadbandModel" :min="0" :max="2" :step="0.01" />
-          <span class="control-value">{{ deadbandMm.toFixed(2) }}</span>
-        </div>
-      </div>
-
-      <div class="control-group">
-        <Button size="sm" variant="outline" :disabled="isLoading" @click="recompute">
-          {{ isLoading ? 'Computing...' : 'Recompute diff' }}
-        </Button>
-      </div>
     </div>
 
     <div class="diff-legend">
       <span><span class="legend-dot left" /> Left edges</span>
       <span><span class="legend-dot right" /> Right edges</span>
+      <span><span class="legend-box left" /> Left tube-end box</span>
+      <span><span class="legend-box right" /> Right tube-end box</span>
       <span><span class="legend-dot pair" /> Highlighted measurement</span>
-      <span class="scale-label">
-        Signed diff scale: +/-{{ meta?.diffAbsMaxMm.toFixed(2) ?? '0.00' }} mm
-      </span>
+    </div>
+
+    <div v-if="!frameAlignmentData" class="alignment-blocker">
+      <p class="alignment-blocker-title">Run alignment analysis to enable anchor-aligned frame overlay.</p>
+      <p class="alignment-blocker-copy">{{ overlayAlignmentContext.reason }}</p>
+      <Button
+        size="sm"
+        variant="outline"
+        :disabled="isComputingAlignment"
+        @click="emit('request-analyze-alignment')"
+      >
+        {{ isComputingAlignment ? 'Analyzing...' : 'Analyze Alignment' }}
+      </Button>
     </div>
 
     <FrameDiffOverlay
+      v-else
       :left-frame-image-url="leftFrameImageUrl"
       :right-frame-image-url="rightFrameImageUrl"
       :left-frame-data="leftFrameData"
@@ -172,17 +165,7 @@ function handleDiffFrameClick(frame: number, pointIndex: number) {
       :highlighted-point-index="highlightedPointIndex"
       :overlay-alpha="overlayAlpha"
       :aspect-ratio="leftAspectRatio"
-    />
-
-    <HeatmapDiffViewer
-      :meta="meta"
-      :diff-mm="diffMm"
-      :left-aligned-mm="leftAlignedMm"
-      :right-aligned-mm="rightAlignedMm"
-      :current-synced-time-sec="currentSyncedTimeSec"
-      :is-loading="isLoading"
-      :error="error"
-      @frame-click="handleDiffFrameClick"
+      :alignment-context="frameAlignmentData"
     />
   </div>
 </template>
@@ -192,6 +175,25 @@ function handleDiffFrameClick(frame: number, pointIndex: number) {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.alignment-status {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+}
+
+.alignment-status.ready {
+  color: var(--color-success-700);
+  border-color: color-mix(in oklab, var(--color-success-500) 50%, var(--border-light));
+}
+
+.alignment-status.blocked {
+  color: var(--color-warning-700);
+  border-color: color-mix(in oklab, var(--color-warning-500) 50%, var(--border-light));
 }
 
 .diff-controls {
@@ -272,8 +274,43 @@ function handleDiffFrameClick(frame: number, pointIndex: number) {
   background: #ffbf00;
 }
 
-.scale-label {
+.legend-box {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 0.28rem;
+  border: 2px dashed transparent;
+  box-sizing: border-box;
+}
+
+.legend-box.left {
+  border-color: rgba(34, 211, 238, 0.95);
+}
+
+.legend-box.right {
+  border-color: rgba(251, 146, 60, 0.95);
+}
+
+.alignment-blocker {
+  border: 1px dashed var(--border-medium);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.alignment-blocker-title {
+  margin: 0;
+  font-size: 0.82rem;
   font-weight: 600;
+}
+
+.alignment-blocker-copy {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 1024px) {

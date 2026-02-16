@@ -19,6 +19,22 @@ import { Icon } from './ui/icon';
 const store = useAnalysisStore();
 
 type ComparisonViewMode = 'side-by-side' | 'diff';
+interface OverlayAlignmentContext {
+  isReady: boolean;
+  reason: string;
+  leftAnchorXPx?: number | null;
+  rightAnchorXPx?: number | null;
+  targetOffsetMm?: number | null;
+  targetWindowWidthMm?: number | null;
+  leftTubeEndXLeftPx?: number | null;
+  leftTubeEndXRightPx?: number | null;
+  leftTubeEndYTopPx?: number | null;
+  leftTubeEndYBottomPx?: number | null;
+  rightTubeEndXLeftPx?: number | null;
+  rightTubeEndXRightPx?: number | null;
+  rightTubeEndYTopPx?: number | null;
+  rightTubeEndYBottomPx?: number | null;
+}
 
 const isDragging = ref(false);
 const sliderValue = ref([0]);
@@ -154,7 +170,10 @@ watch(
     store.rightAnalysis?.id,
   ],
   async () => {
-    const shouldLoadFrameData = showDetectedEdges.value || highlightedPointIndex.value !== null;
+    const shouldLoadFrameData =
+      comparisonMode.value === 'diff' ||
+      showDetectedEdges.value ||
+      highlightedPointIndex.value !== null;
     if (
       !shouldLoadFrameData ||
       !store.leftAnalysis?.id ||
@@ -269,9 +288,16 @@ function handleHeatmapClick(side: 'left' | 'right', frame: number, pointIndex: n
   store.setSyncedTime(clickedTime);
 }
 
-function handleDiffHeatmapClick(syncedTimeSec: number, pointIndex: number) {
-  highlightedPointIndex.value = pointIndex;
-  store.setSyncedTime(syncedTimeSec);
+async function handleAnalyzeAlignmentForDiffOverlay() {
+  try {
+    await store.computeMultiViewAlignment({
+      applyTimeShift: true,
+      sampleFrames: 7,
+      maxShiftSec: 3.0,
+    });
+  } catch {
+    // Store-level error state already captures backend failures.
+  }
 }
 
 function formatTime(seconds: number): string {
@@ -313,6 +339,92 @@ function getWindowLabel(params: Record<string, unknown>): string | null {
   }
   return null;
 }
+
+function getWindowBounds(params: Record<string, unknown>): { left: number; right: number } | null {
+  const left = params.horizontal_window_x_left;
+  const right = params.horizontal_window_x_right;
+  if (typeof left !== 'number' || typeof right !== 'number') {
+    return null;
+  }
+  if (right <= left) {
+    return null;
+  }
+  return { left, right };
+}
+
+const overlayAlignmentContext = computed<OverlayAlignmentContext>(() => {
+  const suggestion = store.latestAlignmentSuggestion;
+  const leftAnalysis = store.leftAnalysis;
+  const rightAnalysis = store.rightAnalysis;
+
+  if (!suggestion || !leftAnalysis || !rightAnalysis) {
+    return {
+      isReady: false,
+      reason: 'Run Analyze Alignment to generate tube-anchor metadata for the current analysis pair.',
+    };
+  }
+
+  if (
+    suggestion.left_analysis_id !== leftAnalysis.id ||
+    suggestion.right_analysis_id !== rightAnalysis.id
+  ) {
+    return {
+      isReady: false,
+      reason: 'The latest alignment suggestion is stale for this analysis pair. Run Analyze Alignment again.',
+    };
+  }
+
+  const leftWindow = getWindowBounds(leftAnalysis.parameters);
+  const rightWindow = getWindowBounds(rightAnalysis.parameters);
+  if (!leftWindow || !rightWindow) {
+    return {
+      isReady: false,
+      reason: 'Both analyses need valid horizontal window bounds to anchor the diff overlay.',
+    };
+  }
+
+  const leftAnchorXPx = suggestion.window.left_anchor_x_px;
+  const rightAnchorXPx = suggestion.window.right_anchor_x_px;
+  const targetOffsetMm = suggestion.window.target_offset_mm;
+  const targetWindowWidthMm = suggestion.window.target_window_width_mm;
+
+  if (
+    typeof leftAnchorXPx !== 'number' ||
+    typeof rightAnchorXPx !== 'number' ||
+    typeof targetOffsetMm !== 'number' ||
+    typeof targetWindowWidthMm !== 'number' ||
+    targetWindowWidthMm <= 0
+  ) {
+    return {
+      isReady: false,
+      reason: 'Alignment suggestion is missing anchor normalization data. Re-run Analyze Alignment.',
+    };
+  }
+
+  if (targetWindowWidthMm < 0.5) {
+    return {
+      isReady: false,
+      reason: 'Alignment suggestion produced an implausibly narrow target window. Re-run Analyze Alignment.',
+    };
+  }
+
+  return {
+    isReady: true,
+    reason: '',
+    leftAnchorXPx,
+    rightAnchorXPx,
+    targetOffsetMm,
+    targetWindowWidthMm,
+    leftTubeEndXLeftPx: suggestion.window.left_tube_end_x_left_px,
+    leftTubeEndXRightPx: suggestion.window.left_tube_end_x_right_px,
+    leftTubeEndYTopPx: suggestion.window.left_tube_end_y_top_px,
+    leftTubeEndYBottomPx: suggestion.window.left_tube_end_y_bottom_px,
+    rightTubeEndXLeftPx: suggestion.window.right_tube_end_x_left_px,
+    rightTubeEndXRightPx: suggestion.window.right_tube_end_x_right_px,
+    rightTubeEndYTopPx: suggestion.window.right_tube_end_y_top_px,
+    rightTubeEndYBottomPx: suggestion.window.right_tube_end_y_bottom_px,
+  };
+});
 
 function toMm(valuePx: number, meta: HeatmapMeta | null, fallbackFactor: number): number {
   const factor = meta?.display_settings?.pixel_to_mm_factor ?? fallbackFactor;
@@ -703,32 +815,57 @@ function drawOverlay(
         </section>
       </div>
 
-      <MultiViewDiffPanel
-        v-else
-        :left-analysis-id="store.leftAnalysis.id"
-        :right-analysis-id="store.rightAnalysis.id"
-        :left-frame-image-url="leftFrameImageUrl"
-        :right-frame-image-url="rightFrameImageUrl"
-        :left-frame-data="leftFrameData"
-        :right-frame-data="rightFrameData"
-        :left-video-width="store.leftVideo.metadata?.width"
-        :left-video-height="store.leftVideo.metadata?.height"
-        :right-video-width="store.rightVideo.metadata?.width"
-        :right-video-height="store.rightVideo.metadata?.height"
-        :left-fps="leftFps"
-        :right-fps="rightFps"
-        :min-synced-time-sec="store.minSyncedTimeSec"
-        :max-synced-time-sec="store.maxSyncedTimeSec"
-        :current-synced-time-sec="store.syncedTimeSec"
-        :right-time-shift-sec="store.rightTimeShiftSec"
-        :left-pixel-to-mm-factor="leftPixelToMmFactor"
-        :right-pixel-to-mm-factor="rightPixelToMmFactor"
-        :left-aspect-ratio="leftAspectRatio"
-        :show-detected-edges="showDetectedEdges"
-        :highlighted-point-index="highlightedPointIndex"
-        @frame-click="handleDiffHeatmapClick"
-        @update:show-detected-edges="showDetectedEdges = $event"
-      />
+      <div v-else class="diff-mode-layout">
+        <MultiViewDiffPanel
+          :left-frame-image-url="leftFrameImageUrl"
+          :right-frame-image-url="rightFrameImageUrl"
+          :left-frame-data="leftFrameData"
+          :right-frame-data="rightFrameData"
+          :left-video-width="store.leftVideo.metadata?.width"
+          :left-video-height="store.leftVideo.metadata?.height"
+          :right-video-width="store.rightVideo.metadata?.width"
+          :right-video-height="store.rightVideo.metadata?.height"
+          :left-pixel-to-mm-factor="leftPixelToMmFactor"
+          :right-pixel-to-mm-factor="rightPixelToMmFactor"
+          :left-aspect-ratio="leftAspectRatio"
+          :show-detected-edges="showDetectedEdges"
+          :highlighted-point-index="highlightedPointIndex"
+          :overlay-alignment-context="overlayAlignmentContext"
+          :is-computing-alignment="store.isComputingAlignment"
+          @update:show-detected-edges="showDetectedEdges = $event"
+          @request-analyze-alignment="handleAnalyzeAlignmentForDiffOverlay"
+        />
+
+        <div class="comparison-grid">
+          <section class="comparison-column">
+            <div class="comparison-heading">
+              <h3>{{ getVideoDisplayName(store.leftVideo) }}</h3>
+            </div>
+            <HeatmapViewer
+              :key="`left-diff-heatmap-${store.leftAnalysis.id}`"
+              :analysis-id="store.leftAnalysis.id"
+              :current-frame="leftFrame"
+              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+              @frame-click="(frame, pointIndex) => handleHeatmapClick('left', frame, pointIndex)"
+            />
+          </section>
+
+          <section class="comparison-column">
+            <div class="comparison-heading">
+              <h3>{{ getVideoDisplayName(store.rightVideo) }}</h3>
+            </div>
+            <HeatmapViewer
+              :key="`right-diff-heatmap-${store.rightAnalysis.id}`"
+              :analysis-id="store.rightAnalysis.id"
+              :current-frame="rightFrame"
+              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+              @frame-click="(frame, pointIndex) => handleHeatmapClick('right', frame, pointIndex)"
+            />
+          </section>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -823,6 +960,12 @@ function drawOverlay(
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+}
+
+.diff-mode-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .comparison-heading {

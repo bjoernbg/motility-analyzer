@@ -444,12 +444,64 @@ class MultiViewWindowSuggestion(BaseModel):
         default=None,
         description="Ratio right_span_mm/left_span_mm (1.0 means no scale mismatch)",
     )
+    left_anchor_x_px: Optional[int] = Field(
+        default=None, description="Detected tube-holder anchor x-position for left video"
+    )
+    right_anchor_x_px: Optional[int] = Field(
+        default=None, description="Detected tube-holder anchor x-position for right video"
+    )
+    target_offset_mm: Optional[float] = Field(
+        default=None,
+        description="Canonical right-window offset from anchor in mm used for alignment",
+    )
+    target_window_width_mm: Optional[float] = Field(
+        default=None,
+        description="Canonical window width in mm used for alignment normalization",
+    )
+    left_tube_end_x_left_px: Optional[int] = Field(
+        default=None,
+        description="Detected left tube-end rectangle left x (pixels)",
+    )
+    left_tube_end_x_right_px: Optional[int] = Field(
+        default=None,
+        description="Detected left tube-end rectangle right x (pixels)",
+    )
+    left_tube_end_y_top_px: Optional[float] = Field(
+        default=None,
+        description="Detected left tube-end rectangle top y (pixels)",
+    )
+    left_tube_end_y_bottom_px: Optional[float] = Field(
+        default=None,
+        description="Detected left tube-end rectangle bottom y (pixels)",
+    )
+    right_tube_end_x_left_px: Optional[int] = Field(
+        default=None,
+        description="Detected right tube-end rectangle left x (pixels)",
+    )
+    right_tube_end_x_right_px: Optional[int] = Field(
+        default=None,
+        description="Detected right tube-end rectangle right x (pixels)",
+    )
+    right_tube_end_y_top_px: Optional[float] = Field(
+        default=None,
+        description="Detected right tube-end rectangle top y (pixels)",
+    )
+    right_tube_end_y_bottom_px: Optional[float] = Field(
+        default=None,
+        description="Detected right tube-end rectangle bottom y (pixels)",
+    )
 
 
 class MultiViewAlignmentSuggestion(BaseModel):
     """Combined spatial and temporal alignment suggestion."""
 
     computed_at: datetime = Field(default_factory=datetime.now)
+    left_analysis_id: Optional[str] = Field(
+        default=None, description="Left analysis ID the suggestion was computed from"
+    )
+    right_analysis_id: Optional[str] = Field(
+        default=None, description="Right analysis ID the suggestion was computed from"
+    )
     time_shift: MultiViewTimeShiftSuggestion
     window: MultiViewWindowSuggestion
     notes: List[str] = Field(default_factory=list)

@@ -563,10 +563,24 @@ export interface MultiViewWindowSuggestion {
   left_span_mm?: number | null;
   right_span_mm?: number | null;
   scale_mismatch_ratio?: number | null;
+  left_anchor_x_px?: number | null;
+  right_anchor_x_px?: number | null;
+  target_offset_mm?: number | null;
+  target_window_width_mm?: number | null;
+  left_tube_end_x_left_px?: number | null;
+  left_tube_end_x_right_px?: number | null;
+  left_tube_end_y_top_px?: number | null;
+  left_tube_end_y_bottom_px?: number | null;
+  right_tube_end_x_left_px?: number | null;
+  right_tube_end_x_right_px?: number | null;
+  right_tube_end_y_top_px?: number | null;
+  right_tube_end_y_bottom_px?: number | null;
 }
 
 export interface MultiViewAlignmentSuggestion {
   computed_at: string;
+  left_analysis_id?: string | null;
+  right_analysis_id?: string | null;
   time_shift: MultiViewTimeShiftSuggestion;
   window: MultiViewWindowSuggestion;
   notes: string[];

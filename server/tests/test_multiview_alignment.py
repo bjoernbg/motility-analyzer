@@ -17,6 +17,7 @@ from server.models import (
 )
 from server.multiview_alignment import (
     TARGET_SIGNAL_HZ,
+    compute_alignment_suggestion,
     _match_time_shift,
     _time_shift_suggestion,
     _compute_window_suggestion,
@@ -141,8 +142,14 @@ def test_window_suggestion_matches_known_right_margin_delta() -> None:
     from server import multiview_alignment
 
     original_detect = multiview_alignment._detect_tube_anchor_x
+    original_vertical_detect = multiview_alignment._detect_tube_vertical_bounds
     multiview_alignment._detect_tube_anchor_x = (
         lambda video_path, _frames: 190 if "left" in str(video_path) else 180
+    )
+    multiview_alignment._detect_tube_vertical_bounds = (
+        lambda video_path, _frames: (40.0, 92.0)
+        if "left" in str(video_path)
+        else (42.0, 95.0)
     )
     try:
         window = _compute_window_suggestion(
@@ -159,12 +166,96 @@ def test_window_suggestion_matches_known_right_margin_delta() -> None:
         )
     finally:
         multiview_alignment._detect_tube_anchor_x = original_detect
+        multiview_alignment._detect_tube_vertical_bounds = original_vertical_detect
 
     assert round(window.right_margin_delta_px, 1) == 20.0
     assert window.left_window_delta_px == 10
     assert window.right_window_delta_px == -10
     assert window.left_suggested_x_left == 30
     assert window.right_suggested_x_left == 20
+    assert window.left_anchor_x_px == 190
+    assert window.right_anchor_x_px == 180
+    assert window.target_offset_mm == 0.0
+    assert window.target_window_width_mm == 16.0
+    assert window.left_tube_end_x_left_px == 190
+    assert window.left_tube_end_x_right_px == 200
+    assert window.left_tube_end_y_top_px == 40.0
+    assert window.left_tube_end_y_bottom_px == 92.0
+    assert window.right_tube_end_x_left_px == 180
+    assert window.right_tube_end_x_right_px == 200
+    assert window.right_tube_end_y_top_px == 42.0
+    assert window.right_tube_end_y_bottom_px == 95.0
+
+
+def test_alignment_suggestion_includes_source_analysis_ids(monkeypatch) -> None:
+    class DbWithFrames:
+        def __init__(self):
+            from server.models import FrameData
+
+            left_pc = [[40, 50], [160, 50]]
+            right_pc = [[50, 50], [170, 50]]
+            self.left = FrameData(f=0, pt=[], pb=[], pc=left_pc, colored_regions=[], mpp=None)
+            self.right = FrameData(f=0, pt=[], pb=[], pc=right_pc, colored_regions=[], mpp=None)
+
+        def get_frame(self, analysis_id: str, _frame_number: int):
+            if analysis_id == "left-a":
+                return self.left
+            if analysis_id == "right-a":
+                return self.right
+            return None
+
+        def build_heatmap_matrix(self, _analysis_id: str):
+            return np.array([], dtype=np.float32).reshape(0, 0), 0.0, 0.0
+
+    left_analysis = Analysis(
+        id="left-a",
+        video_id="left-v",
+        parameters={"horizontal_window_x_left": 20, "horizontal_window_x_right": 180},
+        status="completed",
+    )
+    right_analysis = Analysis(
+        id="right-a",
+        video_id="right-v",
+        parameters={"horizontal_window_x_left": 30, "horizontal_window_x_right": 190},
+        status="completed",
+    )
+
+    from server import multiview_alignment
+
+    original_detect = multiview_alignment._detect_tube_anchor_x
+    original_vertical_detect = multiview_alignment._detect_tube_vertical_bounds
+    multiview_alignment._detect_tube_anchor_x = (
+        lambda video_path, _frames: 190 if "left" in str(video_path) else 180
+    )
+    multiview_alignment._detect_tube_vertical_bounds = (
+        lambda video_path, _frames: (40.0, 92.0)
+        if "left" in str(video_path)
+        else (42.0, 95.0)
+    )
+    try:
+        suggestion = compute_alignment_suggestion(
+            db=DbWithFrames(),
+            left_analysis=left_analysis,
+            right_analysis=right_analysis,
+            left_metadata=_video_metadata(width=200),
+            right_metadata=_video_metadata(width=200),
+            left_pixel_to_mm_factor=10.0,
+            right_pixel_to_mm_factor=10.0,
+            left_video_path=Path("left.mp4"),
+            right_video_path=Path("right.mp4"),
+            sample_frames=7,
+            max_shift_sec=2.0,
+        )
+    finally:
+        multiview_alignment._detect_tube_anchor_x = original_detect
+        multiview_alignment._detect_tube_vertical_bounds = original_vertical_detect
+
+    assert suggestion.left_analysis_id == "left-a"
+    assert suggestion.right_analysis_id == "right-a"
+    assert suggestion.window.left_anchor_x_px == 190
+    assert suggestion.window.right_anchor_x_px == 180
+    assert suggestion.window.left_tube_end_y_top_px == 40.0
+    assert suggestion.window.right_tube_end_y_bottom_px == 95.0
 
 
 def test_metadata_round_trip_supports_legacy_and_new_shapes() -> None:
@@ -187,6 +278,53 @@ def test_metadata_round_trip_supports_legacy_and_new_shapes() -> None:
     loaded_enriched = MultiViewSessionMetadata(**dumped_enriched)
     assert loaded_enriched.alignment is not None
     assert loaded_enriched.alignment.right_time_shift_sec == 0.25
+
+
+def test_metadata_parses_legacy_alignment_suggestion_without_anchor_fields() -> None:
+    legacy_with_suggestion = {
+        "validated": True,
+        "frame_count_diff": 0,
+        "duration_diff": 0.0,
+        "latest_alignment_suggestion": {
+            "computed_at": "2026-01-01T00:00:00",
+            "time_shift": {
+                "right_time_shift_sec": 0.0,
+                "confidence": 0.0,
+                "method": "video_fallback",
+                "peak_correlation": 0.0,
+                "prominence": 0.0,
+                "auto_applied": False,
+                "warning": None,
+            },
+            "window": {
+                "sample_frames": [],
+                "left_right_margin_px": 0.0,
+                "right_right_margin_px": 0.0,
+                "right_margin_delta_px": 0.0,
+                "left_window_delta_px": 0,
+                "right_window_delta_px": 0,
+                "left_suggested_x_left": None,
+                "left_suggested_x_right": None,
+                "right_suggested_x_left": None,
+                "right_suggested_x_right": None,
+                "left_span_mm": None,
+                "right_span_mm": None,
+                "scale_mismatch_ratio": None,
+            },
+            "notes": [],
+        },
+    }
+
+    loaded = MultiViewSessionMetadata(**legacy_with_suggestion)
+    assert loaded.latest_alignment_suggestion is not None
+    assert loaded.latest_alignment_suggestion.left_analysis_id is None
+    assert loaded.latest_alignment_suggestion.right_analysis_id is None
+    assert loaded.latest_alignment_suggestion.window.left_anchor_x_px is None
+    assert loaded.latest_alignment_suggestion.window.right_anchor_x_px is None
+    assert loaded.latest_alignment_suggestion.window.target_offset_mm is None
+    assert loaded.latest_alignment_suggestion.window.target_window_width_mm is None
+    assert loaded.latest_alignment_suggestion.window.left_tube_end_x_left_px is None
+    assert loaded.latest_alignment_suggestion.window.right_tube_end_x_left_px is None
 
 
 def test_put_sources_rejects_incomplete_analyses(monkeypatch) -> None:

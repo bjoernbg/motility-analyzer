@@ -11,6 +11,7 @@ import numpy as np
 
 from .database import AnalysisDB
 from .edge_detection_silhouette import make_object_mask
+from .edge_detection_silhouette import detect_mask_edges_at_x
 from .models import (
     Analysis,
     MultiViewAlignmentSuggestion,
@@ -196,6 +197,59 @@ def _detect_tube_anchor_x(video_path: Path, frame_indices: list[int]) -> int | N
     return None
 
 
+def _detect_tube_vertical_bounds(
+    video_path: Path, frame_indices: list[int]
+) -> tuple[float, float] | None:
+    """Detect median tube top/bottom near the right edge, matching calibration semantics."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+
+    y_tops: list[float] = []
+    y_bottoms: list[float] = []
+    try:
+        for frame_idx in frame_indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_idx)))
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            if h <= 0 or w <= 0:
+                continue
+
+            mask, _ = make_object_mask(gray)
+            x_start = max(0, w - 15)
+            x_end = max(x_start + 1, w - 5)
+
+            frame_tops: list[float] = []
+            frame_bottoms: list[float] = []
+            for x in range(x_start, x_end):
+                y_top, y_bottom = detect_mask_edges_at_x(mask=mask, x=x)
+                if y_top is None or y_bottom is None:
+                    continue
+                if y_bottom <= y_top:
+                    continue
+                frame_tops.append(float(y_top))
+                frame_bottoms.append(float(y_bottom))
+
+            if frame_tops and frame_bottoms:
+                y_tops.append(float(np.median(np.asarray(frame_tops, dtype=np.float64))))
+                y_bottoms.append(
+                    float(np.median(np.asarray(frame_bottoms, dtype=np.float64)))
+                )
+    finally:
+        cap.release()
+
+    if not y_tops or not y_bottoms:
+        return None
+    return (
+        float(np.median(np.asarray(y_tops, dtype=np.float64))),
+        float(np.median(np.asarray(y_bottoms, dtype=np.float64))),
+    )
+
+
 def _compute_window_suggestion(
     *,
     db: AnalysisDB,
@@ -238,6 +292,10 @@ def _compute_window_suggestion(
 
     left_anchor_x = _detect_tube_anchor_x(left_video_path, left_sample_frames)
     right_anchor_x = _detect_tube_anchor_x(right_video_path, right_sample_frames)
+    left_tube_bounds = _detect_tube_vertical_bounds(left_video_path, left_sample_frames)
+    right_tube_bounds = _detect_tube_vertical_bounds(
+        right_video_path, right_sample_frames
+    )
     if left_anchor_x is None:
         left_anchor_x = max(0, left_metadata.width - 1)
     if right_anchor_x is None:
@@ -382,6 +440,32 @@ def _compute_window_suggestion(
         left_span_mm=left_window_width_mm,
         right_span_mm=right_window_width_mm,
         scale_mismatch_ratio=scale_ratio,
+        left_anchor_x_px=int(left_anchor_x),
+        right_anchor_x_px=int(right_anchor_x),
+        target_offset_mm=float(target_offset_mm),
+        target_window_width_mm=(
+            float(target_window_width_mm)
+            if target_window_width_mm is not None
+            else None
+        ),
+        left_tube_end_x_left_px=int(left_anchor_x),
+        left_tube_end_x_right_px=max(int(left_anchor_x) + 1, int(left_metadata.width)),
+        left_tube_end_y_top_px=(
+            float(left_tube_bounds[0]) if left_tube_bounds is not None else None
+        ),
+        left_tube_end_y_bottom_px=(
+            float(left_tube_bounds[1]) if left_tube_bounds is not None else None
+        ),
+        right_tube_end_x_left_px=int(right_anchor_x),
+        right_tube_end_x_right_px=max(
+            int(right_anchor_x) + 1, int(right_metadata.width)
+        ),
+        right_tube_end_y_top_px=(
+            float(right_tube_bounds[0]) if right_tube_bounds is not None else None
+        ),
+        right_tube_end_y_bottom_px=(
+            float(right_tube_bounds[1]) if right_tube_bounds is not None else None
+        ),
     )
     logger.info(
         (
@@ -756,6 +840,8 @@ def compute_alignment_suggestion(
         max_shift_sec=max_shift_sec,
     )
     result = MultiViewAlignmentSuggestion(
+        left_analysis_id=left_analysis.id,
+        right_analysis_id=right_analysis.id,
         time_shift=time_shift,
         window=window,
         notes=notes,
