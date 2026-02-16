@@ -528,6 +528,83 @@ export interface MultiViewSessionMetadata {
   validated: boolean;
   frame_count_diff: number;
   duration_diff: number;
+  alignment?: MultiViewAlignmentState | null;
+  latest_alignment_suggestion?: MultiViewAlignmentSuggestion | null;
+  realign_job?: MultiViewRealignJob | null;
+}
+
+export interface MultiViewAlignmentState {
+  right_time_shift_sec: number;
+  updated_at: string;
+  source: 'default' | 'auto' | 'manual';
+}
+
+export interface MultiViewTimeShiftSuggestion {
+  right_time_shift_sec: number;
+  confidence: number;
+  method: 'analysis' | 'video_fallback';
+  peak_correlation: number;
+  prominence: number;
+  auto_applied: boolean;
+  warning?: string | null;
+}
+
+export interface MultiViewWindowSuggestion {
+  sample_frames: number[];
+  left_right_margin_px: number;
+  right_right_margin_px: number;
+  right_margin_delta_px: number;
+  left_window_delta_px: number;
+  right_window_delta_px: number;
+  left_suggested_x_left?: number | null;
+  left_suggested_x_right?: number | null;
+  right_suggested_x_left?: number | null;
+  right_suggested_x_right?: number | null;
+  left_span_mm?: number | null;
+  right_span_mm?: number | null;
+  scale_mismatch_ratio?: number | null;
+}
+
+export interface MultiViewAlignmentSuggestion {
+  computed_at: string;
+  time_shift: MultiViewTimeShiftSuggestion;
+  window: MultiViewWindowSuggestion;
+  notes: string[];
+}
+
+export interface MultiViewRealignJob {
+  id: string;
+  status: 'running' | 'ready_to_commit' | 'committed' | 'failed';
+  left_analysis_id: string;
+  right_analysis_id: string;
+  created_at: string;
+  completed_at?: string | null;
+  error?: string | null;
+}
+
+export interface MultiViewAlignmentSuggestRequest {
+  sample_frames?: number;
+  max_shift_sec?: number;
+  apply_time_shift?: boolean;
+}
+
+export interface MultiViewAlignmentSuggestResponse {
+  session_id: string;
+  suggestion: MultiViewAlignmentSuggestion;
+  alignment: MultiViewAlignmentState;
+}
+
+export interface MultiViewAlignmentUpdateRequest {
+  right_time_shift_sec: number;
+}
+
+export interface MultiViewAutoReanalyzeRequest {
+  use_latest_suggestion?: boolean;
+}
+
+export interface MultiViewSessionSourcesUpdateRequest {
+  left_analysis_id: string;
+  right_analysis_id: string;
 }
 
 export interface MultiViewSessionCreate {
@@ -667,4 +744,56 @@ export async function deleteMultiViewSession(sessionId: string): Promise<void> {
   await fetchJson(`/api/multi-view/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   });
+}
+
+export async function suggestMultiViewAlignment(
+  sessionId: string,
+  body: MultiViewAlignmentSuggestRequest = {}
+): Promise<MultiViewAlignmentSuggestResponse> {
+  return fetchJson<MultiViewAlignmentSuggestResponse>(
+    `/api/multi-view/sessions/${encodeURIComponent(sessionId)}/alignment/suggest`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function updateMultiViewAlignment(
+  sessionId: string,
+  body: MultiViewAlignmentUpdateRequest
+): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>(
+    `/api/multi-view/sessions/${encodeURIComponent(sessionId)}/alignment`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function autoReanalyzeMultiViewSession(
+  sessionId: string,
+  body: MultiViewAutoReanalyzeRequest = {}
+): Promise<MultiViewRealignJob> {
+  return fetchJson<MultiViewRealignJob>(
+    `/api/multi-view/sessions/${encodeURIComponent(sessionId)}/alignment/auto-reanalyze`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export async function updateMultiViewSessionSources(
+  sessionId: string,
+  body: MultiViewSessionSourcesUpdateRequest
+): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>(
+    `/api/multi-view/sessions/${encodeURIComponent(sessionId)}/sources`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }
+  );
 }

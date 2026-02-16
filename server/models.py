@@ -367,6 +367,169 @@ class MultiViewSessionMetadata(BaseModel):
     duration_diff: float = Field(
         description="Absolute difference in duration (seconds)"
     )
+    alignment: Optional["MultiViewAlignmentState"] = Field(
+        default=None, description="Persisted alignment settings for the session"
+    )
+    latest_alignment_suggestion: Optional["MultiViewAlignmentSuggestion"] = Field(
+        default=None,
+        description="Latest computed alignment recommendation for this session",
+    )
+    realign_job: Optional["MultiViewRealignJob"] = Field(
+        default=None, description="State for automatic reanalysis job"
+    )
+
+
+class MultiViewTimeShiftSuggestion(BaseModel):
+    """Suggested right-side time shift between two analyses."""
+
+    right_time_shift_sec: float = Field(
+        description="Suggested right-side shift in seconds (right_time = synced + shift)"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Confidence score for the suggested shift"
+    )
+    method: Literal["analysis", "video_fallback"] = Field(
+        description="Signal source used for matching"
+    )
+    peak_correlation: float = Field(description="Peak normalized correlation value")
+    prominence: float = Field(description="Peak prominence versus neighboring lags")
+    auto_applied: bool = Field(
+        default=False, description="Whether the suggestion was auto-applied"
+    )
+    warning: Optional[str] = Field(
+        default=None, description="Warning message when confidence is low"
+    )
+
+
+class MultiViewWindowSuggestion(BaseModel):
+    """Suggested horizontal-window corrections for both sides."""
+
+    sample_frames: List[int] = Field(
+        default_factory=list, description="Frame indices used for window sampling"
+    )
+    left_right_margin_px: float = Field(
+        description="Median right margin in pixels for left analysis"
+    )
+    right_right_margin_px: float = Field(
+        description="Median right margin in pixels for right analysis"
+    )
+    right_margin_delta_px: float = Field(
+        description="Difference in right margin (left - right)"
+    )
+    left_window_delta_px: int = Field(
+        description="Suggested x-shift applied to left window"
+    )
+    right_window_delta_px: int = Field(
+        description="Suggested x-shift applied to right window"
+    )
+    left_suggested_x_left: Optional[int] = Field(
+        default=None, description="Suggested left analysis x_left"
+    )
+    left_suggested_x_right: Optional[int] = Field(
+        default=None, description="Suggested left analysis x_right"
+    )
+    right_suggested_x_left: Optional[int] = Field(
+        default=None, description="Suggested right analysis x_left"
+    )
+    right_suggested_x_right: Optional[int] = Field(
+        default=None, description="Suggested right analysis x_right"
+    )
+    left_span_mm: Optional[float] = Field(
+        default=None, description="Median sampled span in mm for left analysis"
+    )
+    right_span_mm: Optional[float] = Field(
+        default=None, description="Median sampled span in mm for right analysis"
+    )
+    scale_mismatch_ratio: Optional[float] = Field(
+        default=None,
+        description="Ratio right_span_mm/left_span_mm (1.0 means no scale mismatch)",
+    )
+
+
+class MultiViewAlignmentSuggestion(BaseModel):
+    """Combined spatial and temporal alignment suggestion."""
+
+    computed_at: datetime = Field(default_factory=datetime.now)
+    time_shift: MultiViewTimeShiftSuggestion
+    window: MultiViewWindowSuggestion
+    notes: List[str] = Field(default_factory=list)
+
+
+class MultiViewAlignmentState(BaseModel):
+    """Persisted alignment state for a multi-view session."""
+
+    right_time_shift_sec: float = Field(
+        default=0.0, description="Applied shift for right stream in seconds"
+    )
+    updated_at: datetime = Field(default_factory=datetime.now)
+    source: Literal["default", "auto", "manual"] = Field(default="default")
+
+
+class MultiViewRealignJob(BaseModel):
+    """Background reanalysis job status for automatic window correction."""
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    status: Literal["running", "ready_to_commit", "committed", "failed"] = Field(
+        default="running"
+    )
+    left_analysis_id: str = Field(description="Auto-generated left analysis ID")
+    right_analysis_id: str = Field(description="Auto-generated right analysis ID")
+    created_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = Field(default=None)
+    error: Optional[str] = Field(default=None)
+
+
+class MultiViewAlignmentSuggestRequest(BaseModel):
+    """Request model for generating alignment suggestions."""
+
+    sample_frames: int = Field(
+        default=7, ge=3, le=25, description="Number of sampled frames for alignment"
+    )
+    max_shift_sec: float = Field(
+        default=3.0, ge=0.1, le=10.0, description="Maximum absolute time lag to test"
+    )
+    apply_time_shift: bool = Field(
+        default=True, description="Whether to auto-apply high-confidence suggestion"
+    )
+
+
+class MultiViewAlignmentUpdate(BaseModel):
+    """Request model for manual alignment updates."""
+
+    right_time_shift_sec: float = Field(
+        description="Applied shift for right stream in seconds"
+    )
+
+
+class MultiViewAutoReanalyzeRequest(BaseModel):
+    """Request model for auto-reanalyzing both analyses."""
+
+    use_latest_suggestion: bool = Field(
+        default=True,
+        description="Use latest stored suggestion when choosing new window values",
+    )
+
+
+class MultiViewSessionSourcesUpdate(BaseModel):
+    """Request model for updating source analyses of a session."""
+
+    left_analysis_id: str = Field(description="New left analysis ID")
+    right_analysis_id: str = Field(description="New right analysis ID")
+
+    @validator("right_analysis_id")
+    def validate_distinct_analyses(cls, v, values):
+        left_analysis_id = values.get("left_analysis_id")
+        if left_analysis_id and left_analysis_id == v:
+            raise ValueError("Cannot relink a session to the same analysis on both sides")
+        return v
+
+
+class MultiViewAlignmentSuggestResponse(BaseModel):
+    """Response model for alignment suggestion endpoint."""
+
+    session_id: str
+    suggestion: MultiViewAlignmentSuggestion
+    alignment: MultiViewAlignmentState
 
 
 class MultiViewSessionCreate(BaseModel):
@@ -432,3 +595,6 @@ class MultiViewSession(BaseModel):
     metadata: Optional[MultiViewSessionMetadata] = Field(
         default=None, description="Validation metadata"
     )
+
+
+MultiViewSessionMetadata.update_forward_refs()

@@ -2,10 +2,12 @@
 import { computed, ref, watch } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import {
+  getHeatmapMeta,
   getAnalysisFrame,
   getFrameImageUrl,
   getVideoDisplaySettings,
   type FrameData,
+  type HeatmapMeta,
 } from '../lib/api';
 import HeatmapViewer from './HeatmapViewer.vue';
 import { Slider } from './ui/slider';
@@ -25,6 +27,10 @@ const rightFrameData = ref<FrameData | null>(null);
 
 const leftPixelToMmFactor = ref(11);
 const rightPixelToMmFactor = ref(11);
+const leftHeatmapMeta = ref<HeatmapMeta | null>(null);
+const rightHeatmapMeta = ref<HeatmapMeta | null>(null);
+
+let loadHeatmapMetaRequestId = 0;
 
 const leftImageRef = ref<HTMLImageElement | null>(null);
 const rightImageRef = ref<HTMLImageElement | null>(null);
@@ -66,17 +72,20 @@ const sliderStep = computed(() => {
   return 1 / fps;
 });
 
+const leftTimeSec = computed(() => store.syncedTimeSec);
+const rightTimeSec = computed(() => store.syncedTimeSec + store.rightTimeShiftSec);
+
 function clampFrame(frame: number, totalFrames: number): number {
   if (totalFrames <= 0) return 0;
   return Math.max(0, Math.min(frame, totalFrames - 1));
 }
 
 const leftFrame = computed(() => {
-  return clampFrame(Math.round(store.syncedTimeSec * leftFps.value), leftTotalFrames.value);
+  return clampFrame(Math.round(leftTimeSec.value * leftFps.value), leftTotalFrames.value);
 });
 
 const rightFrame = computed(() => {
-  return clampFrame(Math.round(store.syncedTimeSec * rightFps.value), rightTotalFrames.value);
+  return clampFrame(Math.round(rightTimeSec.value * rightFps.value), rightTotalFrames.value);
 });
 
 const leftFrameImageUrl = computed(() => {
@@ -195,6 +204,42 @@ watch(
   { deep: true }
 );
 
+watch(
+  () => [
+    store.leftAnalysis?.id,
+    store.rightAnalysis?.id,
+    leftPixelToMmFactor.value,
+    rightPixelToMmFactor.value,
+  ],
+  async () => {
+    if (!store.leftAnalysis?.id || !store.rightAnalysis?.id) {
+      leftHeatmapMeta.value = null;
+      rightHeatmapMeta.value = null;
+      return;
+    }
+
+    const requestId = ++loadHeatmapMetaRequestId;
+    try {
+      const [leftMeta, rightMeta] = await Promise.all([
+        getHeatmapMeta(store.leftAnalysis.id),
+        getHeatmapMeta(store.rightAnalysis.id),
+      ]);
+      if (requestId !== loadHeatmapMetaRequestId) {
+        return;
+      }
+      leftHeatmapMeta.value = leftMeta;
+      rightHeatmapMeta.value = rightMeta;
+    } catch {
+      if (requestId !== loadHeatmapMetaRequestId) {
+        return;
+      }
+      leftHeatmapMeta.value = null;
+      rightHeatmapMeta.value = null;
+    }
+  },
+  { immediate: true }
+);
+
 function setDragging(value: boolean) {
   isDragging.value = value;
 }
@@ -212,7 +257,12 @@ function handleHeatmapClick(side: 'left' | 'right', frame: number, pointIndex: n
     return;
   }
 
-  store.setSyncedTime(frame / fps);
+  const clickedTime = frame / fps;
+  if (side === 'right') {
+    store.setSyncedTime(clickedTime - store.rightTimeShiftSec);
+    return;
+  }
+  store.setSyncedTime(clickedTime);
 }
 
 function formatTime(seconds: number): string {
@@ -227,6 +277,99 @@ function getVideoDisplayName(video: { filename: string; display_name?: string | 
   const customName = video.display_name?.trim();
   return customName && customName.length > 0 ? customName : video.filename;
 }
+
+function getAnalysisDisplayName(analysis: { display_name?: string | null; created_at: string }): string {
+  const customName = analysis.display_name?.trim();
+  if (customName && customName.length > 0) {
+    return customName;
+  }
+  return `Analysis ${new Date(analysis.created_at).toLocaleString()}`;
+}
+
+function getDistributionLabel(rawMethod: unknown): string {
+  return rawMethod === 'center_line_projection' ? 'Center line' : 'X-axis even';
+}
+
+function getTrackingPointsLabel(params: Record<string, unknown>): string {
+  const raw = params.num_tracking_points;
+  const points = typeof raw === 'number' ? raw : 30;
+  return `${points} points`;
+}
+
+function getWindowLabel(params: Record<string, unknown>): string | null {
+  const left = params.horizontal_window_x_left;
+  const right = params.horizontal_window_x_right;
+  if (typeof left === 'number' && typeof right === 'number') {
+    return `Window ${left} ↔ ${right}`;
+  }
+  return null;
+}
+
+function toMm(valuePx: number, meta: HeatmapMeta | null, fallbackFactor: number): number {
+  const factor = meta?.display_settings?.pixel_to_mm_factor ?? fallbackFactor;
+  if (factor <= 0) {
+    return 0;
+  }
+  return valuePx / factor;
+}
+
+const leftScaleMinMm = computed(() => {
+  if (!leftHeatmapMeta.value) {
+    return null;
+  }
+  return toMm(leftHeatmapMeta.value.min, leftHeatmapMeta.value, leftPixelToMmFactor.value);
+});
+
+const rightScaleMinMm = computed(() => {
+  if (!rightHeatmapMeta.value) {
+    return null;
+  }
+  return toMm(
+    rightHeatmapMeta.value.min,
+    rightHeatmapMeta.value,
+    rightPixelToMmFactor.value
+  );
+});
+
+const leftScaleMaxMm = computed(() => {
+  if (!leftHeatmapMeta.value) {
+    return null;
+  }
+  return toMm(leftHeatmapMeta.value.max, leftHeatmapMeta.value, leftPixelToMmFactor.value);
+});
+
+const rightScaleMaxMm = computed(() => {
+  if (!rightHeatmapMeta.value) {
+    return null;
+  }
+  return toMm(
+    rightHeatmapMeta.value.max,
+    rightHeatmapMeta.value,
+    rightPixelToMmFactor.value
+  );
+});
+
+const combinedScaleMinMm = computed(() => {
+  if (leftScaleMinMm.value === null || rightScaleMinMm.value === null) {
+    return null;
+  }
+  return Math.min(leftScaleMinMm.value, rightScaleMinMm.value);
+});
+
+const combinedScaleMaxMm = computed(() => {
+  if (leftScaleMaxMm.value === null || rightScaleMaxMm.value === null) {
+    return null;
+  }
+  return Math.max(leftScaleMaxMm.value, rightScaleMaxMm.value);
+});
+
+const hasCombinedScale = computed(() => {
+  return (
+    combinedScaleMinMm.value !== null &&
+    combinedScaleMaxMm.value !== null &&
+    combinedScaleMaxMm.value > combinedScaleMinMm.value
+  );
+});
 
 function hasCustomVideoName(video: { filename: string; display_name?: string | null }): boolean {
   const customName = video.display_name?.trim();
@@ -409,11 +552,14 @@ function drawOverlay(
         <div class="time-values">
           <span>{{ formatTime(store.syncedTimeSec) }}</span>
           <span>/</span>
-          <span>{{ formatTime(store.maxSyncedTimeSec) }}</span>
+          <span>{{ formatTime(store.minSyncedTimeSec) }} - {{ formatTime(store.maxSyncedTimeSec) }}</span>
         </div>
+        <p v-if="hasCombinedScale" class="scale-summary">
+          Combined color scale: {{ combinedScaleMinMm?.toFixed(2) }} - {{ combinedScaleMaxMm?.toFixed(2) }} mm
+        </p>
         <Slider
           v-model="sliderValue"
-          :min="0"
+          :min="store.minSyncedTimeSec"
           :max="store.maxSyncedTimeSec"
           :step="sliderStep"
           class="sync-slider"
@@ -444,6 +590,22 @@ function drawOverlay(
             <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.leftVideo) }">
               {{ hasCustomVideoName(store.leftVideo) ? `File: ${store.leftVideo.filename}` : ' ' }}
             </p>
+            <div class="analysis-meta-card">
+              <p class="analysis-meta-title">{{ getAnalysisDisplayName(store.leftAnalysis) }}</p>
+              <p class="analysis-meta-subtitle">{{ new Date(store.leftAnalysis.created_at).toLocaleString() }}</p>
+              <div class="analysis-meta-tags">
+                <span class="analysis-meta-tag">{{ getTrackingPointsLabel(store.leftAnalysis.parameters) }}</span>
+                <span class="analysis-meta-tag">
+                  {{ getDistributionLabel(store.leftAnalysis.parameters.distribution_method) }}
+                </span>
+                <span v-if="getWindowLabel(store.leftAnalysis.parameters)" class="analysis-meta-tag">
+                  {{ getWindowLabel(store.leftAnalysis.parameters) }}
+                </span>
+                <span class="analysis-meta-tag">px/mm {{ leftPixelToMmFactor.toFixed(2) }}</span>
+                <span class="analysis-meta-tag">fps {{ leftFps.toFixed(2) }}</span>
+                <span class="analysis-meta-tag">frame {{ leftFrame }} / {{ leftTotalFrames }}</span>
+              </div>
+            </div>
           </div>
           <div class="video-frame-wrapper" :style="{ aspectRatio: `${leftAspectRatio}` }">
             <img
@@ -461,6 +623,8 @@ function drawOverlay(
             :key="`left-heatmap-${store.leftAnalysis.id}`"
             :analysis-id="store.leftAnalysis.id"
             :current-frame="leftFrame"
+            :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+            :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
             @frame-click="(frame, pointIndex) => handleHeatmapClick('left', frame, pointIndex)"
           />
         </section>
@@ -471,6 +635,22 @@ function drawOverlay(
             <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.rightVideo) }">
               {{ hasCustomVideoName(store.rightVideo) ? `File: ${store.rightVideo.filename}` : ' ' }}
             </p>
+            <div class="analysis-meta-card">
+              <p class="analysis-meta-title">{{ getAnalysisDisplayName(store.rightAnalysis) }}</p>
+              <p class="analysis-meta-subtitle">{{ new Date(store.rightAnalysis.created_at).toLocaleString() }}</p>
+              <div class="analysis-meta-tags">
+                <span class="analysis-meta-tag">{{ getTrackingPointsLabel(store.rightAnalysis.parameters) }}</span>
+                <span class="analysis-meta-tag">
+                  {{ getDistributionLabel(store.rightAnalysis.parameters.distribution_method) }}
+                </span>
+                <span v-if="getWindowLabel(store.rightAnalysis.parameters)" class="analysis-meta-tag">
+                  {{ getWindowLabel(store.rightAnalysis.parameters) }}
+                </span>
+                <span class="analysis-meta-tag">px/mm {{ rightPixelToMmFactor.toFixed(2) }}</span>
+                <span class="analysis-meta-tag">fps {{ rightFps.toFixed(2) }}</span>
+                <span class="analysis-meta-tag">frame {{ rightFrame }} / {{ rightTotalFrames }}</span>
+              </div>
+            </div>
           </div>
           <div class="video-frame-wrapper" :style="{ aspectRatio: `${rightAspectRatio}` }">
             <img
@@ -488,6 +668,8 @@ function drawOverlay(
             :key="`right-heatmap-${store.rightAnalysis.id}`"
             :analysis-id="store.rightAnalysis.id"
             :current-frame="rightFrame"
+            :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+            :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
             @frame-click="(frame, pointIndex) => handleHeatmapClick('right', frame, pointIndex)"
           />
         </section>
@@ -550,6 +732,12 @@ function drawOverlay(
   color: var(--text-secondary);
 }
 
+.scale-summary {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
 .sync-slider {
   width: 100%;
 }
@@ -581,6 +769,7 @@ function drawOverlay(
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
+  gap: 0.35rem;
 }
 
 .comparison-column h3 {
@@ -601,6 +790,42 @@ function drawOverlay(
 
 .video-original-name-hidden {
   visibility: hidden;
+}
+
+.analysis-meta-card {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  padding: 0.5rem;
+}
+
+.analysis-meta-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.analysis-meta-subtitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.analysis-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  margin-top: 0.35rem;
+}
+
+.analysis-meta-tag {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
 }
 
 .video-frame-wrapper {

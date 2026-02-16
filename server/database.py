@@ -1287,3 +1287,42 @@ class MultiViewSessionDB:
             return cursor.rowcount > 0
         finally:
             conn.close()
+
+    def update_session_metadata(self, session_id: str, metadata: Optional[dict]) -> bool:
+        """Update metadata JSON for a persisted session."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            metadata_json = (
+                json.dumps(metadata, default=str) if metadata is not None else None
+            )
+            cursor.execute(
+                "UPDATE multi_view_sessions SET metadata = ? WHERE id = ?",
+                (metadata_json, session_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def update_session_sources(
+        self, session_id: str, left_analysis_id: str, right_analysis_id: str
+    ) -> bool:
+        """Update source analyses for a persisted session."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                """
+                UPDATE multi_view_sessions
+                SET left_analysis_id = ?, right_analysis_id = ?
+                WHERE id = ?
+            """,
+                (left_analysis_id, right_analysis_id, session_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()

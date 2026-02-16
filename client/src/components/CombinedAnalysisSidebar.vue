@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
+import MultiViewAlignmentPanel from './MultiViewAlignmentPanel.vue';
 
 const store = useAnalysisStore();
 
@@ -22,6 +23,16 @@ const leftAnalysisName = computed(() => {
 
 const rightAnalysisName = computed(() => {
   return store.rightAnalysis ? getAnalysisName(store.rightAnalysis) : '';
+});
+
+const isCurrentSessionAutoAligned = computed(() => {
+  const session = store.currentMultiViewSession;
+  if (!session) {
+    return false;
+  }
+  const alignmentSource = session.metadata?.alignment?.source;
+  const realignStatus = session.metadata?.realign_job?.status;
+  return alignmentSource === 'auto' || realignStatus === 'committed';
 });
 
 function formatDate(value: string | undefined): string {
@@ -51,7 +62,10 @@ function getAnalysisName(analysis: { display_name?: string | null; created_at: s
       <h3>Analyses</h3>
 
       <div v-if="store.currentMultiViewSession" class="session-summary">
-        <p class="session-name">{{ store.currentMultiViewSession.name }}</p>
+        <p class="session-name">
+          {{ store.currentMultiViewSession.name }}
+          <span v-if="isCurrentSessionAutoAligned" class="auto-aligned-badge">Auto-aligned</span>
+        </p>
         <p class="session-date">Created {{ formatDate(store.currentMultiViewSession.created_at) }}</p>
       </div>
       <p v-else class="empty-text">No combined analysis selected.</p>
@@ -77,9 +91,9 @@ function getAnalysisName(analysis: { display_name?: string | null; created_at: s
 
     <section class="sidebar-section">
       <h3>Measurement Configuration</h3>
-      <p class="placeholder-title">Combined measurement tools are coming next.</p>
-      <p class="placeholder-copy">
-        This area is reserved for settings that operate across both source analyses.
+      <MultiViewAlignmentPanel v-if="store.currentMultiViewSession && hasLoadedSources" />
+      <p v-else class="placeholder-copy">
+        Select a valid combined analysis to configure alignment.
       </p>
     </section>
   </div>
@@ -123,6 +137,21 @@ h3 {
   margin: 0;
   font-weight: 600;
   font-size: 0.9rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.auto-aligned-badge {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
 }
 
 .session-date {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch, computed, onUnmounted } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import type { AnalysisParameters, Analysis } from '../lib/api';
+import type { AnalysisParameters, Analysis, MultiViewSession } from '../lib/api';
 import { Slider } from './ui/slider';
 import { debounce } from '../lib/utils';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
@@ -217,6 +217,37 @@ const matchingAnalysis = computed(() => {
   return store.findMatchingAnalysis(getCurrentParameters());
 });
 
+const relatedSessionsByAnalysisId = computed<Record<string, MultiViewSession[]>>(() => {
+  const index: Record<string, MultiViewSession[]> = {};
+  for (const session of store.multiViewSessions) {
+    const ids = [session.left_analysis_id, session.right_analysis_id];
+    for (const analysisId of ids) {
+      if (!index[analysisId]) {
+        index[analysisId] = [];
+      }
+      index[analysisId].push(session);
+    }
+  }
+
+  for (const analysisId of Object.keys(index)) {
+    const sessions = index[analysisId];
+    if (sessions) {
+      sessions.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    }
+  }
+
+  return index;
+});
+
+const currentAnalysisRelatedSessions = computed<MultiViewSession[]>(() => {
+  if (!store.currentAnalysis) {
+    return [];
+  }
+  return relatedSessionsByAnalysisId.value[store.currentAnalysis.id] ?? [];
+});
+
 // Helper function to compare parameters (same logic as store)
 function parametersMatch(params1: Record<string, unknown>, params2: AnalysisParameters): boolean {
   const tolerance = 0.001;
@@ -291,6 +322,24 @@ function getAnalysisPrimaryName(analysis: Analysis): string {
 function hasCustomAnalysisName(analysis: Analysis): boolean {
   const customName = analysis.display_name?.trim();
   return Boolean(customName && customName.length > 0);
+}
+
+function getCombinedSessionCount(analysisId: string): number {
+  return (relatedSessionsByAnalysisId.value[analysisId] ?? []).length;
+}
+
+function getCombinedBadgeLabel(analysisId: string): string {
+  const count = getCombinedSessionCount(analysisId);
+  return count > 1 ? `Combined x${count}` : 'Combined';
+}
+
+async function openCombinedSession(sessionId: string, event?: Event): Promise<void> {
+  event?.stopPropagation();
+  try {
+    await store.selectCombinedEntity(sessionId);
+  } catch (error) {
+    console.error('Failed to open combined analysis session:', error);
+  }
 }
 
 function startRenameAnalysis(analysis: Analysis, event: Event) {
@@ -417,7 +466,15 @@ async function confirmDeleteAnalysis() {
               </Button>
             </div>
             <template v-else>
-              <p class="analysis-name">{{ getAnalysisPrimaryName(analysis) }}</p>
+              <div class="analysis-name-row">
+                <p class="analysis-name">{{ getAnalysisPrimaryName(analysis) }}</p>
+                <span
+                  v-if="getCombinedSessionCount(analysis.id) > 0"
+                  class="combined-badge"
+                >
+                  {{ getCombinedBadgeLabel(analysis.id) }}
+                </span>
+              </div>
               <p class="text-sm" v-if="hasCustomAnalysisName(analysis)">{{ formatAnalysisDate(analysis.created_at) }}</p>
             </template>
             <p class="text-xs frame-count" v-if="totalFrames > 0">
@@ -473,6 +530,24 @@ async function confirmDeleteAnalysis() {
           class="matching-analysis-hint">
           <Icon name="mdi:check-circle" class="match-icon" />
           Current parameters match an available analysis
+        </div>
+        <div
+          v-if="store.currentAnalysis && currentAnalysisRelatedSessions.length > 0"
+          class="combined-analysis-hint"
+        >
+          <p class="combined-analysis-hint-title">Part of combined analysis</p>
+          <p class="combined-analysis-hint-copy">Open related combined sessions:</p>
+          <div class="combined-analysis-session-list">
+            <button
+              v-for="session in currentAnalysisRelatedSessions"
+              :key="session.id"
+              type="button"
+              class="combined-session-chip"
+              @click="openCombinedSession(session.id, $event)"
+            >
+              {{ session.name }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -876,6 +951,48 @@ h3:not(:first-child) {
   gap: 0.5rem;
 }
 
+.combined-analysis-hint {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+}
+
+.combined-analysis-hint-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.combined-analysis-hint-copy {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.combined-analysis-session-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.combined-session-chip {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  cursor: pointer;
+}
+
+.combined-session-chip:hover {
+  background: var(--bg-secondary);
+}
+
 .match-icon {
   color: var(--color-success-600);
 }
@@ -912,12 +1029,33 @@ h3:not(:first-child) {
   gap: 0.25rem;
 }
 
+.analysis-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-right: 5.5rem;
+}
+
 .analysis-name {
   font-size: 0.9rem;
   font-weight: 600;
   line-height: 1.2;
   margin: 0;
-  padding-right: 5.5rem;
+  padding-right: 0;
+}
+
+.combined-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
+  white-space: nowrap;
 }
 
 .analysis-rename-row {

@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
+from copy import deepcopy
+import logging
 
 import cv2
 import json
@@ -48,6 +50,13 @@ from .models import (
     MultiViewSessionCreate,
     MultiViewSessionNameUpdate,
     MultiViewSessionMetadata,
+    MultiViewAlignmentState,
+    MultiViewAlignmentSuggestRequest,
+    MultiViewAlignmentSuggestResponse,
+    MultiViewAlignmentUpdate,
+    MultiViewAutoReanalyzeRequest,
+    MultiViewSessionSourcesUpdate,
+    MultiViewRealignJob,
     MultiViewValidationRequest,
     MultiViewValidationResult,
     DisplayNameUpdate,
@@ -64,11 +73,16 @@ from .tasks import task_manager
 from .video_pool import VideoHandlePool
 from .contraction_detection import detect_contractions, calculate_physical_spacing
 from .multiview_validation import validate_multi_view_pair
+from .multiview_alignment import (
+    AUTO_APPLY_CONFIDENCE_THRESHOLD,
+    compute_alignment_suggestion,
+)
 
 # Initialize database on startup
 init_database()
 
 app = FastAPI(title="Video Analysis API", version="1.0.0")
+logger = logging.getLogger("uvicorn.error")
 
 # Initialize video handle pool for efficient frame extraction
 video_pool = VideoHandlePool(max_handles=5, idle_timeout=60.0)
@@ -1406,6 +1420,137 @@ async def clear_all_data_endpoint():
 multi_view_session_db = MultiViewSessionDB()
 
 
+def _parse_session_metadata(raw_metadata: dict | None) -> MultiViewSessionMetadata:
+    if raw_metadata is None or not isinstance(raw_metadata, dict):
+        return MultiViewSessionMetadata(
+            validated=True,
+            frame_count_diff=0,
+            duration_diff=0.0,
+        )
+
+    merged = {
+        "validated": raw_metadata.get("validated", True),
+        "frame_count_diff": raw_metadata.get("frame_count_diff", 0),
+        "duration_diff": raw_metadata.get("duration_diff", 0.0),
+        **raw_metadata,
+    }
+    return MultiViewSessionMetadata(**merged)
+
+
+def _session_row_to_model(row: dict) -> MultiViewSession:
+    return MultiViewSession(
+        id=row["id"],
+        name=row["name"],
+        left_analysis_id=row["left_analysis_id"],
+        right_analysis_id=row["right_analysis_id"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        metadata=_parse_session_metadata(row.get("metadata")),
+    )
+
+
+def _get_session_or_404(session_id: str) -> dict:
+    row = multi_view_session_db.get_session(session_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
+    return row
+
+
+def _persist_session_metadata(session_id: str, metadata: MultiViewSessionMetadata) -> None:
+    logger.info("Persisting session metadata: session_id=%s", session_id)
+    updated = multi_view_session_db.update_session_metadata(
+        session_id, metadata.model_dump(mode="json")
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Multi-view session not found")
+
+
+def _refresh_realign_job_status(session_row: dict) -> dict:
+    metadata = _parse_session_metadata(session_row.get("metadata"))
+    job = metadata.realign_job
+    if not job or job.status != "running":
+        return session_row
+
+    analysis_storage = AnalysisStorage()
+    left = analysis_storage.get_analysis(job.left_analysis_id)
+    right = analysis_storage.get_analysis(job.right_analysis_id)
+    if not left or not right:
+        logger.warning(
+            "Realign job failed (missing analyses): session_id=%s job_id=%s",
+            session_row["id"],
+            job.id,
+        )
+        metadata.realign_job = job.copy(
+            update={
+                "status": "failed",
+                "completed_at": datetime.now(),
+                "error": "Auto-reanalysis outputs are missing.",
+            }
+        )
+        _persist_session_metadata(session_row["id"], metadata)
+        return _get_session_or_404(session_row["id"])
+
+    left_status = left.status
+    right_status = right.status
+    if left_status == "completed" and right_status == "completed":
+        logger.info(
+            "Realign job ready_to_commit: session_id=%s job_id=%s",
+            session_row["id"],
+            job.id,
+        )
+        metadata.realign_job = job.copy(
+            update={
+                "status": "ready_to_commit",
+                "completed_at": datetime.now(),
+                "error": None,
+            }
+        )
+        _persist_session_metadata(session_row["id"], metadata)
+        return _get_session_or_404(session_row["id"])
+
+    terminal_failures = {"failed", "cancelled"}
+    if left_status in terminal_failures or right_status in terminal_failures:
+        logger.warning(
+            "Realign job failed: session_id=%s job_id=%s left=%s right=%s",
+            session_row["id"],
+            job.id,
+            left_status,
+            right_status,
+        )
+        metadata.realign_job = job.copy(
+            update={
+                "status": "failed",
+                "completed_at": datetime.now(),
+                "error": f"Reanalysis failed (left={left_status}, right={right_status}).",
+            }
+        )
+        _persist_session_metadata(session_row["id"], metadata)
+        return _get_session_or_404(session_row["id"])
+
+    return session_row
+
+
+def _build_auto_realign_analysis_name(side: str) -> str:
+    timestamp = datetime.now().strftime("%H:%M")
+    return f"AutoAlign {side} · {timestamp}"
+
+
+def _start_background_analysis_for_video(
+    video_id: str, parameters_dict: dict, display_name: str | None = None
+) -> Analysis:
+    parameters = AnalysisParameters(**parameters_dict)
+    analysis = Analysis(
+        video_id=video_id,
+        display_name=display_name,
+        parameters=parameters.model_dump(),
+    )
+    task_manager.register_analysis(analysis)
+    task = asyncio.create_task(
+        task_manager.start_analysis(analysis.id, video_id, parameters)
+    )
+    task_manager.tasks[analysis.id] = task
+    return analysis
+
+
 @app.post("/api/multi-view/validate", response_model=MultiViewValidationResult)
 async def validate_multi_view_pair_endpoint(body: MultiViewValidationRequest):
     """Validate whether two analyses can be used in one multi-view session."""
@@ -1484,38 +1629,13 @@ async def create_multi_view_session(body: MultiViewSessionCreate):
 async def list_multi_view_sessions(limit: int = 100, offset: int = 0):
     """List persisted multi-view sessions."""
     results = multi_view_session_db.list_sessions(limit, offset)
-    return [
-        MultiViewSession(
-            id=r["id"],
-            name=r["name"],
-            left_analysis_id=r["left_analysis_id"],
-            right_analysis_id=r["right_analysis_id"],
-            created_at=datetime.fromisoformat(r["created_at"]),
-            metadata=MultiViewSessionMetadata(**r["metadata"])
-            if r["metadata"]
-            else None,
-        )
-        for r in results
-    ]
+    return [_session_row_to_model(row) for row in results]
 
 
 @app.get("/api/multi-view/sessions/{session_id}", response_model=MultiViewSession)
 async def get_multi_view_session(session_id: str):
     """Get one persisted multi-view session."""
-    result = multi_view_session_db.get_session(session_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Multi-view session not found")
-
-    return MultiViewSession(
-        id=result["id"],
-        name=result["name"],
-        left_analysis_id=result["left_analysis_id"],
-        right_analysis_id=result["right_analysis_id"],
-        created_at=datetime.fromisoformat(result["created_at"]),
-        metadata=MultiViewSessionMetadata(**result["metadata"])
-        if result["metadata"]
-        else None,
-    )
+    return _session_row_to_model(_refresh_realign_job_status(_get_session_or_404(session_id)))
 
 
 @app.put("/api/multi-view/sessions/{session_id}/name", response_model=MultiViewSession)
@@ -1527,36 +1647,311 @@ async def update_multi_view_session_name(
     if not normalized_name:
         raise HTTPException(status_code=422, detail="Session name cannot be empty")
 
-    result = multi_view_session_db.get_session(session_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Multi-view session not found")
+    _get_session_or_404(session_id)
 
     updated = multi_view_session_db.update_session_name(session_id, normalized_name)
     if not updated:
         raise HTTPException(status_code=404, detail="Multi-view session not found")
 
-    result = multi_view_session_db.get_session(session_id)
-    if not result:
+    return _session_row_to_model(_get_session_or_404(session_id))
+
+
+@app.post(
+    "/api/multi-view/sessions/{session_id}/alignment/suggest",
+    response_model=MultiViewAlignmentSuggestResponse,
+)
+async def suggest_multi_view_alignment(
+    session_id: str, body: MultiViewAlignmentSuggestRequest
+):
+    """Generate alignment suggestions from analysis and video signals."""
+    logger.info(
+        "Alignment suggest requested: session_id=%s sample_frames=%s max_shift_sec=%.2f apply_time_shift=%s",
+        session_id,
+        body.sample_frames,
+        body.max_shift_sec,
+        body.apply_time_shift,
+    )
+    session_row = _get_session_or_404(session_id)
+    session = _session_row_to_model(session_row)
+
+    analysis_storage = AnalysisStorage()
+    left_analysis = analysis_storage.get_analysis(session.left_analysis_id)
+    right_analysis = analysis_storage.get_analysis(session.right_analysis_id)
+    if not left_analysis or not right_analysis:
+        raise HTTPException(status_code=404, detail="One or both analyses not found")
+
+    video_storage = VideoStorage()
+    left_video = video_storage.get_video(left_analysis.video_id)
+    right_video = video_storage.get_video(right_analysis.video_id)
+    if not left_video or not right_video:
+        raise HTTPException(status_code=404, detail="One or both videos not found")
+
+    left_video_path = Path(left_video.file_path)
+    right_video_path = Path(right_video.file_path)
+    left_metadata = get_video_metadata(left_video_path)
+    right_metadata = get_video_metadata(right_video_path)
+
+    left_settings = _load_video_display_settings(left_video_path)
+    right_settings = _load_video_display_settings(right_video_path)
+
+    db = ResultsStorage().db
+    suggestion = compute_alignment_suggestion(
+        db=db,
+        left_analysis=left_analysis,
+        right_analysis=right_analysis,
+        left_metadata=left_metadata,
+        right_metadata=right_metadata,
+        left_pixel_to_mm_factor=left_settings.pixel_to_mm_factor,
+        right_pixel_to_mm_factor=right_settings.pixel_to_mm_factor,
+        left_video_path=left_video_path,
+        right_video_path=right_video_path,
+        sample_frames=body.sample_frames,
+        max_shift_sec=body.max_shift_sec,
+    )
+
+    metadata = session.metadata or MultiViewSessionMetadata(
+        validated=True,
+        frame_count_diff=0,
+        duration_diff=0.0,
+    )
+    existing_alignment = metadata.alignment or MultiViewAlignmentState()
+
+    auto_applied = (
+        body.apply_time_shift
+        and suggestion.time_shift.confidence >= AUTO_APPLY_CONFIDENCE_THRESHOLD
+    )
+    logger.info(
+        "Alignment suggest result: session_id=%s shift=%.4f confidence=%.3f method=%s auto_applied=%s",
+        session_id,
+        suggestion.time_shift.right_time_shift_sec,
+        suggestion.time_shift.confidence,
+        suggestion.time_shift.method,
+        auto_applied,
+    )
+
+    if auto_applied:
+        existing_alignment = MultiViewAlignmentState(
+            right_time_shift_sec=suggestion.time_shift.right_time_shift_sec,
+            source="auto",
+        )
+
+    warning = suggestion.time_shift.warning
+    if body.apply_time_shift and not auto_applied and warning is None:
+        warning = "Low-confidence shift suggestion. Not auto-applied."
+
+    suggestion = suggestion.copy(
+        update={
+            "time_shift": suggestion.time_shift.copy(
+                update={
+                    "auto_applied": auto_applied,
+                    "warning": warning,
+                }
+            )
+        }
+    )
+
+    metadata.alignment = existing_alignment
+    metadata.latest_alignment_suggestion = suggestion
+    _persist_session_metadata(session_id, metadata)
+
+    return MultiViewAlignmentSuggestResponse(
+        session_id=session_id,
+        suggestion=suggestion,
+        alignment=existing_alignment,
+    )
+
+
+@app.put(
+    "/api/multi-view/sessions/{session_id}/alignment",
+    response_model=MultiViewSession,
+)
+async def update_multi_view_alignment(
+    session_id: str, body: MultiViewAlignmentUpdate
+):
+    """Manually update persisted alignment settings."""
+    logger.info(
+        "Manual alignment update: session_id=%s right_time_shift_sec=%.4f",
+        session_id,
+        body.right_time_shift_sec,
+    )
+    session = _session_row_to_model(_get_session_or_404(session_id))
+    metadata = session.metadata or MultiViewSessionMetadata(
+        validated=True,
+        frame_count_diff=0,
+        duration_diff=0.0,
+    )
+
+    metadata.alignment = MultiViewAlignmentState(
+        right_time_shift_sec=body.right_time_shift_sec,
+        source="manual",
+    )
+    _persist_session_metadata(session_id, metadata)
+    return _session_row_to_model(_get_session_or_404(session_id))
+
+
+@app.post(
+    "/api/multi-view/sessions/{session_id}/alignment/auto-reanalyze",
+    response_model=MultiViewRealignJob,
+)
+async def auto_reanalyze_multi_view_alignment(
+    session_id: str,
+    body: MultiViewAutoReanalyzeRequest = Body(
+        default=MultiViewAutoReanalyzeRequest()
+    ),
+):
+    """Start auto-reanalysis for both sides using suggested window adjustments."""
+    logger.info("Auto-reanalyze requested: session_id=%s", session_id)
+    session = _session_row_to_model(_get_session_or_404(session_id))
+
+    analysis_storage = AnalysisStorage()
+    left_analysis = analysis_storage.get_analysis(session.left_analysis_id)
+    right_analysis = analysis_storage.get_analysis(session.right_analysis_id)
+    if not left_analysis or not right_analysis:
+        raise HTTPException(status_code=404, detail="One or both analyses not found")
+
+    if left_analysis.status != "completed" or right_analysis.status != "completed":
+        raise HTTPException(
+            status_code=400, detail="Both analyses must be completed before reanalysis"
+        )
+
+    metadata = session.metadata or MultiViewSessionMetadata(
+        validated=True,
+        frame_count_diff=0,
+        duration_diff=0.0,
+    )
+    suggestion = metadata.latest_alignment_suggestion
+    if body.use_latest_suggestion and not suggestion:
+        raise HTTPException(
+            status_code=400,
+            detail="No alignment suggestion available. Run alignment suggestion first.",
+        )
+
+    left_params = deepcopy(left_analysis.parameters)
+    right_params = deepcopy(right_analysis.parameters)
+
+    if suggestion:
+        if suggestion.window.left_suggested_x_left is not None:
+            left_params["horizontal_window_x_left"] = suggestion.window.left_suggested_x_left
+        if suggestion.window.left_suggested_x_right is not None:
+            left_params["horizontal_window_x_right"] = suggestion.window.left_suggested_x_right
+        if suggestion.window.right_suggested_x_left is not None:
+            right_params["horizontal_window_x_left"] = suggestion.window.right_suggested_x_left
+        if suggestion.window.right_suggested_x_right is not None:
+            right_params["horizontal_window_x_right"] = suggestion.window.right_suggested_x_right
+
+    left_display_name = _build_auto_realign_analysis_name("L")
+    right_display_name = _build_auto_realign_analysis_name("R")
+
+    left_new_analysis = _start_background_analysis_for_video(
+        left_analysis.video_id, left_params, display_name=left_display_name
+    )
+    right_new_analysis = _start_background_analysis_for_video(
+        right_analysis.video_id, right_params, display_name=right_display_name
+    )
+
+    realign_job = MultiViewRealignJob(
+        status="running",
+        left_analysis_id=left_new_analysis.id,
+        right_analysis_id=right_new_analysis.id,
+    )
+    metadata.realign_job = realign_job
+    _persist_session_metadata(session_id, metadata)
+    logger.info(
+        "Auto-reanalyze started: session_id=%s left_new=%s right_new=%s left_name=%s right_name=%s",
+        session_id,
+        left_new_analysis.id,
+        right_new_analysis.id,
+        left_display_name,
+        right_display_name,
+    )
+    return realign_job
+
+
+@app.put(
+    "/api/multi-view/sessions/{session_id}/sources",
+    response_model=MultiViewSession,
+)
+async def update_multi_view_session_sources(
+    session_id: str, body: MultiViewSessionSourcesUpdate
+):
+    """Relink a session to different source analyses after compatibility checks."""
+    logger.info(
+        "Session source relink requested: session_id=%s left=%s right=%s",
+        session_id,
+        body.left_analysis_id,
+        body.right_analysis_id,
+    )
+    _get_session_or_404(session_id)
+
+    analysis_storage = AnalysisStorage()
+    left_analysis = analysis_storage.get_analysis(body.left_analysis_id)
+    right_analysis = analysis_storage.get_analysis(body.right_analysis_id)
+    if not left_analysis or not right_analysis:
+        raise HTTPException(status_code=404, detail="One or both analyses not found")
+
+    if left_analysis.status != "completed" or right_analysis.status != "completed":
+        raise HTTPException(status_code=400, detail="Both analyses must be completed")
+
+    video_storage = VideoStorage()
+    left_video = video_storage.get_video(left_analysis.video_id)
+    right_video = video_storage.get_video(right_analysis.video_id)
+    if not left_video or not right_video:
+        raise HTTPException(status_code=404, detail="One or both videos not found")
+
+    validation = validate_multi_view_pair(
+        left_analysis,
+        right_analysis,
+        get_video_metadata(Path(left_video.file_path)),
+        get_video_metadata(Path(right_video.file_path)),
+    )
+    if not validation.compatible:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Incompatible analyses: {', '.join(validation.errors)}",
+        )
+
+    updated_sources = multi_view_session_db.update_session_sources(
+        session_id, body.left_analysis_id, body.right_analysis_id
+    )
+    if not updated_sources:
         raise HTTPException(status_code=404, detail="Multi-view session not found")
 
-    return MultiViewSession(
-        id=result["id"],
-        name=result["name"],
-        left_analysis_id=result["left_analysis_id"],
-        right_analysis_id=result["right_analysis_id"],
-        created_at=datetime.fromisoformat(result["created_at"]),
-        metadata=MultiViewSessionMetadata(**result["metadata"])
-        if result["metadata"]
-        else None,
+    updated_session = _session_row_to_model(_get_session_or_404(session_id))
+    metadata = updated_session.metadata or MultiViewSessionMetadata(
+        validated=True,
+        frame_count_diff=0,
+        duration_diff=0.0,
     )
+    if metadata.realign_job:
+        if (
+            metadata.realign_job.left_analysis_id == body.left_analysis_id
+            and metadata.realign_job.right_analysis_id == body.right_analysis_id
+        ):
+            metadata.realign_job = metadata.realign_job.copy(
+                update={
+                    "status": "committed",
+                    "completed_at": datetime.now(),
+                    "error": None,
+                }
+            )
+        else:
+            metadata.realign_job = metadata.realign_job.copy(
+                update={
+                    "status": "failed",
+                    "completed_at": datetime.now(),
+                    "error": "Relinked to analyses that do not match active realign job.",
+                }
+            )
+        _persist_session_metadata(session_id, metadata)
+
+    logger.info("Session source relink successful: session_id=%s", session_id)
+    return _session_row_to_model(_get_session_or_404(session_id))
 
 
 @app.delete("/api/multi-view/sessions/{session_id}")
 async def delete_multi_view_session(session_id: str):
     """Delete a persisted multi-view session."""
-    result = multi_view_session_db.get_session(session_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Multi-view session not found")
+    _get_session_or_404(session_id)
 
     multi_view_session_db.delete_session(session_id)
     return {"message": "Multi-view session deleted successfully"}

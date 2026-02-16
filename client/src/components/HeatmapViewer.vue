@@ -47,6 +47,8 @@ const props = defineProps<{
   currentFrame?: number | null;
   compact?: boolean;
   showContractionOverlays?: boolean;
+  heatmapMinMmOverride?: number | null;
+  heatmapMaxMmOverride?: number | null;
 }>();
 
 const store = useAnalysisStore();
@@ -81,8 +83,18 @@ const mousePos = ref<{ x: number; y: number } | null>(null);
 
 // Computed display settings from meta or fallback to constants
 const pixelToMmFactor = computed(() => meta.value?.display_settings?.pixel_to_mm_factor ?? PIXEL_TO_MM_FACTOR);
-const heatmapMinMm = computed(() => meta.value?.display_settings?.heatmap_min_mm ?? HEATMAP_MIN_MM);
-const heatmapMaxMm = computed(() => meta.value?.display_settings?.heatmap_max_mm ?? HEATMAP_MAX_MM);
+const heatmapMinMm = computed(
+  () =>
+    props.heatmapMinMmOverride ??
+    meta.value?.display_settings?.heatmap_min_mm ??
+    HEATMAP_MIN_MM
+);
+const heatmapMaxMm = computed(
+  () =>
+    props.heatmapMaxMmOverride ??
+    meta.value?.display_settings?.heatmap_max_mm ??
+    HEATMAP_MAX_MM
+);
 
 // Live refresh during processing
 const refreshTimer = ref<ReturnType<typeof setInterval> | null>(null);
@@ -133,6 +145,15 @@ watch([meta, data, scale, offsetX, () => props.currentFrame], () => {
     renderAxes();
   }
 });
+
+watch(
+  () => [props.heatmapMinMmOverride, props.heatmapMaxMmOverride],
+  () => {
+    if (meta.value && data.value) {
+      renderHeatmap();
+    }
+  }
+);
 
 // Recalculate initial scale when container resizes
 watch(() => container.value?.clientWidth, () => {
@@ -405,7 +426,7 @@ function renderHeatmap() {
 
   // Fixed scale: Red = heatmapMinMm, Violet = heatmapMaxMm
   // Convert pixel distances to mm and map to fixed scale
-  const mmRange = heatmapMaxMm.value - heatmapMinMm.value;
+  const mmRange = Math.max(1e-9, heatmapMaxMm.value - heatmapMinMm.value);
 
   // Note: We'll treat x = frame, y = index
   // Flatten index = x * height + y (because values are [frame][index])

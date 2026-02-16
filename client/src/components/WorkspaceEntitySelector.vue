@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import type { Video } from '../lib/api';
+import type { Video, MultiViewSession } from '../lib/api';
 import { videoNeedsReencoding } from '../lib/api';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Icon } from './ui/icon';
@@ -39,6 +39,12 @@ onMounted(async () => {
 function getVideoPrimaryName(video: Video): string {
   const customName = video.display_name?.trim();
   return customName && customName.length > 0 ? customName : video.filename;
+}
+
+function isSessionAutoAligned(session: MultiViewSession): boolean {
+  const alignmentSource = session.metadata?.alignment?.source;
+  const realignStatus = session.metadata?.realign_job?.status;
+  return alignmentSource === 'auto' || realignStatus === 'committed';
 }
 
 function hasCustomVideoName(video: Video): boolean {
@@ -439,7 +445,10 @@ async function deleteSessionFromMenu(sessionId: string) {
         >
           <div class="entity-item-header">
             <button class="entity-main" :disabled="editingSessionId === session.id" @click="selectSession(session.id)">
-              <p class="entity-title">{{ session.name }}</p>
+              <p class="entity-title">
+                {{ session.name }}
+                <span v-if="isSessionAutoAligned(session)" class="auto-aligned-badge">Auto-aligned</span>
+              </p>
               <p class="entity-meta">{{ new Date(session.created_at).toLocaleString() }}</p>
             </button>
 
@@ -597,6 +606,21 @@ async function deleteSessionFromMenu(sessionId: string) {
   margin: 0;
   font-size: 0.86rem;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.auto-aligned-badge {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
 }
 
 .entity-subtitle,

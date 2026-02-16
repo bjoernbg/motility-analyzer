@@ -12,6 +12,10 @@ import type {
   ReencodeStatistics,
   MultiViewSession,
   MultiViewValidationResult,
+  MultiViewAlignmentSuggestResponse,
+  MultiViewAlignmentSuggestion,
+  MultiViewAlignmentState,
+  MultiViewRealignJob,
   DeleteVideoResult,
 } from '../lib/api';
 import { useHeatmapCache } from '../composables/useHeatmapCache';
@@ -46,6 +50,10 @@ import {
   updateVideoDisplayName,
   getVideoDisplaySettings,
   updateVideoDisplaySettings,
+  suggestMultiViewAlignment,
+  updateMultiViewAlignment,
+  autoReanalyzeMultiViewSession,
+  updateMultiViewSessionSources,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
 
@@ -94,8 +102,17 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const rightAnalysis = ref<Analysis | null>(null);
   const leftVideo = ref<Video | null>(null);
   const rightVideo = ref<Video | null>(null);
+  const rightTimeShiftSec = ref(0);
   const syncedTimeSec = ref(0);
+  const minSyncedTimeSec = ref(0);
   const maxSyncedTimeSec = ref(0);
+  const latestAlignmentSuggestion = ref<MultiViewAlignmentSuggestion | null>(null);
+  const currentAlignmentState = ref<MultiViewAlignmentState | null>(null);
+  const realignJob = ref<MultiViewRealignJob | null>(null);
+  const isComputingAlignment = ref(false);
+  const isStartingAutoReanalyze = ref(false);
+  const isUpdatingAlignment = ref(false);
+  const realignPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
   // Simple LRU cache for frame data (max 20 frames)
   interface FrameCacheEntry {
@@ -212,14 +229,47 @@ export const useAnalysisStore = defineStore('analysis', () => {
     stopPolling();
   }
 
+  function stopRealignPolling(): void {
+    if (realignPollingTimer.value) {
+      clearInterval(realignPollingTimer.value);
+      realignPollingTimer.value = null;
+    }
+  }
+
+  function recomputeSyncedRange(): void {
+    const leftDuration = leftVideo.value?.metadata?.duration ?? 0;
+    const rightDuration = rightVideo.value?.metadata?.duration ?? 0;
+    const shift = rightTimeShiftSec.value;
+
+    const nextMin = Math.max(0, -shift);
+    const nextMax = Math.min(leftDuration, rightDuration - shift);
+
+    minSyncedTimeSec.value = Number.isFinite(nextMin) ? Math.max(0, nextMin) : 0;
+    maxSyncedTimeSec.value = Number.isFinite(nextMax)
+      ? Math.max(minSyncedTimeSec.value, nextMax)
+      : minSyncedTimeSec.value;
+
+    if (syncedTimeSec.value < minSyncedTimeSec.value) {
+      syncedTimeSec.value = minSyncedTimeSec.value;
+    } else if (syncedTimeSec.value > maxSyncedTimeSec.value) {
+      syncedTimeSec.value = maxSyncedTimeSec.value;
+    }
+  }
+
   function clearCombinedSelection(): void {
+    stopRealignPolling();
     currentMultiViewSession.value = null;
     leftAnalysis.value = null;
     rightAnalysis.value = null;
     leftVideo.value = null;
     rightVideo.value = null;
+    rightTimeShiftSec.value = 0;
     syncedTimeSec.value = 0;
+    minSyncedTimeSec.value = 0;
     maxSyncedTimeSec.value = 0;
+    latestAlignmentSuggestion.value = null;
+    currentAlignmentState.value = null;
+    realignJob.value = null;
   }
 
   function setActiveEntity(type: WorkspaceEntityType, id: string | null): void {
@@ -1135,12 +1185,155 @@ export const useAnalysisStore = defineStore('analysis', () => {
     return validateMultiViewPair(leftAnalysisId, rightAnalysisId);
   }
 
+  function syncCurrentSessionMetadata(session: MultiViewSession): void {
+    currentAlignmentState.value = session.metadata?.alignment ?? null;
+    latestAlignmentSuggestion.value = session.metadata?.latest_alignment_suggestion ?? null;
+    realignJob.value = session.metadata?.realign_job ?? null;
+    rightTimeShiftSec.value = session.metadata?.alignment?.right_time_shift_sec ?? 0;
+    if (leftVideo.value && rightVideo.value) {
+      recomputeSyncedRange();
+    }
+  }
+
+  async function refreshMultiViewSessionMetadata(sessionId: string): Promise<MultiViewSession> {
+    const refreshed = await getMultiViewSession(sessionId);
+    applyMultiViewSessionUpdate(refreshed);
+    if (currentMultiViewSession.value?.id === sessionId) {
+      currentMultiViewSession.value = refreshed;
+      syncCurrentSessionMetadata(refreshed);
+    }
+    return refreshed;
+  }
+
+  let isRealignPollingRequestInFlight = false;
+  function startRealignPolling(sessionId: string): void {
+    stopRealignPolling();
+
+    const poll = async () => {
+      if (isRealignPollingRequestInFlight) {
+        return;
+      }
+      if (currentMultiViewSession.value?.id !== sessionId) {
+        stopRealignPolling();
+        return;
+      }
+
+      isRealignPollingRequestInFlight = true;
+      try {
+        const session = await refreshMultiViewSessionMetadata(sessionId);
+        const job = session.metadata?.realign_job;
+
+        if (!job || job.status === 'failed' || job.status === 'committed') {
+          stopRealignPolling();
+          return;
+        }
+
+        if (job.status === 'ready_to_commit') {
+          await updateMultiViewSessionSources(sessionId, {
+            left_analysis_id: job.left_analysis_id,
+            right_analysis_id: job.right_analysis_id,
+          });
+          stopRealignPolling();
+          await selectMultiViewSession(sessionId);
+          return;
+        }
+      } catch (err) {
+        console.error('Realign polling failed:', err);
+      } finally {
+        isRealignPollingRequestInFlight = false;
+      }
+    };
+
+    void poll();
+    realignPollingTimer.value = setInterval(() => {
+      void poll();
+    }, 5000);
+  }
+
   async function loadMultiViewSessions() {
     try {
       multiViewSessions.value = await listMultiViewSessions();
     } catch (err) {
       console.error('Failed to load multi-view sessions:', err);
       error.value = err instanceof Error ? err.message : 'Failed to load multi-view sessions';
+    }
+  }
+
+  async function computeMultiViewAlignment(
+    options?: { sampleFrames?: number; maxShiftSec?: number; applyTimeShift?: boolean }
+  ): Promise<MultiViewAlignmentSuggestResponse> {
+    if (!currentMultiViewSession.value) {
+      throw new Error('No combined analysis selected');
+    }
+
+    try {
+      isComputingAlignment.value = true;
+      error.value = null;
+      const response = await suggestMultiViewAlignment(currentMultiViewSession.value.id, {
+        sample_frames: options?.sampleFrames,
+        max_shift_sec: options?.maxShiftSec,
+        apply_time_shift: options?.applyTimeShift ?? true,
+      });
+
+      latestAlignmentSuggestion.value = response.suggestion;
+      currentAlignmentState.value = response.alignment;
+      rightTimeShiftSec.value = response.alignment.right_time_shift_sec;
+      recomputeSyncedRange();
+      await refreshMultiViewSessionMetadata(currentMultiViewSession.value.id);
+      return response;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to compute alignment';
+      throw err;
+    } finally {
+      isComputingAlignment.value = false;
+    }
+  }
+
+  async function setMultiViewTimeShift(rightShiftSec: number): Promise<MultiViewSession> {
+    if (!currentMultiViewSession.value) {
+      throw new Error('No combined analysis selected');
+    }
+
+    try {
+      isUpdatingAlignment.value = true;
+      error.value = null;
+      const updated = await updateMultiViewAlignment(currentMultiViewSession.value.id, {
+        right_time_shift_sec: rightShiftSec,
+      });
+      applyMultiViewSessionUpdate(updated);
+      if (currentMultiViewSession.value?.id === updated.id) {
+        currentMultiViewSession.value = updated;
+        syncCurrentSessionMetadata(updated);
+      }
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update alignment';
+      throw err;
+    } finally {
+      isUpdatingAlignment.value = false;
+    }
+  }
+
+  async function startAutoReanalyzeFromAlignment(): Promise<MultiViewRealignJob> {
+    if (!currentMultiViewSession.value) {
+      throw new Error('No combined analysis selected');
+    }
+
+    try {
+      isStartingAutoReanalyze.value = true;
+      error.value = null;
+      const job = await autoReanalyzeMultiViewSession(currentMultiViewSession.value.id, {
+        use_latest_suggestion: true,
+      });
+      realignJob.value = job;
+      await refreshMultiViewSessionMetadata(currentMultiViewSession.value.id);
+      startRealignPolling(currentMultiViewSession.value.id);
+      return job;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to start auto-reanalysis';
+      throw err;
+    } finally {
+      isStartingAutoReanalyze.value = false;
     }
   }
 
@@ -1161,10 +1354,12 @@ export const useAnalysisStore = defineStore('analysis', () => {
       isLoading.value = true;
       error.value = null;
       stopPolling();
+      stopRealignPolling();
 
       const session = await getMultiViewSession(sessionId);
       currentMultiViewSession.value = session;
       setActiveEntity('combined', session.id);
+      syncCurrentSessionMetadata(session);
 
       try {
         const [left, right] = await Promise.all([
@@ -1208,20 +1403,26 @@ export const useAnalysisStore = defineStore('analysis', () => {
           metadata: rightMeta,
         };
 
-        syncedTimeSec.value = 0;
-        maxSyncedTimeSec.value = Math.max(
-          0,
-          Math.min(leftMeta.duration ?? 0, rightMeta.duration ?? 0)
-        );
+        recomputeSyncedRange();
+        syncedTimeSec.value = minSyncedTimeSec.value;
       } catch (err) {
+        stopRealignPolling();
         leftAnalysis.value = null;
         rightAnalysis.value = null;
         leftVideo.value = null;
         rightVideo.value = null;
+        rightTimeShiftSec.value = 0;
         syncedTimeSec.value = 0;
+        minSyncedTimeSec.value = 0;
         maxSyncedTimeSec.value = 0;
         const message = err instanceof Error ? err.message : 'Unknown error';
         error.value = `Combined analysis "${session.name}" is stale: one or more source analyses or videos are missing (${message}).`;
+      }
+
+      if (realignJob.value?.status === 'running') {
+        startRealignPolling(session.id);
+      } else {
+        stopRealignPolling();
       }
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to select multi-view session';
@@ -1293,7 +1494,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
   }
 
   function setSyncedTime(timeSec: number) {
-    const bounded = Math.max(0, Math.min(timeSec, maxSyncedTimeSec.value));
+    const bounded = Math.max(minSyncedTimeSec.value, Math.min(timeSec, maxSyncedTimeSec.value));
     syncedTimeSec.value = bounded;
   }
 
@@ -1338,8 +1539,16 @@ export const useAnalysisStore = defineStore('analysis', () => {
     rightAnalysis,
     leftVideo,
     rightVideo,
+    rightTimeShiftSec,
     syncedTimeSec,
+    minSyncedTimeSec,
     maxSyncedTimeSec,
+    latestAlignmentSuggestion,
+    currentAlignmentState,
+    realignJob,
+    isComputingAlignment,
+    isStartingAutoReanalyze,
+    isUpdatingAlignment,
     // Computed
     isProcessing,
     isCompleted,
@@ -1386,6 +1595,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
     selectCombinedEntity,
     createMultiViewSession: createMultiViewSessionAction,
     deleteMultiViewSessionById,
+    computeMultiViewAlignment,
+    setMultiViewTimeShift,
+    startAutoReanalyzeFromAlignment,
+    refreshMultiViewSessionMetadata,
     setSyncedTime,
     clearActiveEntity,
     exitMultiViewMode,
