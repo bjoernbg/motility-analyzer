@@ -15,6 +15,14 @@ import { Slider } from './ui/slider';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
 import { Icon } from './ui/icon';
+import { DEFAULT_NUM_TRACKING_POINTS, PIXEL_TO_MM_FACTOR } from '../lib/constants';
+import { getVideoDisplayName, hasCustomDisplayName } from '../lib/domain/displayNames';
+import {
+  formatDistributionMethod,
+  formatTimestampWithMilliseconds,
+  formatTrackingPoints,
+  formatWindowRange,
+} from '../lib/domain/formatting';
 
 const store = useAnalysisStore();
 
@@ -45,8 +53,8 @@ const comparisonMode = ref<ComparisonViewMode>('side-by-side');
 const leftFrameData = ref<FrameData | null>(null);
 const rightFrameData = ref<FrameData | null>(null);
 
-const leftPixelToMmFactor = ref(11);
-const rightPixelToMmFactor = ref(11);
+const leftPixelToMmFactor = ref(PIXEL_TO_MM_FACTOR);
+const rightPixelToMmFactor = ref(PIXEL_TO_MM_FACTOR);
 const leftHeatmapMeta = ref<HeatmapMeta | null>(null);
 const rightHeatmapMeta = ref<HeatmapMeta | null>(null);
 
@@ -128,7 +136,7 @@ watch(
   () => store.leftVideo?.id,
   async (videoId) => {
     if (!videoId) {
-      leftPixelToMmFactor.value = 11;
+      leftPixelToMmFactor.value = PIXEL_TO_MM_FACTOR;
       return;
     }
 
@@ -136,7 +144,7 @@ watch(
       const settings = await getVideoDisplaySettings(videoId);
       leftPixelToMmFactor.value = settings.pixel_to_mm_factor;
     } catch {
-      leftPixelToMmFactor.value = 11;
+      leftPixelToMmFactor.value = PIXEL_TO_MM_FACTOR;
     }
   },
   { immediate: true }
@@ -146,7 +154,7 @@ watch(
   () => store.rightVideo?.id,
   async (videoId) => {
     if (!videoId) {
-      rightPixelToMmFactor.value = 11;
+      rightPixelToMmFactor.value = PIXEL_TO_MM_FACTOR;
       return;
     }
 
@@ -154,7 +162,7 @@ watch(
       const settings = await getVideoDisplaySettings(videoId);
       rightPixelToMmFactor.value = settings.pixel_to_mm_factor;
     } catch {
-      rightPixelToMmFactor.value = 11;
+      rightPixelToMmFactor.value = PIXEL_TO_MM_FACTOR;
     }
   },
   { immediate: true }
@@ -301,16 +309,7 @@ async function handleAnalyzeAlignmentForDiffOverlay() {
 }
 
 function formatTime(seconds: number): string {
-  const total = Math.max(0, seconds);
-  const minutes = Math.floor(total / 60);
-  const secs = Math.floor(total % 60);
-  const millis = Math.floor((total - Math.floor(total)) * 1000);
-  return `${minutes}:${secs.toString().padStart(2, '0')}.${millis.toString().padStart(3, '0')}`;
-}
-
-function getVideoDisplayName(video: { filename: string; display_name?: string | null }): string {
-  const customName = video.display_name?.trim();
-  return customName && customName.length > 0 ? customName : video.filename;
+  return formatTimestampWithMilliseconds(seconds);
 }
 
 function getAnalysisDisplayName(analysis: { display_name?: string | null; created_at: string }): string {
@@ -322,22 +321,15 @@ function getAnalysisDisplayName(analysis: { display_name?: string | null; create
 }
 
 function getDistributionLabel(rawMethod: unknown): string {
-  return rawMethod === 'center_line_projection' ? 'Center line' : 'X-axis even';
+  return formatDistributionMethod(rawMethod);
 }
 
 function getTrackingPointsLabel(params: Record<string, unknown>): string {
-  const raw = params.num_tracking_points;
-  const points = typeof raw === 'number' ? raw : 30;
-  return `${points} points`;
+  return formatTrackingPoints(params.num_tracking_points ?? DEFAULT_NUM_TRACKING_POINTS);
 }
 
 function getWindowLabel(params: Record<string, unknown>): string | null {
-  const left = params.horizontal_window_x_left;
-  const right = params.horizontal_window_x_right;
-  if (typeof left === 'number' && typeof right === 'number') {
-    return `Window ${left} ↔ ${right}`;
-  }
-  return null;
+  return formatWindowRange(params.horizontal_window_x_left, params.horizontal_window_x_right);
 }
 
 function getWindowBounds(params: Record<string, unknown>): { left: number; right: number } | null {
@@ -491,11 +483,6 @@ const hasCombinedScale = computed(() => {
     combinedScaleMaxMm.value > combinedScaleMinMm.value
   );
 });
-
-function hasCustomVideoName(video: { filename: string; display_name?: string | null }): boolean {
-  const customName = video.display_name?.trim();
-  return Boolean(customName && customName.length > 0);
-}
 
 function drawPath(
   ctx: CanvasRenderingContext2D,
@@ -727,8 +714,8 @@ function drawOverlay(
         <section class="comparison-column">
           <div class="comparison-heading">
             <h3>{{ getVideoDisplayName(store.leftVideo) }}</h3>
-            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.leftVideo) }">
-              {{ hasCustomVideoName(store.leftVideo) ? `File: ${store.leftVideo.filename}` : ' ' }}
+            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomDisplayName(store.leftVideo) }">
+              {{ hasCustomDisplayName(store.leftVideo) ? `File: ${store.leftVideo.filename}` : ' ' }}
             </p>
             <div class="analysis-meta-card">
               <p class="analysis-meta-title">{{ getAnalysisDisplayName(store.leftAnalysis) }}</p>
@@ -772,8 +759,8 @@ function drawOverlay(
         <section class="comparison-column">
           <div class="comparison-heading">
             <h3>{{ getVideoDisplayName(store.rightVideo) }}</h3>
-            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomVideoName(store.rightVideo) }">
-              {{ hasCustomVideoName(store.rightVideo) ? `File: ${store.rightVideo.filename}` : ' ' }}
+            <p class="video-original-name" :class="{ 'video-original-name-hidden': !hasCustomDisplayName(store.rightVideo) }">
+              {{ hasCustomDisplayName(store.rightVideo) ? `File: ${store.rightVideo.filename}` : ' ' }}
             </p>
             <div class="analysis-meta-card">
               <p class="analysis-meta-title">{{ getAnalysisDisplayName(store.rightAnalysis) }}</p>

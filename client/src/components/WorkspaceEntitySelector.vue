@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import type { Video, MultiViewSession } from '../lib/api';
 import { videoNeedsReencoding } from '../lib/api';
+import { getVideoDisplayName, hasCustomDisplayName } from '../lib/domain/displayNames';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Icon } from './ui/icon';
 
@@ -36,20 +37,10 @@ onMounted(async () => {
   await Promise.all([store.loadVideos(), store.loadMultiViewSessions()]);
 });
 
-function getVideoPrimaryName(video: Video): string {
-  const customName = video.display_name?.trim();
-  return customName && customName.length > 0 ? customName : video.filename;
-}
-
 function isSessionAutoAligned(session: MultiViewSession): boolean {
   const alignmentSource = session.metadata?.alignment?.source;
   const realignStatus = session.metadata?.realign_job?.status;
   return alignmentSource === 'auto' || realignStatus === 'committed';
-}
-
-function hasCustomVideoName(video: Video): boolean {
-  const customName = video.display_name?.trim();
-  return Boolean(customName && customName.length > 0);
 }
 
 function startRenameVideo(video: Video) {
@@ -201,7 +192,7 @@ async function handleDeleteVideo(video: Video) {
   }
 
   const confirmed = confirm(
-    `Delete "${getVideoPrimaryName(video)}"?\n\n` +
+    `Delete "${getVideoDisplayName(video)}"?\n\n` +
       'This will permanently delete:\n' +
       '• The video file\n' +
       '• All analyses for this video\n' +
@@ -370,8 +361,8 @@ async function deleteSessionFromMenu(sessionId: string) {
               :disabled="editingVideoId === video.id || selectingVideoId === video.id || isDeletingVideoId === video.id"
               @click="selectVideo(video.id)"
             >
-              <p class="entity-title">{{ getVideoPrimaryName(video) }}</p>
-              <p v-if="hasCustomVideoName(video)" class="entity-subtitle">File: {{ video.filename }}</p>
+              <p class="entity-title">{{ getVideoDisplayName(video) }}</p>
+              <p v-if="hasCustomDisplayName(video)" class="entity-subtitle">File: {{ video.filename }}</p>
               <p class="entity-meta">{{ new Date(video.upload_date).toLocaleDateString() }}</p>
             </button>
 

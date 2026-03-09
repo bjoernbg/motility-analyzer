@@ -1,12 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import { detectHorizontalWindow, getFrameImageUrl } from '../lib/api';
-import type { FrameData, AnalysisParameters, CalibrationResult } from '../lib/api';
+import { getFrameImageUrl } from '../lib/api';
+import type { AnalysisParameters, CalibrationResult } from '../lib/api';
 import { Slider } from './ui/slider';
-import { ButtonGroup } from './ui/button-group';
-import { Button } from './ui/button';
-import { Icon } from './ui/icon';
 import { debounce } from '../lib/utils';
 import { PIXEL_TO_MM_FACTOR } from '../lib/constants';
 
@@ -27,6 +24,29 @@ const store = useAnalysisStore();
 const imageRef = ref<HTMLImageElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
+let rafId: number | null = null;
+let drawQueued = false;
+
+function scheduleCanvasDraw() {
+  if (drawQueued) {
+    return;
+  }
+
+  drawQueued = true;
+  rafId = requestAnimationFrame(() => {
+    drawQueued = false;
+    rafId = null;
+    updateCanvas();
+  });
+}
+
+function cancelScheduledCanvasDraw() {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  drawQueued = false;
+}
 
 const targetVideo = computed(() => store.currentVideo);
 
@@ -59,6 +79,7 @@ watch(() => store.currentParameters, (params) => {
 
   // params is already the value (not a ref), so use it directly
   currentParameters.value = params;
+  scheduleCanvasDraw();
 
   // Trigger debounced analysis for current frame
   debouncedAnalyzeParams(params);
@@ -72,6 +93,7 @@ watch(() => canvasRef.value, () => {
     if (imageRef.value) {
       updateCanvasSize();
     }
+    scheduleCanvasDraw();
   } 
 });
 
@@ -81,15 +103,14 @@ watch(() => imageRef.value, () => {
     // Wait for image to load
     if (imageRef.value.complete) {
       updateCanvasSize();
+      scheduleCanvasDraw();
     }
   }
 });
 
 // Watch for changes to highlighted point in overlay mode to update canvas
 watch(() => props.highlightPointIndex, () => {
-  if (props.overlay) {
-    // Canvas will update on next animation frame
-  }
+  scheduleCanvasDraw();
 });
 
 // Watch for frame data to become available for the current frame
@@ -99,20 +120,23 @@ watch(() => {
   }
   return null;
 }, () => {
-  // Canvas will update on next animation frame when frame data becomes available
+  scheduleCanvasDraw();
 }, { immediate: true });
 
+watch(
+  () => [store.currentFrame, props.overlay, props.showCanvasOverlay, props.pixelToMmFactor, props.calibrationRegion],
+  () => {
+    scheduleCanvasDraw();
+  },
+  { deep: true }
+);
+
 onMounted(() => {
-  startUpdateCanvasLoop();
+  scheduleCanvasDraw();
 });
 
 onUnmounted(() => {
-  // Cleanup requestAnimationFrame
-  // if (rafId !== null) {
-  //   cancelAnimationFrame(rafId);
-  //   rafId = null;
-  // }
-  // pendingUpdate = false;
+  cancelScheduledCanvasDraw();
 });
 
 // Handle when frame image loads
@@ -121,6 +145,7 @@ function onFrameLoaded() {
   if (imageRef.value && canvasRef.value) {
     updateCanvasSize();
   }
+  scheduleCanvasDraw();
   // Automatically analyze the current frame when image loads
   analyzeCurrentFrameIfReady();
 }
@@ -181,6 +206,9 @@ watch(() => targetVideo.value, async (newVideo, oldVideo) => {
     return;
   }
 
+  // Prevent stale draws from the previous video after switching.
+  cancelScheduledCanvasDraw();
+
   // Only reset to frame 0 if we're actually switching videos (not on initial mount)
   // On initial mount, oldVideo will be undefined, so we should preserve the current frame
   if (oldVideo !== undefined && newVideo?.id !== oldVideo?.id) {
@@ -189,6 +217,7 @@ watch(() => targetVideo.value, async (newVideo, oldVideo) => {
 
   // Automatically analyze when video is ready (has metadata)
   await analyzeCurrentFrameIfReady();
+  scheduleCanvasDraw();
 }, { immediate: true });
 
 // Watch for metadata updates separately (when video ID hasn't changed)
@@ -205,12 +234,8 @@ watch(() => targetVideo.value?.metadata, async (newMetadata, oldMetadata) => {
 
   // Automatically analyze when metadata is available
   await analyzeCurrentFrameIfReady();
+  scheduleCanvasDraw();
 }, { immediate: true });
-
-function startUpdateCanvasLoop() {
-  updateCanvas();
-  requestAnimationFrame(startUpdateCanvasLoop);
-}
 function drawPath(ctx: CanvasRenderingContext2D, scaleX: number, scaleY: number, points: Array<[number, number]>) {
   if (points && points.length > 0) {
     ctx.beginPath();
@@ -547,7 +572,6 @@ const aspectRatio = computed(() => {
 
 
 const hasFrameData = computed(() => { return store.liveFrameData.size > 0; });
-const isDetectingWindow = ref(false); // horizontal window detection
 const showCanvasOverlay = computed({
   get: () => props.showCanvasOverlay ?? true,
   set: (value: boolean) => emit('update:showCanvasOverlay', value),
@@ -615,59 +639,11 @@ const windowSliderModel = computed({
 const videoWidth = computed(() => {
   return store.currentVideo?.metadata?.width ?? 1920;
 });
-
-async function detectWindow() {
-  if (!store.currentVideo) {
-    return;
-  }
-
-  // Get current frame number from store
-  const currentFrame = store.currentFrame ?? 0;
-
-  isDetectingWindow.value = true;
-  try {
-    if (!targetVideo.value) return;
-    const videoId = targetVideo.value.id;
-    if (!videoId) return;
-    const result = await detectHorizontalWindow(videoId, currentFrame);
-    const left = result.x_left >= 0 ? result.x_left : null;
-    const right = result.x_right >= 0 ? result.x_right : null;
-
-    // Update store's current parameters
-    const currentParams = store.currentParameters || getDefaultParameters();
-    store.currentParameters = {
-      ...currentParams,
-      horizontal_window_x_left: left,
-      horizontal_window_x_right: right,
-    };
-
-    // Trigger single-frame analysis with new window values
-    if (!store.isProcessing && store.currentFrame !== null) {
-      await store.analyzeCurrentFrame(store.currentParameters);
-    }
-
-    // Save settings after window detection
-    await store.saveCurrentSettings();
-  } catch (error) {
-    console.error('Failed to detect window:', error);
-  } finally {
-    isDetectingWindow.value = false;
-  }
-}
 </script>
 
 <template>
   <div class="video-player">
-    <!-- Horizontal Window Slider (hidden in overlay mode) -->
     <div v-if="!overlay" class="window-slider-container">
-      <!-- <div class="window-slider-controls">
-        <button type="button" class="detect-window-button" @click="detectWindow"
-          :disabled="isDetectingWindow || store.isProcessing || !store.currentVideo"
-          title="Detect window boundaries on current frame">
-          <span v-if="isDetectingWindow">Detecting...</span>
-          <span v-else>Detect Window</span>
-        </button>
-      </div> -->
       <Slider v-model="windowSliderModel" :min="0" :max="videoWidth" :step="1" class="window-slider"
         track-class="!bg-transparent" range-class="!bg-white" thumb-class="!bg-white !border-white/80" />
     </div>
@@ -817,38 +793,8 @@ h2 {
   left: 0;
   right: 0;
   padding-block: 1rem;
-  /* background: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.4), transparent); */
   pointer-events: none;
   z-index: 5;
-}
-
-.window-slider-controls {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 0.5rem;
-  pointer-events: auto;
-}
-
-.detect-window-button {
-  padding: 0.4rem 0.8rem;
-  background: var(--color-primary-500);
-  color: var(--text-inverted);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
-  transition: background 0.2s;
-  pointer-events: auto;
-}
-
-.detect-window-button:hover:not(:disabled) {
-  background: var(--color-primary-600);
-}
-
-.detect-window-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .window-slider {

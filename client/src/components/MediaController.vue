@@ -145,10 +145,7 @@ const totalTimeDisplay = computed(() => {
 
 <template>
   <div class="media-controller">
-
-    <!-- Timeline container -->
     <div class="timeline-container">
-      <!-- Timeline slider with integrated progress -->
       <div class="timeline-wrapper">
         <div class="time-display">
           <span class="current-time">{{ currentTimeDisplay }}</span>
@@ -159,11 +156,9 @@ const totalTimeDisplay = computed(() => {
         </div>
 
         <div class="slider-container">
-          <!-- Timeline slider -->
           <Slider v-model="timelineValue" :min="0" :max="Math.max(0, totalFrames - 1)" :step="1" class="timeline-slider"
             :disabled="!store.currentVideo || totalFrames <= 1" @pointerdown="handlePointerDown"
             @pointerup="handlePointerUp" @pointercancel="handlePointerCancel">
-            <!-- Analysis progress overlay (only during analysis) -->
             <template #progress>
               <div v-if="showAnalysisProgress" class="progress-overlay" :class="{
                 processing: store.isProcessing,
@@ -176,9 +171,7 @@ const totalTimeDisplay = computed(() => {
         </div>
       </div>
 
-      <!-- Frame stepping buttons -->
       <div class="frame-controls">
-
         <ButtonGroup>
           <Button @click="stepBack50" :disabled="!store.currentVideo || currentFrame <= 0" size="sm" variant="outline"
             title="Step back 50 frames">
@@ -213,19 +206,6 @@ const totalTimeDisplay = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-}
-
-.analysis-status {
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-secondary);
-  border-radius: 4px;
-  text-align: center;
-}
-
-.status-text {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-  font-weight: 500;
 }
 
 .timeline-container {
@@ -335,8 +315,6 @@ const totalTimeDisplay = computed(() => {
   z-index: 2;
   width: 100%;
 }
-
-/* Ensure slider thumb is above progress overlay */
 .timeline-slider :deep([data-slot="slider-thumb"]) {
   z-index: 3;
 }

@@ -136,59 +136,123 @@ export interface ProgressUpdate {
 }
 
 // HTTP API functions
-async function fetchJson<T>(url: string, options?: RequestInit & { endpointKey?: string }): Promise<T> {
-  const endpointKey = options?.endpointKey || url;
+type RequestOptions = RequestInit & {
+  endpointKey?: string;
+  includeJsonContentType?: boolean;
+};
+
+async function getResponseErrorMessage(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') ?? '';
+
+  if (contentType.includes('application/json')) {
+    const body = await response.json().catch(() => null);
+    if (body && typeof body === 'object') {
+      const detail = (body as { detail?: unknown }).detail;
+      if (typeof detail === 'string' && detail.trim().length > 0) {
+        return detail;
+      }
+      const message = (body as { message?: unknown }).message;
+      if (typeof message === 'string' && message.trim().length > 0) {
+        return message;
+      }
+    }
+  }
+
+  const text = await response.text().catch(() => '');
+  if (text.trim().length > 0) {
+    return text;
+  }
+
+  return response.statusText || `HTTP ${response.status}`;
+}
+
+function toRequestError(error: unknown): Error {
+  if (error instanceof Error) {
+    if (error.name === 'AbortError') {
+      return error;
+    }
+
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      return new Error(
+        `Network error: Could not reach server at ${API_BASE_URL}. Make sure the backend server is running.`
+      );
+    }
+
+    return error;
+  }
+
+  return new Error('Unknown request error');
+}
+
+async function fetchResponse(url: string, options: RequestOptions = {}): Promise<Response> {
+  const {
+    endpointKey = url,
+    includeJsonContentType = true,
+    headers: rawHeaders,
+    ...requestOptions
+  } = options;
   const controller = getAbortController(endpointKey);
-  
+  const headers = new Headers(rawHeaders);
+
+  if (includeJsonContentType && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   try {
     const response = await fetch(`${API_BASE_URL}${url}`, {
-      ...options,
+      ...requestOptions,
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      },
+      headers,
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+      throw new Error(await getResponseErrorMessage(response));
     }
 
-    const result = await response.json();
-    cleanupAbortController(endpointKey);
-    return result;
+    return response;
   } catch (error) {
+    const requestError = toRequestError(error);
+    if (requestError.name === 'AbortError') {
+      throw requestError;
+    }
+    throw requestError;
+  } finally {
     cleanupAbortController(endpointKey);
-    
-    // Don't throw error if request was aborted
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw error;
-    }
-    
-    // Re-throw with more context if it's a network error
-    if (error instanceof TypeError && error.message === 'Failed to fetch') {
-      throw new Error(`Network error: Could not reach server at ${API_BASE_URL}. Make sure the backend server is running.`);
-    }
-    throw error;
   }
+}
+
+async function fetchJson<T>(url: string, options?: RequestOptions): Promise<T> {
+  const response = await fetchResponse(url, options);
+  return response.json() as Promise<T>;
+}
+
+async function fetchMultipartJson<T>(url: string, options?: RequestOptions): Promise<T> {
+  const response = await fetchResponse(url, {
+    ...options,
+    includeJsonContentType: false,
+  });
+  return response.json() as Promise<T>;
+}
+
+async function fetchBinary(
+  url: string,
+  options?: RequestOptions
+): Promise<{ response: Response; buffer: ArrayBuffer }> {
+  const response = await fetchResponse(url, {
+    ...options,
+    includeJsonContentType: false,
+  });
+  return { response, buffer: await response.arrayBuffer() };
 }
 
 export async function uploadVideo(file: File): Promise<Video> {
   const formData = new FormData();
   formData.append('file', file);
-
-  const response = await fetch(`${API_BASE_URL}/api/videos/upload`, {
+  return fetchMultipartJson<Video>('/api/videos/upload', {
     method: 'POST',
     body: formData,
+    endpointKey: 'uploadVideo',
   });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
-  }
-
-  return response.json();
 }
 
 export async function listVideos(): Promise<Video[]> {
@@ -454,34 +518,16 @@ export interface HeatmapRawResult {
 }
 
 export async function getHeatmapRaw(analysisId: string): Promise<HeatmapRawResult> {
-  const endpointKey = `heatmap-raw:${analysisId}`;
-  const controller = getAbortController(endpointKey);
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`, {
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+  const { response, buffer } = await fetchBinary(
+    `/api/analysis/${encodeURIComponent(analysisId)}/heatmap/raw`,
+    {
+      endpointKey: `heatmap-raw:${analysisId}`,
     }
+  );
+  const width = parseInt(response.headers.get('X-Width') || '0', 10);
+  const height = parseInt(response.headers.get('X-Height') || '0', 10);
 
-    const width = parseInt(response.headers.get('X-Width') || '0', 10);
-    const height = parseInt(response.headers.get('X-Height') || '0', 10);
-
-    cleanupAbortController(endpointKey);
-    return { buffer: await response.arrayBuffer(), width, height };
-  } catch (error) {
-    cleanupAbortController(endpointKey);
-
-    // Re-throw AbortError so it can be handled by the caller
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw error;
-    }
-
-    throw error;
-  }
+  return { buffer, width, height };
 }
 
 export interface ContractionDetectionParameters {

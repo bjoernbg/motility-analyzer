@@ -20,6 +20,13 @@ import type {
 } from '../lib/api';
 import { useHeatmapCache } from '../composables/useHeatmapCache';
 import {
+  buildFrameCacheKey,
+  evictLeastRecentlyUsedFrame,
+  keepOnlyAnalysisFrames,
+  parametersMatch,
+  type FrameCacheEntry,
+} from './analysis/helpers';
+import {
   uploadVideo,
   listVideos,
   getVideoMetadata,
@@ -115,38 +122,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const realignPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
   // Simple LRU cache for frame data (max 20 frames)
-  interface FrameCacheEntry {
-    data: FrameData;
-    lastAccessed: number;
-  }
   const frameDataCache = ref<Map<string, FrameCacheEntry>>(new Map());
   const MAX_FRAME_CACHE_SIZE = 20;
-  
-  // Helper to evict least recently used frame from cache
-  function evictLRUFrame(): void {
-    if (frameDataCache.value.size < MAX_FRAME_CACHE_SIZE) {
-      return;
-    }
-    
-    let oldestKey: string | null = null;
-    let oldestTime = Infinity;
-    
-    for (const [key, entry] of frameDataCache.value.entries()) {
-      if (entry.lastAccessed < oldestTime) {
-        oldestTime = entry.lastAccessed;
-        oldestKey = key;
-      }
-    }
-    
-    if (oldestKey) {
-      frameDataCache.value.delete(oldestKey);
-    }
-  }
-  
-  // Helper to get cache key for a frame
-  function getFrameCacheKey(analysisId: string, frameNum: number): string {
-    return `${analysisId}:${frameNum}`;
-  }
 
   // Computed
   const isProcessing = computed(() => progressStatus.value === 'processing');
@@ -714,16 +691,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
       
       // Clear live frame data and cache when switching analyses
       liveFrameData.value.clear();
-      // Clear cache entries for the previous analysis (keep entries for other analyses)
-      const keysToDelete: string[] = [];
-      for (const key of frameDataCache.value.keys()) {
-        if (!key.startsWith(`${analysisId}:`)) {
-          keysToDelete.push(key);
-        }
-      }
-      for (const key of keysToDelete) {
-        frameDataCache.value.delete(key);
-      }
+      // Keep only cache entries for the selected analysis.
+      keepOnlyAnalysisFrames(frameDataCache.value, analysisId);
       
       // Load contraction events if analysis is completed
       if (analysis.status === 'completed') {
@@ -761,39 +730,6 @@ export const useAnalysisStore = defineStore('analysis', () => {
     return null;
   }
 
-  function parametersMatch(params1: Record<string, unknown>, params2: AnalysisParameters): boolean {
-    // Compare parameters with tolerance for floating-point values
-    const tolerance = 0.001;
-    
-    // Check if all keys match
-    const keys1 = Object.keys(params1).filter(k => params1[k] !== undefined && params1[k] !== null);
-    const keys2 = Object.keys(params2).filter(k => (params2 as Record<string, unknown>)[k] !== undefined && (params2 as Record<string, unknown>)[k] !== null);
-    
-    if (keys1.length !== keys2.length) {
-      return false;
-    }
-    
-    for (const key of keys1) {
-      const val1 = params1[key];
-      const val2 = (params2 as Record<string, unknown>)[key];
-      
-      // Handle None/null values
-      if (val1 === null && val2 === null) continue;
-      if (val1 === null || val2 === null) return false;
-      
-      // Compare floating-point numbers with tolerance
-      if (typeof val1 === 'number' && typeof val2 === 'number') {
-        if (Math.abs(val1 - val2) > tolerance) {
-          return false;
-        }
-      } else if (val1 !== val2) {
-        return false;
-      }
-    }
-    
-    return true;
-  }
-
   async function getFrameData(frameNum: number): Promise<FrameData | null> {
     // First check if we already have it in liveFrameData (immediate display)
     const cached = liveFrameData.value.get(frameNum);
@@ -803,7 +739,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
 
     // If we have a current analysis, try to get from cache or fetch directly
     if (currentAnalysis.value) {
-      const cacheKey = getFrameCacheKey(currentAnalysis.value.id, frameNum);
+      const cacheKey = buildFrameCacheKey(currentAnalysis.value.id, frameNum);
       
       // Check LRU cache first
       const cacheEntry = frameDataCache.value.get(cacheKey);
@@ -821,7 +757,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
         const frameData = await getAnalysisFrame(currentAnalysis.value.id, frameNum);
         
         // Store in cache (evict LRU if needed)
-        evictLRUFrame();
+        evictLeastRecentlyUsedFrame(frameDataCache.value, MAX_FRAME_CACHE_SIZE);
         frameDataCache.value.set(cacheKey, {
           data: frameData,
           lastAccessed: Date.now(),

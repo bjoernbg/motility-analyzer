@@ -9,6 +9,13 @@ import { Icon } from './ui/icon';
 import { RadioGroup, RadioGroupItem } from './ui/radio-group';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
+import { DEFAULT_NUM_TRACKING_POINTS } from '../lib/constants';
+import {
+  TRACKING_POINT_PRESETS,
+  resolveTrackingPointsPreset,
+  type TrackingPointPreset,
+} from '../lib/domain/analysisParameters';
+import { formatDistributionMethod, formatTrackingPoints } from '../lib/domain/formatting';
 
 const store = useAnalysisStore();
 
@@ -24,8 +31,8 @@ const silhouetteBand = ref(60);
 const silhouetteMedianK = ref(3);
 
 // Measurement configuration parameters
-const trackingPointPresets = [30, 50, 80, 120, 200] as const;
-const numTrackingPoints = ref<30 | 50 | 80 | 120 | 200>(30);
+const trackingPointPresets = TRACKING_POINT_PRESETS;
+const numTrackingPoints = ref<TrackingPointPreset>(DEFAULT_NUM_TRACKING_POINTS);
 const distributionMethod = ref<"center_line_projection" | "x_axis_even">("center_line_projection");
 
 const isRunning = ref(false);
@@ -82,11 +89,7 @@ function syncParamsFromStore() {
     silhouetteBand.value = params.silhouette_band ?? 60;
     silhouetteMedianK.value = params.silhouette_median_k ?? 3;
     // Snap to nearest valid preset for num_tracking_points
-    const raw = params.num_tracking_points ?? 30;
-    const closest = trackingPointPresets.reduce((prev, curr) =>
-      Math.abs(curr - raw) < Math.abs(prev - raw) ? curr : prev
-    );
-    numTrackingPoints.value = closest;
+    numTrackingPoints.value = resolveTrackingPointsPreset(params.num_tracking_points);
     distributionMethod.value = params.distribution_method ?? "center_line_projection";
   } else {
     // Reset to defaults if no saved settings
@@ -97,7 +100,7 @@ function syncParamsFromStore() {
     silhouetteXStep.value = 7;
     silhouetteBand.value = 60;
     silhouetteMedianK.value = 3;
-    numTrackingPoints.value = 30;
+    numTrackingPoints.value = DEFAULT_NUM_TRACKING_POINTS;
     distributionMethod.value = "center_line_projection";
   }
 }
@@ -247,39 +250,6 @@ const currentAnalysisRelatedSessions = computed<MultiViewSession[]>(() => {
   }
   return relatedSessionsByAnalysisId.value[store.currentAnalysis.id] ?? [];
 });
-
-// Helper function to compare parameters (same logic as store)
-function parametersMatch(params1: Record<string, unknown>, params2: AnalysisParameters): boolean {
-  const tolerance = 0.001;
-
-  // Check if all keys match
-  const keys1 = Object.keys(params1).filter(k => params1[k] !== undefined && params1[k] !== null);
-  const keys2 = Object.keys(params2).filter(k => (params2 as Record<string, unknown>)[k] !== undefined && (params2 as Record<string, unknown>)[k] !== null);
-
-  if (keys1.length !== keys2.length) {
-    return false;
-  }
-
-  for (const key of keys1) {
-    const val1 = params1[key];
-    const val2 = (params2 as Record<string, unknown>)[key];
-
-    // Handle None/null values
-    if (val1 === null && val2 === null) continue;
-    if (val1 === null || val2 === null) return false;
-
-    // Compare floating-point numbers with tolerance
-    if (typeof val1 === 'number' && typeof val2 === 'number') {
-      if (Math.abs(val1 - val2) > tolerance) {
-        return false;
-      }
-    } else if (val1 !== val2) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 function getProcessedFrames(analysis: { processed_frames?: number | null }): number { return analysis.processed_frames ?? 0; }
 const totalFrames = computed(() => { return store.currentVideo?.metadata?.total_frames ?? 0; });
@@ -482,11 +452,10 @@ async function confirmDeleteAnalysis() {
             </p>
             <div class="analysis-params-info">
               <span class="text-xs param-tag">
-                {{ (analysis.parameters.num_tracking_points as number) ?? 30 }} points
+                {{ formatTrackingPoints(analysis.parameters.num_tracking_points) }}
               </span>
               <span class="text-xs param-tag">
-                {{ (analysis.parameters.distribution_method as string) === 'center_line_projection' ? 'Center Line' :
-                  'X-Axis Even' }}
+                {{ formatDistributionMethod(analysis.parameters.distribution_method) }}
               </span>
               <span class="text-xs param-tag"
                 v-if="analysis.parameters.horizontal_window_x_left != null && analysis.parameters.horizontal_window_x_right != null">
@@ -859,14 +828,6 @@ h3:not(:first-child) {
   cursor: not-allowed;
 }
 
-.section-divider {
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border-light);
-}
-
-
 .param-group input[type="number"] {
   width: 100%;
   padding: 0.5rem;
@@ -1191,56 +1152,6 @@ h3:not(:first-child) {
   color: var(--text-secondary);
 }
 
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-container {
-  background: var(--bg-primary);
-  border-radius: 8px;
-  padding: 0;
-  min-width: 400px;
-  max-width: 90vw;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.modal-header {
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-light);
-}
-
-.modal-header h3 {
-  margin: 0;
-  font-size: 1.125rem;
-  font-weight: 600;
-}
-
-.modal-content {
-  padding: 1.5rem;
-}
-
-.modal-content p {
-  margin: 0;
-  color: var(--text-primary);
-}
-
-.modal-footer {
-  padding: 1rem 1.5rem;
-  border-top: 1px solid var(--border-light);
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
 .delete-confirmation {
   display: flex;
   flex-direction: column;
@@ -1267,11 +1178,7 @@ h3:not(:first-child) {
 
 /* Advanced settings collapsible section */
 .advanced-settings {
-  /* margin-top: 1rem; */
-  /* border: 1px solid var(--border-light); */
-  /* border-radius: 6px; */
   padding-inline: 0.75rem;
-  /* background: rgba(0, 0, 0, 0.02); */
 }
 
 .advanced-settings summary {

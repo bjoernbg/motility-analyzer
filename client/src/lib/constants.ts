@@ -12,6 +12,11 @@
 export const PIXEL_TO_MM_FACTOR = 11; // 11 pixels = 1 mm
 
 /**
+ * Default number of tracking points for new analyses.
+ */
+export const DEFAULT_NUM_TRACKING_POINTS = 30 as const;
+
+/**
  * Fixed color scale constants for heatmap visualization
  * Measured in millimeters
  */
