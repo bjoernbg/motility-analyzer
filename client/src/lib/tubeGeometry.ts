@@ -17,7 +17,7 @@ export interface TubeGeometryData {
   indices: Uint32Array;
 }
 
-const SEGMENTS = 16;
+const SEGMENTS = 64;
 
 /**
  * Map a [0,1] value to [r, g, b] floats through a 256-entry colormap.

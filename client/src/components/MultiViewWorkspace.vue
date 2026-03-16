@@ -66,6 +66,11 @@ const rightImageRef = ref<HTMLImageElement | null>(null);
 const leftOverlayCanvasRef = ref<HTMLCanvasElement | null>(null);
 const rightOverlayCanvasRef = ref<HTMLCanvasElement | null>(null);
 
+const leftSidebarImageRef = ref<HTMLImageElement | null>(null);
+const rightSidebarImageRef = ref<HTMLImageElement | null>(null);
+const leftSidebarCanvasRef = ref<HTMLCanvasElement | null>(null);
+const rightSidebarCanvasRef = ref<HTMLCanvasElement | null>(null);
+
 let loadFrameDataRequestId = 0;
 
 const leftFps = computed(() => store.leftVideo?.metadata?.fps ?? 1);
@@ -346,6 +351,30 @@ function getWindowBounds(params: Record<string, unknown>): { left: number; right
   return { left, right };
 }
 
+function sidebarInnerStyle(
+  analysis: { parameters: Record<string, unknown> },
+  video: { metadata?: { width?: number; height?: number } } | null,
+): Record<string, string> {
+  const params = analysis.parameters;
+  const xLeft = params.horizontal_window_x_left;
+  const xRight = params.horizontal_window_x_right;
+  const vw = video?.metadata?.width;
+  if (typeof xLeft !== 'number' || typeof xRight !== 'number' || !vw || xRight <= xLeft) {
+    return {};
+  }
+  const windowWidth = xRight - xLeft;
+  const padding = windowWidth * 0.05;
+  const padLeft = Math.max(0, xLeft - padding);
+  const padRight = Math.min(vw, xRight + padding);
+  const padWidth = padRight - padLeft;
+  const scaleRatio = vw / padWidth;
+  const offsetPercent = (padLeft / padWidth) * 100;
+  return {
+    width: `${(scaleRatio * 100).toFixed(1)}%`,
+    marginLeft: `${(-offsetPercent).toFixed(1)}%`,
+  };
+}
+
 const overlayAlignmentContext = computed<OverlayAlignmentContext>(() => {
   const suggestion = store.latestAlignmentSuggestion;
   const leftAnalysis = store.leftAnalysis;
@@ -526,6 +555,24 @@ function drawAllOverlays() {
   drawOverlay(
     rightOverlayCanvasRef.value,
     rightImageRef.value,
+    store.rightVideo?.metadata?.width,
+    store.rightVideo?.metadata?.height,
+    rightFrameData.value,
+    rightPixelToMmFactor.value,
+  );
+
+  drawOverlay(
+    leftSidebarCanvasRef.value,
+    leftSidebarImageRef.value,
+    store.leftVideo?.metadata?.width,
+    store.leftVideo?.metadata?.height,
+    leftFrameData.value,
+    leftPixelToMmFactor.value,
+  );
+
+  drawOverlay(
+    rightSidebarCanvasRef.value,
+    rightSidebarImageRef.value,
     store.rightVideo?.metadata?.width,
     store.rightVideo?.metadata?.height,
     rightFrameData.value,
@@ -863,15 +910,73 @@ function drawOverlay(
         </div>
       </div>
 
-      <div v-else-if="comparisonMode === '3d'" class="viewer-3d-container">
-        <IntestineViewer3D
-          :left-frame-data="leftFrameData"
-          :right-frame-data="rightFrameData"
-          :left-pixel-to-mm-factor="leftPixelToMmFactor"
-          :right-pixel-to-mm-factor="rightPixelToMmFactor"
-          :heatmap-min-mm="hasCombinedScale ? combinedScaleMinMm : null"
-          :heatmap-max-mm="hasCombinedScale ? combinedScaleMaxMm : null"
-        />
+      <div v-else-if="comparisonMode === '3d'" class="viewer-3d-layout">
+        <div class="viewer-3d-main">
+          <IntestineViewer3D
+            :left-frame-data="leftFrameData"
+            :right-frame-data="rightFrameData"
+            :left-pixel-to-mm-factor="leftPixelToMmFactor"
+            :right-pixel-to-mm-factor="rightPixelToMmFactor"
+            :heatmap-min-mm="hasCombinedScale ? combinedScaleMinMm : null"
+            :heatmap-max-mm="hasCombinedScale ? combinedScaleMaxMm : null"
+          />
+        </div>
+        <div class="viewer-3d-sidebar">
+          <div class="sidebar-panel">
+            <div class="sidebar-label">{{ getVideoDisplayName(store.leftVideo) }}</div>
+            <div class="sidebar-frame-clip">
+              <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.leftAnalysis, store.leftVideo)">
+                <img
+                  v-if="leftFrameImageUrl"
+                  ref="leftSidebarImageRef"
+                  :src="leftFrameImageUrl"
+                  :alt="`Left frame ${leftFrame}`"
+                  class="sidebar-frame-img"
+                  @load="drawAllOverlays"
+                />
+                <canvas ref="leftSidebarCanvasRef" class="overlay-canvas" />
+              </div>
+            </div>
+          </div>
+          <div class="sidebar-panel">
+            <div class="sidebar-label">{{ getVideoDisplayName(store.rightVideo) }}</div>
+            <div class="sidebar-frame-clip">
+              <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.rightAnalysis, store.rightVideo)">
+                <img
+                  v-if="rightFrameImageUrl"
+                  ref="rightSidebarImageRef"
+                  :src="rightFrameImageUrl"
+                  :alt="`Right frame ${rightFrame}`"
+                  class="sidebar-frame-img"
+                  @load="drawAllOverlays"
+                />
+                <canvas ref="rightSidebarCanvasRef" class="overlay-canvas" />
+              </div>
+            </div>
+          </div>
+          <div class="sidebar-panel sidebar-heatmap-panel">
+            <div class="sidebar-label">{{ getVideoDisplayName(store.leftVideo) }} - Heatmap</div>
+            <HeatmapViewer
+              :key="`left-3d-heatmap-${store.leftAnalysis.id}`"
+              :analysis-id="store.leftAnalysis.id"
+              :current-frame="leftFrame"
+              :compact="true"
+              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+            />
+          </div>
+          <div class="sidebar-panel sidebar-heatmap-panel">
+            <div class="sidebar-label">{{ getVideoDisplayName(store.rightVideo) }} - Heatmap</div>
+            <HeatmapViewer
+              :key="`right-3d-heatmap-${store.rightAnalysis.id}`"
+              :analysis-id="store.rightAnalysis.id"
+              :current-frame="rightFrame"
+              :compact="true"
+              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+            />
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1062,10 +1167,72 @@ function drawOverlay(
   pointer-events: none;
 }
 
-.viewer-3d-container {
-  min-height: 500px;
+.viewer-3d-layout {
+  display: flex;
+  gap: 0.75rem;
+  height: 750px;
+}
+
+.viewer-3d-main {
+  flex: 3;
+  min-width: 0;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.viewer-3d-sidebar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow: hidden;
+}
+
+.sidebar-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow: hidden;
+}
+
+.sidebar-label {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sidebar-frame-clip {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background: black;
+  position: relative;
+}
+
+.sidebar-frame-inner {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+}
+
+.sidebar-frame-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.sidebar-heatmap-panel :deep(.heatmap-container) {
+  flex: 1;
+  min-height: 0;
 }
 
 @media (max-width: 1024px) {
@@ -1076,6 +1243,27 @@ function drawOverlay(
   .workspace-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .viewer-3d-layout {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .viewer-3d-main {
+    min-height: 400px;
+  }
+
+  .viewer-3d-sidebar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    height: 200px;
+  }
+
+  .sidebar-panel {
+    flex: 1 1 45%;
+    min-width: 0;
   }
 }
 </style>
