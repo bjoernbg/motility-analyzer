@@ -11,6 +11,7 @@ import {
 } from '../lib/api';
 import HeatmapViewer from './HeatmapViewer.vue';
 import MultiViewDiffPanel from './MultiViewDiffPanel.vue';
+import IntestineViewer3D from './IntestineViewer3D.vue';
 import { Slider } from './ui/slider';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
@@ -26,7 +27,7 @@ import {
 
 const store = useAnalysisStore();
 
-type ComparisonViewMode = 'side-by-side' | 'diff';
+type ComparisonViewMode = 'side-by-side' | 'diff' | '3d';
 interface OverlayAlignmentContext {
   isReady: boolean;
   reason: string;
@@ -180,6 +181,7 @@ watch(
   async () => {
     const shouldLoadFrameData =
       comparisonMode.value === 'diff' ||
+      comparisonMode.value === '3d' ||
       showDetectedEdges.value ||
       highlightedPointIndex.value !== null;
     if (
@@ -672,6 +674,13 @@ function drawOverlay(
           >
             Diff
           </Button>
+          <Button
+            size="sm"
+            :variant="comparisonMode === '3d' ? 'default' : 'outline'"
+            @click="comparisonMode = '3d'"
+          >
+            3D
+          </Button>
         </ButtonGroup>
       </div>
 
@@ -802,7 +811,7 @@ function drawOverlay(
         </section>
       </div>
 
-      <div v-else class="diff-mode-layout">
+      <div v-else-if="comparisonMode === 'diff'" class="diff-mode-layout">
         <MultiViewDiffPanel
           :left-frame-image-url="leftFrameImageUrl"
           :right-frame-image-url="rightFrameImageUrl"
@@ -852,6 +861,17 @@ function drawOverlay(
             />
           </section>
         </div>
+      </div>
+
+      <div v-else-if="comparisonMode === '3d'" class="viewer-3d-container">
+        <IntestineViewer3D
+          :left-frame-data="leftFrameData"
+          :right-frame-data="rightFrameData"
+          :left-pixel-to-mm-factor="leftPixelToMmFactor"
+          :right-pixel-to-mm-factor="rightPixelToMmFactor"
+          :heatmap-min-mm="hasCombinedScale ? combinedScaleMinMm : null"
+          :heatmap-max-mm="hasCombinedScale ? combinedScaleMaxMm : null"
+        />
       </div>
     </div>
   </div>
@@ -1040,6 +1060,12 @@ function drawOverlay(
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+.viewer-3d-container {
+  min-height: 500px;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 @media (max-width: 1024px) {

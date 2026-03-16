@@ -39,3 +39,19 @@ export function createColormap(): Uint8Array {
   }
   return map;
 }
+
+/**
+ * Map a normalized [0,1] value to [r, g, b] floats (0–1 range)
+ * through a 256-entry colormap. Useful for Three.js vertex colors.
+ */
+export function colormapValueToRgb(
+  colormap: Uint8Array,
+  normalizedValue: number,
+): [number, number, number] {
+  const idx = Math.max(0, Math.min(255, Math.round(normalizedValue * 255)));
+  return [
+    colormap[idx * 3] / 255,
+    colormap[idx * 3 + 1] / 255,
+    colormap[idx * 3 + 2] / 255,
+  ];
+}
