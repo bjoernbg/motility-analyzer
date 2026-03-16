@@ -228,7 +228,7 @@ function frameCameraToGeometry() {
   const maxDim = Math.max(size.x, size.y, size.z);
 
   const fov = camera.value.fov * (Math.PI / 180);
-  const distance = maxDim / (2 * Math.tan(fov / 2)) * 1.5;
+  const distance = maxDim / (2 * Math.tan(fov / 2)) * .8;
 
   camera.value.position.set(center.x, center.y + distance * 0.3, center.z + distance);
   controls.value.target.copy(center);
@@ -291,6 +291,7 @@ watch(
   position: relative;
   width: 100%;
   min-height: 500px;
+  height: 100%;
   border: 1px solid var(--border-light);
   border-radius: 8px;
   overflow: hidden;
