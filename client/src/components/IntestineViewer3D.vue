@@ -2,7 +2,8 @@
 import { ref, watch, onMounted, onUnmounted, shallowRef } from 'vue';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { FrameData } from '../lib/api';
+import type { FrameData, MultiViewAnalysisDirection } from '../lib/api';
+import { formatMultiViewDirection } from '../lib/domain/multiViewDirections';
 import { buildTubeGeometry } from '../lib/tubeGeometry';
 import { createColormap } from '../lib/colormap';
 
@@ -13,6 +14,8 @@ const props = defineProps<{
   rightPixelToMmFactor: number;
   heatmapMinMm: number | null;
   heatmapMaxMm: number | null;
+  leftDirection: MultiViewAnalysisDirection;
+  rightDirection: MultiViewAnalysisDirection;
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -34,6 +37,19 @@ let dirty = true;
 let animFrameId = 0;
 let resizeObserver: ResizeObserver | null = null;
 let hasFramedCamera = false;
+
+function clearGeometry(): void {
+  hasData.value = false;
+  if (!geometry.value) {
+    return;
+  }
+
+  geometry.value.setIndex(null);
+  geometry.value.deleteAttribute('position');
+  geometry.value.deleteAttribute('normal');
+  geometry.value.deleteAttribute('color');
+  requestRender();
+}
 
 function requestRender() {
   dirty = true;
@@ -132,14 +148,7 @@ function updateTube() {
     right.mpp.length < 2 ||
     !geometry.value
   ) {
-    hasData.value = false;
-    if (geometry.value) {
-      geometry.value.setIndex(null);
-      geometry.value.deleteAttribute('position');
-      geometry.value.deleteAttribute('normal');
-      geometry.value.deleteAttribute('color');
-      requestRender();
-    }
+    clearGeometry();
     return;
   }
 
@@ -154,10 +163,12 @@ function updateTube() {
     colormap,
     minMm,
     maxMm,
+    props.leftDirection,
+    props.rightDirection,
   );
 
   if (data.positions.length === 0) {
-    hasData.value = false;
+    clearGeometry();
     return;
   }
 
@@ -250,6 +261,8 @@ watch(
     props.rightPixelToMmFactor,
     props.heatmapMinMm,
     props.heatmapMaxMm,
+    props.leftDirection,
+    props.rightDirection,
   ],
   () => {
     updateTube();
@@ -262,7 +275,10 @@ watch(
   <div ref="containerRef" class="viewer-3d-root">
     <canvas ref="canvasRef" class="viewer-3d-canvas" />
     <div v-if="!hasData" class="viewer-3d-empty">
-      <p>Scrub to a frame with analysis data to view the 3D reconstruction</p>
+      <p v-if="props.leftDirection === props.rightDirection">
+        Assign one {{ formatMultiViewDirection('front').toLowerCase() }} view and one {{ formatMultiViewDirection('bottom').toLowerCase() }} view to render the 3D reconstruction
+      </p>
+      <p v-else>Scrub to a frame with analysis data to view the 3D reconstruction</p>
     </div>
     <div class="viewer-3d-hint">
       Drag to orbit &middot; Scroll to zoom &middot; Right-drag to pan

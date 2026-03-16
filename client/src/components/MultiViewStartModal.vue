@@ -1,11 +1,21 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
-import { listAnalyses, type Analysis, type MultiViewValidationResult } from '../lib/api';
+import {
+  listAnalyses,
+  type Analysis,
+  type MultiViewAnalysisDirection,
+  type MultiViewValidationResult,
+} from '../lib/api';
+import {
+  DEFAULT_LEFT_MULTI_VIEW_DIRECTION,
+  DEFAULT_RIGHT_MULTI_VIEW_DIRECTION,
+} from '../lib/domain/multiViewDirections';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Icon } from './ui/icon';
+import MultiViewDirectionEditor from './MultiViewDirectionEditor.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -22,6 +32,8 @@ const leftVideoId = ref('');
 const rightVideoId = ref('');
 const leftAnalysisId = ref('');
 const rightAnalysisId = ref('');
+const leftDirection = ref<MultiViewAnalysisDirection>(DEFAULT_LEFT_MULTI_VIEW_DIRECTION);
+const rightDirection = ref<MultiViewAnalysisDirection>(DEFAULT_RIGHT_MULTI_VIEW_DIRECTION);
 const leftCompletedAnalyses = ref<Analysis[]>([]);
 const rightCompletedAnalyses = ref<Analysis[]>([]);
 const validationResult = ref<MultiViewValidationResult | null>(null);
@@ -49,6 +61,8 @@ function resetForm() {
   rightVideoId.value = '';
   leftAnalysisId.value = '';
   rightAnalysisId.value = '';
+  leftDirection.value = DEFAULT_LEFT_MULTI_VIEW_DIRECTION;
+  rightDirection.value = DEFAULT_RIGHT_MULTI_VIEW_DIRECTION;
   leftCompletedAnalyses.value = [];
   rightCompletedAnalyses.value = [];
   validationResult.value = null;
@@ -116,7 +130,9 @@ async function createSession() {
     await store.createMultiViewSession(
       sessionName.value.trim(),
       leftAnalysisId.value,
-      rightAnalysisId.value
+      rightAnalysisId.value,
+      leftDirection.value,
+      rightDirection.value
     );
     closeModal();
     resetForm();
@@ -125,6 +141,14 @@ async function createSession() {
   } finally {
     isCreating.value = false;
   }
+}
+
+function handleDirectionsUpdate(directions: {
+  leftDirection: MultiViewAnalysisDirection;
+  rightDirection: MultiViewAnalysisDirection;
+}) {
+  leftDirection.value = directions.leftDirection;
+  rightDirection.value = directions.rightDirection;
 }
 
 watch(
@@ -189,8 +213,18 @@ onUnmounted(() => {
               <Input id="session-name" v-model="sessionName" placeholder="Front + Side" />
             </div>
 
+            <div class="form-field form-field-full direction-field">
+              <MultiViewDirectionEditor
+                :left-direction="leftDirection"
+                :right-direction="rightDirection"
+                title="3D View Directions"
+                hint="Default mapping is first analysis = front and second analysis = bottom. Changing one direction automatically swaps the other."
+                @update-directions="handleDirectionsUpdate"
+              />
+            </div>
+
             <div class="form-column">
-              <h3>Left Side</h3>
+              <h3>First Analysis</h3>
               <div class="form-field">
                 <Label for="left-video">Video</Label>
                 <select id="left-video" v-model="leftVideoId" class="select-input">
@@ -213,7 +247,7 @@ onUnmounted(() => {
             </div>
 
             <div class="form-column">
-              <h3>Right Side</h3>
+              <h3>Second Analysis</h3>
               <div class="form-field">
                 <Label for="right-video">Video</Label>
                 <select id="right-video" v-model="rightVideoId" class="select-input">
@@ -337,6 +371,13 @@ onUnmounted(() => {
 
 .form-field-full {
   grid-column: 1 / -1;
+}
+
+.direction-field {
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 0.85rem;
+  background: var(--bg-secondary);
 }
 
 .form-column {

@@ -18,6 +18,7 @@ import { Button } from './ui/button';
 import { Icon } from './ui/icon';
 import { DEFAULT_NUM_TRACKING_POINTS, PIXEL_TO_MM_FACTOR } from '../lib/constants';
 import { getVideoDisplayName, hasCustomDisplayName } from '../lib/domain/displayNames';
+import { formatMultiViewDirection } from '../lib/domain/multiViewDirections';
 import {
   formatDistributionMethod,
   formatTimestampWithMilliseconds,
@@ -131,6 +132,13 @@ const rightFrameImageUrl = computed(() => {
   if (!store.rightVideo) return null;
   return getFrameImageUrl(store.rightVideo.id, rightFrame.value);
 });
+
+const leftDirectionLabel = computed(() =>
+  formatMultiViewDirection(store.currentMultiViewDirections.leftDirection)
+);
+const rightDirectionLabel = computed(() =>
+  formatMultiViewDirection(store.currentMultiViewDirections.rightDirection)
+);
 
 watch(() => store.syncedTimeSec, (newTime) => {
   if (!isDragging.value) {
@@ -912,6 +920,10 @@ function drawOverlay(
 
       <div v-else-if="comparisonMode === '3d'" class="viewer-3d-layout">
         <div class="viewer-3d-main">
+          <div class="viewer-3d-summary">
+            <span class="viewer-3d-chip">First Analysis: {{ leftDirectionLabel }}</span>
+            <span class="viewer-3d-chip">Second Analysis: {{ rightDirectionLabel }}</span>
+          </div>
           <IntestineViewer3D
             :left-frame-data="leftFrameData"
             :right-frame-data="rightFrameData"
@@ -919,11 +931,17 @@ function drawOverlay(
             :right-pixel-to-mm-factor="rightPixelToMmFactor"
             :heatmap-min-mm="hasCombinedScale ? combinedScaleMinMm : null"
             :heatmap-max-mm="hasCombinedScale ? combinedScaleMaxMm : null"
+            :left-direction="store.currentMultiViewDirections.leftDirection"
+            :right-direction="store.currentMultiViewDirections.rightDirection"
           />
         </div>
         <div class="viewer-3d-sidebar">
           <div class="sidebar-panel">
-            <div class="sidebar-label">{{ getVideoDisplayName(store.leftVideo) }}</div>
+            <div class="sidebar-label-row">
+              <div class="sidebar-label">First Analysis</div>
+              <span class="viewer-3d-chip">{{ leftDirectionLabel }}</span>
+            </div>
+            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.leftVideo) }}</div>
             <div class="sidebar-frame-clip">
               <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.leftAnalysis, store.leftVideo)">
                 <img
@@ -939,7 +957,11 @@ function drawOverlay(
             </div>
           </div>
           <div class="sidebar-panel">
-            <div class="sidebar-label">{{ getVideoDisplayName(store.rightVideo) }}</div>
+            <div class="sidebar-label-row">
+              <div class="sidebar-label">Second Analysis</div>
+              <span class="viewer-3d-chip">{{ rightDirectionLabel }}</span>
+            </div>
+            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.rightVideo) }}</div>
             <div class="sidebar-frame-clip">
               <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.rightAnalysis, store.rightVideo)">
                 <img
@@ -955,7 +977,11 @@ function drawOverlay(
             </div>
           </div>
           <div class="sidebar-panel sidebar-heatmap-panel">
-            <div class="sidebar-label">{{ getVideoDisplayName(store.leftVideo) }} - Heatmap</div>
+            <div class="sidebar-label-row">
+              <div class="sidebar-label">First Analysis Heatmap</div>
+              <span class="viewer-3d-chip">{{ leftDirectionLabel }}</span>
+            </div>
+            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.leftVideo) }}</div>
             <HeatmapViewer
               :key="`left-3d-heatmap-${store.leftAnalysis.id}`"
               :analysis-id="store.leftAnalysis.id"
@@ -966,7 +992,11 @@ function drawOverlay(
             />
           </div>
           <div class="sidebar-panel sidebar-heatmap-panel">
-            <div class="sidebar-label">{{ getVideoDisplayName(store.rightVideo) }} - Heatmap</div>
+            <div class="sidebar-label-row">
+              <div class="sidebar-label">Second Analysis Heatmap</div>
+              <span class="viewer-3d-chip">{{ rightDirectionLabel }}</span>
+            </div>
+            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.rightVideo) }}</div>
             <HeatmapViewer
               :key="`right-3d-heatmap-${store.rightAnalysis.id}`"
               :analysis-id="store.rightAnalysis.id"
@@ -1176,8 +1206,28 @@ function drawOverlay(
 .viewer-3d-main {
   flex: 3;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.viewer-3d-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.viewer-3d-chip {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.22rem 0.45rem;
 }
 
 .viewer-3d-sidebar {
@@ -1194,13 +1244,29 @@ function drawOverlay(
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.25rem;
   overflow: hidden;
+}
+
+.sidebar-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .sidebar-label {
   font-size: 0.72rem;
   color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sidebar-label-meta {
+  font-size: 0.82rem;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

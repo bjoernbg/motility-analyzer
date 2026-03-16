@@ -17,8 +17,10 @@ import type {
   MultiViewAlignmentState,
   MultiViewRealignJob,
   DeleteVideoResult,
+  MultiViewAnalysisDirection,
 } from '../lib/api';
 import { useHeatmapCache } from '../composables/useHeatmapCache';
+import { resolveMultiViewDirectionPair } from '../lib/domain/multiViewDirections';
 import {
   buildFrameCacheKey,
   evictLeastRecentlyUsedFrame,
@@ -60,6 +62,7 @@ import {
   suggestMultiViewAlignment,
   updateMultiViewAlignment,
   autoReanalyzeMultiViewSession,
+  updateMultiViewSessionDirections,
   updateMultiViewSessionSources,
   type HorizontalWindowDetectionResult,
 } from '../lib/api';
@@ -119,6 +122,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isComputingAlignment = ref(false);
   const isStartingAutoReanalyze = ref(false);
   const isUpdatingAlignment = ref(false);
+  const isUpdatingDirections = ref(false);
   const realignPollingTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
   // Simple LRU cache for frame data (max 20 frames)
@@ -137,6 +141,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isInMultiViewMode = computed(() => isInCombinedMode.value);
   const activeAnalysis = computed(() => (isInVideoMode.value ? currentAnalysis.value : null));
   const activeVideo = computed(() => (isInVideoMode.value ? currentVideo.value : null));
+  const currentMultiViewDirections = computed(() =>
+    resolveMultiViewDirectionPair(currentMultiViewSession.value?.metadata)
+  );
 
   function applyVideoUpdate(updatedVideo: Video): void {
     const videoIndex = videos.value.findIndex((video) => video.id === updatedVideo.id);
@@ -1250,6 +1257,35 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function updateCurrentMultiViewDirections(
+    leftDirection: MultiViewAnalysisDirection,
+    rightDirection: MultiViewAnalysisDirection
+  ): Promise<MultiViewSession> {
+    if (!currentMultiViewSession.value) {
+      throw new Error('No combined analysis selected');
+    }
+
+    try {
+      isUpdatingDirections.value = true;
+      error.value = null;
+      const updated = await updateMultiViewSessionDirections(currentMultiViewSession.value.id, {
+        left_direction: leftDirection,
+        right_direction: rightDirection,
+      });
+      applyMultiViewSessionUpdate(updated);
+      if (currentMultiViewSession.value?.id === updated.id) {
+        currentMultiViewSession.value = updated;
+        syncCurrentSessionMetadata(updated);
+      }
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update directions';
+      throw err;
+    } finally {
+      isUpdatingDirections.value = false;
+    }
+  }
+
   async function startAutoReanalyzeFromAlignment(): Promise<MultiViewRealignJob> {
     if (!currentMultiViewSession.value) {
       throw new Error('No combined analysis selected');
@@ -1372,7 +1408,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
   async function createMultiViewSessionAction(
     name: string,
     leftAnalysisId: string,
-    rightAnalysisId: string
+    rightAnalysisId: string,
+    leftDirection: MultiViewAnalysisDirection,
+    rightDirection: MultiViewAnalysisDirection
   ) {
     try {
       isLoading.value = true;
@@ -1387,6 +1425,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
         name,
         left_analysis_id: leftAnalysisId,
         right_analysis_id: rightAnalysisId,
+        left_direction: leftDirection,
+        right_direction: rightDirection,
       });
 
       await loadMultiViewSessions();
@@ -1485,6 +1525,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isComputingAlignment,
     isStartingAutoReanalyze,
     isUpdatingAlignment,
+    isUpdatingDirections,
     // Computed
     isProcessing,
     isCompleted,
@@ -1494,6 +1535,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isInMultiViewMode,
     activeAnalysis,
     activeVideo,
+    currentMultiViewDirections,
     // Actions
     loadVideos,
     handleVideoUpload,
@@ -1533,6 +1575,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     deleteMultiViewSessionById,
     computeMultiViewAlignment,
     setMultiViewTimeShift,
+    updateCurrentMultiViewDirections,
     startAutoReanalyzeFromAlignment,
     refreshMultiViewSessionMetadata,
     setSyncedTime,

@@ -267,6 +267,8 @@ def test_metadata_round_trip_supports_legacy_and_new_shapes() -> None:
     dumped_legacy = legacy.model_dump()
     loaded_legacy = MultiViewSessionMetadata(**dumped_legacy)
     assert loaded_legacy.alignment is None
+    assert loaded_legacy.left_direction == "front"
+    assert loaded_legacy.right_direction == "bottom"
 
     enriched = MultiViewSessionMetadata(
         validated=True,
@@ -278,6 +280,8 @@ def test_metadata_round_trip_supports_legacy_and_new_shapes() -> None:
     loaded_enriched = MultiViewSessionMetadata(**dumped_enriched)
     assert loaded_enriched.alignment is not None
     assert loaded_enriched.alignment.right_time_shift_sec == 0.25
+    assert loaded_enriched.left_direction == "front"
+    assert loaded_enriched.right_direction == "bottom"
 
 
 def test_metadata_parses_legacy_alignment_suggestion_without_anchor_fields() -> None:
@@ -325,6 +329,108 @@ def test_metadata_parses_legacy_alignment_suggestion_without_anchor_fields() -> 
     assert loaded.latest_alignment_suggestion.window.target_window_width_mm is None
     assert loaded.latest_alignment_suggestion.window.left_tube_end_x_left_px is None
     assert loaded.latest_alignment_suggestion.window.right_tube_end_x_left_px is None
+    assert loaded.left_direction == "front"
+    assert loaded.right_direction == "bottom"
+
+
+def test_create_session_defaults_directions_when_omitted(monkeypatch) -> None:
+    client = TestClient(main.app)
+
+    async def fake_validate_multi_view_pair_endpoint(_body):
+        return MultiViewValidationResult(
+            compatible=True,
+            errors=[],
+            details={"frame_count_diff": 0, "duration_diff": 0.0},
+        )
+
+    monkeypatch.setattr(
+        main,
+        "validate_multi_view_pair_endpoint",
+        fake_validate_multi_view_pair_endpoint,
+    )
+
+    created_session: dict[str, object] = {}
+
+    def fake_create_session(session: dict) -> None:
+        created_session.update(session)
+
+    monkeypatch.setattr(main.multi_view_session_db, "create_session", fake_create_session)
+
+    response = client.post(
+        "/api/multi-view/sessions",
+        json={
+            "name": "Front + Bottom",
+            "left_analysis_id": "left-a",
+            "right_analysis_id": "right-a",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["left_direction"] == "front"
+    assert payload["metadata"]["right_direction"] == "bottom"
+    assert created_session["metadata"]["left_direction"] == "front"
+    assert created_session["metadata"]["right_direction"] == "bottom"
+
+
+def test_put_directions_persists_valid_swap(monkeypatch) -> None:
+    client = TestClient(main.app)
+
+    session_row = {
+        "id": "s1",
+        "name": "session",
+        "left_analysis_id": "old-left",
+        "right_analysis_id": "old-right",
+        "created_at": "2026-01-01T00:00:00",
+        "metadata": {
+            "validated": True,
+            "frame_count_diff": 0,
+            "duration_diff": 0.0,
+            "left_direction": "front",
+            "right_direction": "bottom",
+        },
+    }
+
+    persisted_metadata: dict[str, object] = {}
+
+    def fake_update_metadata(_session_id: str, metadata: dict | None) -> bool:
+        if metadata is None:
+            return False
+        persisted_metadata.clear()
+        persisted_metadata.update(metadata)
+        session_row["metadata"] = metadata
+        return True
+
+    monkeypatch.setattr(main.multi_view_session_db, "get_session", lambda _id: session_row)
+    monkeypatch.setattr(
+        main.multi_view_session_db,
+        "update_session_metadata",
+        fake_update_metadata,
+    )
+
+    response = client.put(
+        "/api/multi-view/sessions/s1/directions",
+        json={"left_direction": "bottom", "right_direction": "front"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["left_direction"] == "bottom"
+    assert payload["metadata"]["right_direction"] == "front"
+    assert persisted_metadata["left_direction"] == "bottom"
+    assert persisted_metadata["right_direction"] == "front"
+
+
+def test_put_directions_rejects_duplicate_pair() -> None:
+    client = TestClient(main.app)
+
+    response = client.put(
+        "/api/multi-view/sessions/s1/directions",
+        json={"left_direction": "front", "right_direction": "front"},
+    )
+
+    assert response.status_code == 422
+    assert "one front direction and one bottom direction" in response.text
 
 
 def test_put_sources_rejects_incomplete_analyses(monkeypatch) -> None:
@@ -340,6 +446,8 @@ def test_put_sources_rejects_incomplete_analyses(monkeypatch) -> None:
             "validated": True,
             "frame_count_diff": 0,
             "duration_diff": 0.0,
+            "left_direction": "front",
+            "right_direction": "bottom",
         },
     }
 
@@ -398,6 +506,8 @@ def test_auto_reanalyze_assigns_timestamped_display_names(monkeypatch) -> None:
             "validated": True,
             "frame_count_diff": 0,
             "duration_diff": 0.0,
+            "left_direction": "front",
+            "right_direction": "bottom",
         },
     }
 
@@ -454,3 +564,80 @@ def test_auto_reanalyze_assigns_timestamped_display_names(monkeypatch) -> None:
     assert len(created_names) == 2
     assert re.match(r"^AutoAlign L · \d{2}:\d{2}$", created_names[0]) is not None
     assert re.match(r"^AutoAlign R · \d{2}:\d{2}$", created_names[1]) is not None
+
+
+def test_put_sources_preserves_session_directions(monkeypatch) -> None:
+    client = TestClient(main.app)
+
+    session_row = {
+        "id": "s1",
+        "name": "session",
+        "left_analysis_id": "old-left",
+        "right_analysis_id": "old-right",
+        "created_at": "2026-01-01T00:00:00",
+        "metadata": {
+            "validated": True,
+            "frame_count_diff": 0,
+            "duration_diff": 0.0,
+            "left_direction": "bottom",
+            "right_direction": "front",
+        },
+    }
+
+    left_analysis = Analysis(
+        id="left-a",
+        video_id="left-v",
+        parameters={"num_tracking_points": 30},
+        status="completed",
+    )
+    right_analysis = Analysis(
+        id="right-a",
+        video_id="right-v",
+        parameters={"num_tracking_points": 30},
+        status="completed",
+    )
+
+    def fake_get_analysis(_self, analysis_id: str):
+        if analysis_id == "left-a":
+            return left_analysis
+        if analysis_id == "right-a":
+            return right_analysis
+        return None
+
+    def fake_update_sources(_session_id: str, left_analysis_id: str, right_analysis_id: str) -> bool:
+        session_row["left_analysis_id"] = left_analysis_id
+        session_row["right_analysis_id"] = right_analysis_id
+        return True
+
+    monkeypatch.setattr(main.multi_view_session_db, "get_session", lambda _id: session_row)
+    monkeypatch.setattr(main.AnalysisStorage, "get_analysis", fake_get_analysis)
+    monkeypatch.setattr(
+        main.VideoStorage,
+        "get_video",
+        lambda _self, _id: Video(
+            id=_id,
+            filename=f"{_id}.mp4",
+            file_path=f"/tmp/{_id}.mp4",
+        ),
+    )
+    monkeypatch.setattr(main, "get_video_metadata", lambda _path: _video_metadata())
+    monkeypatch.setattr(
+        main,
+        "validate_multi_view_pair",
+        lambda *args, **kwargs: MultiViewValidationResult(compatible=True, errors=[], details={}),
+    )
+    monkeypatch.setattr(
+        main.multi_view_session_db,
+        "update_session_sources",
+        fake_update_sources,
+    )
+
+    response = client.put(
+        "/api/multi-view/sessions/s1/sources",
+        json={"left_analysis_id": "left-a", "right_analysis_id": "right-a"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["left_direction"] == "bottom"
+    assert payload["metadata"]["right_direction"] == "front"

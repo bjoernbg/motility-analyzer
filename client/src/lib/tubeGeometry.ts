@@ -2,11 +2,11 @@
  * Pure math module: transforms left/right MPP arrays into Three.js-compatible
  * typed arrays for rendering a 3D tubular model of the intestine.
  *
- * Left view's thickness → ry (vertical axis)
- * Right view's thickness → rz (depth axis)
- * Left view's center y-offsets → y spatial dimension
- * Right view's center y-offsets → z spatial dimension
+ * The front analysis defines the axial and vertical dimensions.
+ * The bottom analysis defines the depth dimension.
  */
+
+import type { MultiViewAnalysisDirection } from './api';
 
 type Mpp = [number, number, number, number, number, number, number];
 
@@ -19,6 +19,15 @@ export interface TubeGeometryData {
 
 const SEGMENTS = 64;
 
+function emptyGeometryData(): TubeGeometryData {
+  return {
+    positions: new Float32Array(0),
+    normals: new Float32Array(0),
+    colors: new Float32Array(0),
+    indices: new Uint32Array(0),
+  };
+}
+
 /**
  * Map a [0,1] value to [r, g, b] floats through a 256-entry colormap.
  */
@@ -28,9 +37,9 @@ function colormapLookup(
 ): [number, number, number] {
   const idx = Math.max(0, Math.min(255, Math.round(normalizedValue * 255)));
   return [
-    colormap[idx * 3] / 255,
-    colormap[idx * 3 + 1] / 255,
-    colormap[idx * 3 + 2] / 255,
+    colormap[idx * 3]! / 255,
+    colormap[idx * 3 + 1]! / 255,
+    colormap[idx * 3 + 2]! / 255,
   ];
 }
 
@@ -77,16 +86,21 @@ export function buildTubeGeometry(
   colormap: Uint8Array,
   minMm: number,
   maxMm: number,
+  leftDirection: MultiViewAnalysisDirection,
+  rightDirection: MultiViewAnalysisDirection,
 ): TubeGeometryData {
-  const N = Math.min(leftMpp.length, rightMpp.length);
+  if (leftDirection === rightDirection) {
+    return emptyGeometryData();
+  }
+
+  const frontMpp = leftDirection === 'front' ? leftMpp : rightMpp;
+  const bottomMpp = leftDirection === 'bottom' ? leftMpp : rightMpp;
+  const frontPxToMm = leftDirection === 'front' ? leftPxToMm : rightPxToMm;
+  const bottomPxToMm = leftDirection === 'bottom' ? leftPxToMm : rightPxToMm;
+  const N = Math.min(frontMpp.length, bottomMpp.length);
 
   if (N < 2) {
-    return {
-      positions: new Float32Array(0),
-      normals: new Float32Array(0),
-      colors: new Float32Array(0),
-      indices: new Uint32Array(0),
-    };
+    return emptyGeometryData();
   }
 
   // Step 1: Build 3D center spine + radii
@@ -98,16 +112,16 @@ export function buildTubeGeometry(
   let meanZ = 0;
 
   for (let i = 0; i < N; i++) {
-    const lm = leftMpp[i];
-    const rm = rightMpp[i];
-    const x = lm[0] / leftPxToMm;
-    const y = lm[1] / leftPxToMm;
-    const z = rm[1] / rightPxToMm;
+    const frontMeasurement = frontMpp[i]!;
+    const bottomMeasurement = bottomMpp[i]!;
+    const x = frontMeasurement[0] / frontPxToMm;
+    const y = frontMeasurement[1] / frontPxToMm;
+    const z = bottomMeasurement[1] / bottomPxToMm;
     spine.push([x, y, z]);
     meanY += y;
     meanZ += z;
-    radiiY.push(lm[6] / 2 / leftPxToMm);
-    radiiZ.push(rm[6] / 2 / rightPxToMm);
+    radiiY.push(frontMeasurement[6] / 2 / frontPxToMm);
+    radiiZ.push(bottomMeasurement[6] / 2 / bottomPxToMm);
   }
 
   meanY /= N;
@@ -115,8 +129,8 @@ export function buildTubeGeometry(
 
   // Center the model at origin (y,z only — keep x as the tube axis)
   for (let i = 0; i < N; i++) {
-    spine[i][1] -= meanY;
-    spine[i][2] -= meanZ;
+    spine[i]![1] -= meanY;
+    spine[i]![2] -= meanZ;
   }
 
   // Step 2: Compute Frenet frames via parallel transport
@@ -128,22 +142,28 @@ export function buildTubeGeometry(
   for (let i = 0; i < N; i++) {
     let t: [number, number, number];
     if (i === 0) {
+      const next = spine[1]!;
+      const current = spine[0]!;
       t = [
-        spine[1][0] - spine[0][0],
-        spine[1][1] - spine[0][1],
-        spine[1][2] - spine[0][2],
+        next[0] - current[0],
+        next[1] - current[1],
+        next[2] - current[2],
       ];
     } else if (i === N - 1) {
+      const current = spine[N - 1]!;
+      const previous = spine[N - 2]!;
       t = [
-        spine[N - 1][0] - spine[N - 2][0],
-        spine[N - 1][1] - spine[N - 2][1],
-        spine[N - 1][2] - spine[N - 2][2],
+        current[0] - previous[0],
+        current[1] - previous[1],
+        current[2] - previous[2],
       ];
     } else {
+      const next = spine[i + 1]!;
+      const previous = spine[i - 1]!;
       t = [
-        spine[i + 1][0] - spine[i - 1][0],
-        spine[i + 1][1] - spine[i - 1][1],
-        spine[i + 1][2] - spine[i - 1][2],
+        next[0] - previous[0],
+        next[1] - previous[1],
+        next[2] - previous[2],
       ];
     }
     normalize(t);
@@ -151,7 +171,7 @@ export function buildTubeGeometry(
   }
 
   // Initial normal: choose axis most perpendicular to first tangent
-  const t0 = tangents[0];
+  const t0 = tangents[0]!;
   let initialNormal: [number, number, number];
   if (Math.abs(t0[1]) < 0.9) {
     initialNormal = cross(t0, [0, 1, 0]);
@@ -161,13 +181,13 @@ export function buildTubeGeometry(
   normalize(initialNormal);
   normals.push(initialNormal);
   binormals.push(cross(t0, initialNormal));
-  normalize(binormals[0]);
+  normalize(binormals[0]!);
 
   // Parallel transport
   for (let i = 1; i < N; i++) {
-    const tPrev = tangents[i - 1];
-    const tCurr = tangents[i];
-    let nPrev = normals[i - 1];
+    const tPrev = tangents[i - 1]!;
+    const tCurr = tangents[i]!;
+    let nPrev = normals[i - 1]!;
 
     // Rotation axis: cross of consecutive tangents
     const rotAxis = cross(tPrev, tCurr);
@@ -213,14 +233,14 @@ export function buildTubeGeometry(
   const range = maxMm - minMm;
 
   for (let i = 0; i < N; i++) {
-    const center = spine[i];
-    const n = normals[i];
-    const b = binormals[i];
-    const ry = radiiY[i];
-    const rz = radiiZ[i];
+    const center = spine[i]!;
+    const n = normals[i]!;
+    const b = binormals[i]!;
+    const ry = radiiY[i]!;
+    const rz = radiiZ[i]!;
 
     // Average thickness for color
-    const avgThicknessMm = (radiiY[i] * 2 + radiiZ[i] * 2) / 2;
+    const avgThicknessMm = (radiiY[i]! * 2 + radiiZ[i]! * 2) / 2;
     let normalizedColor = range > 0 ? (avgThicknessMm - minMm) / range : 0.5;
     normalizedColor = Math.max(0, Math.min(1, normalizedColor));
     const [cr, cg, cb] = colormapLookup(colormap, normalizedColor);

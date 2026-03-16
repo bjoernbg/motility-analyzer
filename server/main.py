@@ -48,6 +48,7 @@ from .models import (
     ContractionEventLineFit,
     MultiViewSession,
     MultiViewSessionCreate,
+    MultiViewSessionDirectionsUpdate,
     MultiViewSessionNameUpdate,
     MultiViewSessionMetadata,
     MultiViewAlignmentState,
@@ -1603,6 +1604,8 @@ async def create_multi_view_session(body: MultiViewSessionCreate):
         validated=True,
         frame_count_diff=int(validation.details.get("frame_count_diff", 0)),
         duration_diff=float(validation.details.get("duration_diff", 0.0)),
+        left_direction=body.left_direction,
+        right_direction=body.right_direction,
     )
 
     session = MultiViewSession(
@@ -1653,6 +1656,32 @@ async def update_multi_view_session_name(
     if not updated:
         raise HTTPException(status_code=404, detail="Multi-view session not found")
 
+    return _session_row_to_model(_get_session_or_404(session_id))
+
+
+@app.put(
+    "/api/multi-view/sessions/{session_id}/directions",
+    response_model=MultiViewSession,
+)
+async def update_multi_view_session_directions(
+    session_id: str, body: MultiViewSessionDirectionsUpdate
+):
+    """Update persisted front/bottom direction assignments for a session."""
+    logger.info(
+        "Session direction update requested: session_id=%s left_direction=%s right_direction=%s",
+        session_id,
+        body.left_direction,
+        body.right_direction,
+    )
+    session = _session_row_to_model(_get_session_or_404(session_id))
+    metadata = session.metadata or MultiViewSessionMetadata(
+        validated=True,
+        frame_count_diff=0,
+        duration_diff=0.0,
+    )
+    metadata.left_direction = body.left_direction
+    metadata.right_direction = body.right_direction
+    _persist_session_metadata(session_id, metadata)
     return _session_row_to_model(_get_session_or_404(session_id))
 
 

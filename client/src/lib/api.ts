@@ -570,6 +570,8 @@ export interface ContractionDetectionResult {
   total_events: number;
 }
 
+export type MultiViewAnalysisDirection = 'front' | 'bottom';
+
 export interface MultiViewSessionMetadata {
   validated: boolean;
   frame_count_diff: number;
@@ -577,6 +579,8 @@ export interface MultiViewSessionMetadata {
   alignment?: MultiViewAlignmentState | null;
   latest_alignment_suggestion?: MultiViewAlignmentSuggestion | null;
   realign_job?: MultiViewRealignJob | null;
+  left_direction?: MultiViewAnalysisDirection;
+  right_direction?: MultiViewAnalysisDirection;
 }
 
 export interface MultiViewAlignmentState {
@@ -671,6 +675,13 @@ export interface MultiViewSessionCreate {
   name: string;
   left_analysis_id: string;
   right_analysis_id: string;
+  left_direction?: MultiViewAnalysisDirection;
+  right_direction?: MultiViewAnalysisDirection;
+}
+
+export interface MultiViewSessionDirectionsUpdateRequest {
+  left_direction: MultiViewAnalysisDirection;
+  right_direction: MultiViewAnalysisDirection;
 }
 
 export interface MultiViewSession {
@@ -798,6 +809,19 @@ export async function updateMultiViewSessionName(
     method: 'PUT',
     body: JSON.stringify({ name }),
   });
+}
+
+export async function updateMultiViewSessionDirections(
+  sessionId: string,
+  body: MultiViewSessionDirectionsUpdateRequest
+): Promise<MultiViewSession> {
+  return fetchJson<MultiViewSession>(
+    `/api/multi-view/sessions/${encodeURIComponent(sessionId)}/directions`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }
+  );
 }
 
 export async function deleteMultiViewSession(sessionId: string): Promise<void> {

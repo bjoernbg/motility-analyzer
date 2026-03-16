@@ -50,8 +50,8 @@ export function colormapValueToRgb(
 ): [number, number, number] {
   const idx = Math.max(0, Math.min(255, Math.round(normalizedValue * 255)));
   return [
-    colormap[idx * 3] / 255,
-    colormap[idx * 3 + 1] / 255,
-    colormap[idx * 3 + 2] / 255,
+    colormap[idx * 3]! / 255,
+    colormap[idx * 3 + 1]! / 255,
+    colormap[idx * 3 + 2]! / 255,
   ];
 }

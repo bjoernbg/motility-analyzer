@@ -7,6 +7,21 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, validator
 
 
+MultiViewAnalysisDirection = Literal["front", "bottom"]
+
+
+def _validate_direction_pair(
+    left_direction: MultiViewAnalysisDirection | None,
+    right_direction: MultiViewAnalysisDirection,
+) -> MultiViewAnalysisDirection:
+    """Ensure a multi-view pair contains exactly one front and one bottom view."""
+    if left_direction and left_direction == right_direction:
+        raise ValueError(
+            "Combined analyses must use one front direction and one bottom direction"
+        )
+    return right_direction
+
+
 class Video(BaseModel):
     """Video model."""
 
@@ -377,6 +392,18 @@ class MultiViewSessionMetadata(BaseModel):
     realign_job: Optional["MultiViewRealignJob"] = Field(
         default=None, description="State for automatic reanalysis job"
     )
+    left_direction: MultiViewAnalysisDirection = Field(
+        default="front",
+        description="Direction assigned to the primary/left analysis",
+    )
+    right_direction: MultiViewAnalysisDirection = Field(
+        default="bottom",
+        description="Direction assigned to the secondary/right analysis",
+    )
+
+    @validator("right_direction")
+    def validate_distinct_directions(cls, v, values):
+        return _validate_direction_pair(values.get("left_direction"), v)
 
 
 class MultiViewTimeShiftSuggestion(BaseModel):
@@ -594,6 +621,14 @@ class MultiViewSessionCreate(BaseModel):
     )
     left_analysis_id: str = Field(description="Primary/left analysis ID")
     right_analysis_id: str = Field(description="Secondary/right analysis ID")
+    left_direction: MultiViewAnalysisDirection = Field(
+        default="front",
+        description="Direction assigned to the primary/left analysis",
+    )
+    right_direction: MultiViewAnalysisDirection = Field(
+        default="bottom",
+        description="Direction assigned to the secondary/right analysis",
+    )
 
     @validator("right_analysis_id")
     def validate_distinct_analyses(cls, v, values):
@@ -601,6 +636,25 @@ class MultiViewSessionCreate(BaseModel):
         if left_analysis_id and left_analysis_id == v:
             raise ValueError("Cannot combine an analysis with itself")
         return v
+
+    @validator("right_direction")
+    def validate_distinct_directions(cls, v, values):
+        return _validate_direction_pair(values.get("left_direction"), v)
+
+
+class MultiViewSessionDirectionsUpdate(BaseModel):
+    """Request model for updating persisted analysis directions."""
+
+    left_direction: MultiViewAnalysisDirection = Field(
+        description="Direction assigned to the primary/left analysis"
+    )
+    right_direction: MultiViewAnalysisDirection = Field(
+        description="Direction assigned to the secondary/right analysis"
+    )
+
+    @validator("right_direction")
+    def validate_distinct_directions(cls, v, values):
+        return _validate_direction_pair(values.get("left_direction"), v)
 
 
 class DisplayNameUpdate(BaseModel):
