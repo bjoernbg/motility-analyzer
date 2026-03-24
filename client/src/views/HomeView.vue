@@ -13,11 +13,16 @@ import { useWorkspaceEntityRouting } from '../composables/useWorkspaceEntityRout
 
 const store = useAnalysisStore();
 const showMultiViewModal = ref(false);
+const selectedContractionId = ref<string | null>(null);
 
 useWorkspaceEntityRouting();
 
 function handleSeek(frame: number) {
   store.seekToFrame(frame);
+}
+
+function handleContractionSelection(contractionId: string | null) {
+  selectedContractionId.value = contractionId;
 }
 
 onUnmounted(() => {
@@ -45,9 +50,9 @@ onUnmounted(() => {
 
         <div class="right-panel">
           <template v-if="store.isInVideoMode">
-            <MediaViewer />
+            <MediaViewer :selected-contraction-id="selectedContractionId" />
             <MediaController @seek="handleSeek" />
-            <AnalysisResults />
+            <AnalysisResults @select-contraction="handleContractionSelection" />
           </template>
 
           <MultiViewWorkspace v-else-if="store.isInCombinedMode" />

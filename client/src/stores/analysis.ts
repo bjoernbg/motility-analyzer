@@ -100,6 +100,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isAnalysisSwitching = ref(false);
   // Contraction detection state
   const contractionEvents = ref<ContractionEvent[]>([]);
+  const contractionDetectionVersion = ref<string | null>(null);
+  const contractionDetectionParametersUsed = ref<ContractionDetectionParameters | null>(null);
   const isDetectingContractions = ref(false);
   const contractionDetectionError = ref<string | null>(null);
   // Track if user is actively seeking (dragging slider, etc.) to prevent auto-seek conflicts
@@ -208,6 +210,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     totalFrames.value = null;
     currentParameters.value = null;
     contractionEvents.value = [];
+    contractionDetectionVersion.value = null;
+    contractionDetectionParametersUsed.value = null;
     contractionDetectionError.value = null;
     isUserSeeking.value = false;
     stopPolling();
@@ -482,6 +486,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
       progress.value = 0;
       progressStatus.value = 'pending';
       contractionEvents.value = [];
+      contractionDetectionVersion.value = null;
+      contractionDetectionParametersUsed.value = null;
 
       // Fetch updated metadata
       const metadata = await getVideoMetadata(result.video.id);
@@ -706,6 +712,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
         await loadContractionEvents(analysisId);
       } else {
         contractionEvents.value = [];
+        contractionDetectionVersion.value = null;
+        contractionDetectionParametersUsed.value = null;
       }
       
       // Start polling if analysis is still running
@@ -1006,6 +1014,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
       
       const result = await detectContractions(analysisId, parameters);
       contractionEvents.value = result.events;
+      contractionDetectionVersion.value = result.detection_version;
+      contractionDetectionParametersUsed.value = result.parameters_used;
       
       return result;
     } catch (err) {
@@ -1021,14 +1031,20 @@ export const useAnalysisStore = defineStore('analysis', () => {
       contractionDetectionError.value = null;
       const result = await getContractionEvents(analysisId);
       contractionEvents.value = result.events;
+      contractionDetectionVersion.value = result.detection_version;
+      contractionDetectionParametersUsed.value = result.parameters_used;
     } catch (err) {
       // Don't set error if contraction detection hasn't been run (404 is expected)
       if (err instanceof Error && err.message.includes('404')) {
         contractionEvents.value = [];
+        contractionDetectionVersion.value = null;
+        contractionDetectionParametersUsed.value = null;
         return;
       }
       contractionDetectionError.value = err instanceof Error ? err.message : 'Failed to load contraction events';
       contractionEvents.value = [];
+      contractionDetectionVersion.value = null;
+      contractionDetectionParametersUsed.value = null;
     }
   }
 
@@ -1036,6 +1052,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       await clearContractionEvents(analysisId);
       contractionEvents.value = [];
+      contractionDetectionVersion.value = null;
+      contractionDetectionParametersUsed.value = null;
       contractionDetectionError.value = null;
     } catch (err) {
       contractionDetectionError.value = err instanceof Error ? err.message : 'Failed to clear contraction events';
@@ -1505,6 +1523,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     currentParameters,
     availableAnalyses,
     contractionEvents,
+    contractionDetectionVersion,
+    contractionDetectionParametersUsed,
     isDetectingContractions,
     contractionDetectionError,
     isUserSeeking,

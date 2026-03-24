@@ -47,6 +47,7 @@ const props = defineProps<{
   currentFrame?: number | null;
   compact?: boolean;
   showContractionOverlays?: boolean;
+  selectedContractionId?: string | null;
   heatmapMinMmOverride?: number | null;
   heatmapMaxMmOverride?: number | null;
 }>();
@@ -173,7 +174,7 @@ watch(() => props.analysisId, async (newId, oldId) => {
 }, { immediate: false });
 
 // Re-render when contraction overlays toggle or contraction events change
-watch(() => [props.showContractionOverlays, store.contractionEvents], () => {
+watch(() => [props.showContractionOverlays, props.selectedContractionId, store.contractionEvents], () => {
   if (meta.value && data.value) {
     renderHeatmap();
   }
@@ -493,29 +494,35 @@ function renderHeatmap() {
   
   // Draw contraction event overlays if enabled
   if (props.showContractionOverlays && store.contractionEvents.length > 0 && meta.value) {
-    const fps = meta.value.fps;
     const numPoints = meta.value.height;
+    const hasSelectedContraction = Boolean(props.selectedContractionId);
     
     for (const event of store.contractionEvents) {
       const [tStart, tEnd] = event.t_range_frames;
       const [yStart, yEnd] = event.y_range_idx;
+      const isSelected = props.selectedContractionId === event.id;
       
       // Calculate positions in canvas coordinates
       const xStart = tStart * scale.value;
       const xEnd = tEnd * scale.value;
       const yStartPx = (yStart / numPoints) * scaledDataHeight;
       const yEndPx = (yEnd / numPoints) * scaledDataHeight;
+
+      ctx.save();
+      if (hasSelectedContraction && !isSelected) {
+        ctx.globalAlpha = 0.25;
+      }
       
       // Draw bounding box
-      ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 245, 120, 0.85)';
+      ctx.lineWidth = isSelected ? 3 : 1.8;
       ctx.setLineDash([]);
       ctx.strokeRect(xStart, yStartPx, xEnd - xStart, yEndPx - yStartPx);
       
       // Draw fitted line
       const { a_idx_per_frame, b } = event.line_fit;
-      ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = isSelected ? 'rgba(255, 90, 90, 0.98)' : 'rgba(255, 40, 40, 0.78)';
+      ctx.lineWidth = isSelected ? 3 : 2;
       ctx.beginPath();
       
       // Calculate line endpoints
@@ -547,6 +554,7 @@ function renderHeatmap() {
         arrowY - arrowLength * Math.sin(angle + Math.PI / 6)
       );
       ctx.stroke();
+      ctx.restore();
     }
   }
   

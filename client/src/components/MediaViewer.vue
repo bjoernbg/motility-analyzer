@@ -69,7 +69,9 @@
 
         <HeatmapViewer v-if="viewMode === 'heatmap' && store.activeAnalysis"
           :key="`main-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
-          :current-frame="store.currentFrame" :show-contraction-overlays="showContractionOverlays"
+          :current-frame="store.currentFrame"
+          :show-contraction-overlays="showContractionOverlays"
+          :selected-contraction-id="props.selectedContractionId"
           @frame-click="handleFrameClick" />
 
         <div v-else-if="viewMode === 'heatmap' && !store.activeAnalysis" class="no-heatmap">
@@ -81,7 +83,11 @@
         <div class="overlay-content">
           <HeatmapViewer v-if="viewMode === 'video' && store.activeAnalysis"
             :key="`overlay-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
-            :current-frame="store.currentFrame" compact @frame-click="handleFrameClick" />
+            :current-frame="store.currentFrame"
+            :show-contraction-overlays="showContractionOverlays"
+            :selected-contraction-id="props.selectedContractionId"
+            compact
+            @frame-click="handleFrameClick" />
           <div v-else-if="viewMode === 'heatmap' && store.activeVideo" class="mini-video-wrapper">
             <VideoPlayer overlay :highlight-point-index="highlightedPointIndex"
               :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
@@ -121,6 +127,10 @@ import { Icon } from './ui/icon';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
 import { getVideoDisplaySettings, type DisplaySettings, type CalibrationResult } from '../lib/api';
 import { createColormap } from '../lib/colormap';
+
+const props = defineProps<{
+  selectedContractionId?: string | null;
+}>();
 
 const store = useAnalysisStore();
 
@@ -218,6 +228,15 @@ watch([currentDisplaySettings, showColorScale], async () => {
     renderColorScale();
   }
 }, { deep: true });
+
+watch(
+  () => props.selectedContractionId,
+  (contractionId) => {
+    if (contractionId) {
+      showContractionOverlays.value = true;
+    }
+  }
+);
 
 function handleSettingsUpdated(settings: DisplaySettings) {
   currentDisplaySettings.value = settings;

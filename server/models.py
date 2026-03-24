@@ -283,11 +283,46 @@ class ContractionDetectionParameters(BaseModel):
     min_pixels: int = Field(
         default=200, ge=1, description="Minimum pixels per event to keep"
     )
+    min_duration_s: float = Field(
+        default=4.0,
+        ge=0.0,
+        description="Minimum merged contraction duration in seconds",
+    )
+    min_span_mm: Optional[float] = Field(
+        default=5.0,
+        ge=0.0,
+        description="Minimum merged contraction spatial span in mm",
+    )
+    area_threshold_median_fraction: float = Field(
+        default=0.70,
+        gt=0.0,
+        le=1.0,
+        description="Threshold for connected area as a fraction of global median thickness",
+    )
+    merge_max_gap_s: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Maximum temporal gap in seconds for merging seed components",
+    )
+    merge_max_offset_mm: float = Field(
+        default=5.0,
+        ge=0.0,
+        description="Maximum spatial offset in mm for merging seed components",
+    )
+    merge_max_velocity_delta_mm_s: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Maximum velocity delta in mm/s for merging seed components",
+    )
     min_area: Optional[float] = Field(
-        default=None, ge=0.0, description="Minimum area in mm²·s (exact calculation)"
+        default=None,
+        ge=0.0,
+        description="Optional minimum connected area in mm²·s",
     )
     min_height: Optional[float] = Field(
-        default=None, ge=0.0, description="Minimum height in mm (spatial extent)"
+        default=None,
+        ge=0.0,
+        description="Legacy alias for minimum contraction span in mm",
     )
     dy: Optional[float] = Field(
         default=None,
@@ -335,6 +370,9 @@ class ContractionDetectionResult(BaseModel):
         description="Parameters used for detection"
     )
     total_events: int = Field(description="Total number of events detected")
+    detection_version: str = Field(
+        description="Version of the contraction detection algorithm used for these results"
+    )
 
 
 class CalibrationResult(BaseModel):

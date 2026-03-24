@@ -9,7 +9,7 @@ from typing import Any, Optional
 import numpy as np
 
 from .config import DATABASE_PATH
-from .models import Analysis, AnalysisResult, FrameData
+from .models import Analysis, AnalysisResult, ContractionDetectionParameters, FrameData
 
 
 def _table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
@@ -100,6 +100,31 @@ def migrate_database_for_display_names() -> None:
         conn.close()
 
 
+def migrate_database_for_contraction_detection_runs() -> None:
+    """Create metadata storage for contraction detection runs."""
+    db_path = Path(DATABASE_PATH)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS contraction_detection_runs (
+                analysis_id TEXT PRIMARY KEY,
+                parameters_json TEXT NOT NULL,
+                detection_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contraction_detection_runs_created_at ON contraction_detection_runs(created_at)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_database() -> None:
     """Initialize the database and create tables if they don't exist."""
     db_path = Path(DATABASE_PATH)
@@ -166,6 +191,16 @@ def init_database() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS contraction_detection_runs (
+            analysis_id TEXT PRIMARY KEY,
+            parameters_json TEXT NOT NULL,
+            detection_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS video_labels (
             video_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
@@ -184,6 +219,9 @@ def init_database() -> None:
         "CREATE INDEX IF NOT EXISTS idx_contraction_events_analysis_id ON contraction_events(analysis_id)"
     )
     cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contraction_detection_runs_created_at ON contraction_detection_runs(created_at)"
+    )
+    cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_video_labels_updated_at ON video_labels(updated_at)"
     )
 
@@ -193,6 +231,7 @@ def init_database() -> None:
     # Run migration for multi-view sessions table
     migrate_database_for_multi_view_sessions()
     migrate_database_for_display_names()
+    migrate_database_for_contraction_detection_runs()
 
 
 def clear_all_data() -> None:
@@ -205,6 +244,7 @@ def clear_all_data() -> None:
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DROP TABLE IF EXISTS contraction_events")
+        conn.execute("DROP TABLE IF EXISTS contraction_detection_runs")
         conn.execute("DROP TABLE IF EXISTS frames")
         conn.execute("DROP TABLE IF EXISTS multi_view_sessions")
         conn.execute("DROP TABLE IF EXISTS combined_analyses")
@@ -908,8 +948,14 @@ class AnalysisDB:
         finally:
             conn.close()
 
-    def save_contraction_events(self, analysis_id: str, events: list[dict]) -> None:
-        """Store contraction events for an analysis."""
+    def save_contraction_events(
+        self,
+        analysis_id: str,
+        events: list[dict],
+        parameters_used: ContractionDetectionParameters,
+        detection_version: str,
+    ) -> None:
+        """Store contraction events and detection metadata for an analysis."""
         from uuid import uuid4
 
         conn = self._get_connection()
@@ -920,9 +966,26 @@ class AnalysisDB:
             cursor.execute(
                 "DELETE FROM contraction_events WHERE analysis_id = ?", (analysis_id,)
             )
+            cursor.execute(
+                "DELETE FROM contraction_detection_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            )
 
             # Insert new events
             created_at = datetime.now().isoformat()
+            cursor.execute(
+                """
+                INSERT INTO contraction_detection_runs (
+                    analysis_id, parameters_json, detection_version, created_at
+                ) VALUES (?, ?, ?, ?)
+            """,
+                (
+                    analysis_id,
+                    json.dumps(parameters_used.model_dump()),
+                    detection_version,
+                    created_at,
+                ),
+            )
             for event in events:
                 event_id = str(uuid4())
                 t_range = event.get("t_range_frames", (0, 0))
@@ -1017,6 +1080,34 @@ class AnalysisDB:
         finally:
             conn.close()
 
+    def get_contraction_detection_run(self, analysis_id: str) -> dict | None:
+        """Retrieve stored detection metadata for an analysis, if available."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                """
+                SELECT parameters_json, detection_version, created_at
+                FROM contraction_detection_runs
+                WHERE analysis_id = ?
+            """,
+                (analysis_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            return {
+                "parameters_used": ContractionDetectionParameters(
+                    **json.loads(row["parameters_json"])
+                ),
+                "detection_version": row["detection_version"],
+                "created_at": row["created_at"],
+            }
+        finally:
+            conn.close()
+
     def clear_contraction_events(self, analysis_id: str) -> None:
         """Clear contraction events for an analysis."""
         conn = self._get_connection()
@@ -1026,16 +1117,27 @@ class AnalysisDB:
             cursor.execute(
                 "DELETE FROM contraction_events WHERE analysis_id = ?", (analysis_id,)
             )
+            cursor.execute(
+                "DELETE FROM contraction_detection_runs WHERE analysis_id = ?",
+                (analysis_id,),
+            )
             conn.commit()
         finally:
             conn.close()
 
     def contraction_events_exist(self, analysis_id: str) -> bool:
-        """Check if contraction events exist for an analysis."""
+        """Check if contraction detection has been run for an analysis."""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
+            cursor.execute(
+                "SELECT 1 FROM contraction_detection_runs WHERE analysis_id = ? LIMIT 1",
+                (analysis_id,),
+            )
+            if cursor.fetchone() is not None:
+                return True
+
             cursor.execute(
                 "SELECT 1 FROM contraction_events WHERE analysis_id = ? LIMIT 1",
                 (analysis_id,),

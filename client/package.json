@@ -21,6 +21,7 @@
     "@radix-icons/vue": "1.0.0",
     "@tailwindcss/vite": "4.1.17",
     "@vueuse/core": "14.0.0",
+    "chart.js": "4.5.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-vue-next": "0.554.0",
@@ -30,6 +31,7 @@
     "tailwind-merge": "3.4.0",
     "three": "0.183.2",
     "vue": "^3.5.22",
+    "vue-chartjs": "5.3.3",
     "vue-router": "^4.6.3"
   },
   "devDependencies": {

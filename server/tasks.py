@@ -10,11 +10,16 @@ from .config import ANALYSIS_MAX_WORKERS, ANALYSIS_PERSIST_EVERY_N_FRAMES
 from .models import (
     Analysis,
     AnalysisParameters,
-    FrameData,
     ContractionDetectionParameters,
+    FrameData,
 )
+from .display_settings import load_video_display_settings
 from .storage import AnalysisStorage, ResultsStorage, VideoStorage, clear_heatmap_cache
-from .contraction_detection import detect_contractions, calculate_physical_spacing
+from .contraction_detection import (
+    CONTRACTION_DETECTION_VERSION_V2,
+    calculate_physical_spacing,
+    detect_contractions_with_parameters,
+)
 from .metadata import get_video_metadata
 
 logger = logging.getLogger("uvicorn.error")
@@ -275,34 +280,35 @@ class TaskManager:
                             video_metadata = get_video_metadata(video_path)
                             fps = video_metadata.fps
                             dt = 1.0 / fps if fps > 0 else 1.0
+                            display_settings = load_video_display_settings(video_path)
 
                             # Transpose matrix: (frames, points) -> (points, frames)
                             thickness = matrix.T
 
                             # Calculate physical spacing
                             dy = calculate_physical_spacing(
-                                analysis_id, self.results_storage
+                                analysis_id,
+                                self.results_storage,
+                                pixel_to_mm_factor=display_settings.pixel_to_mm_factor,
                             )
 
                             # Run contraction detection with default parameters
                             default_params = ContractionDetectionParameters()
-                            events, _, _ = detect_contractions(
+                            events, _, _ = detect_contractions_with_parameters(
                                 thickness=thickness,
                                 dt=dt,
+                                parameters=default_params,
                                 dy=dy,
-                                thr=default_params.threshold,
-                                percentile=default_params.threshold_percentile,
-                                smooth_sigma=(
-                                    default_params.smooth_sigma_y,
-                                    default_params.smooth_sigma_t,
-                                ),
-                                min_pixels=default_params.min_pixels,
-                                open_iters=default_params.open_iters,
-                                close_iters=default_params.close_iters,
+                                pixel_to_mm_factor=display_settings.pixel_to_mm_factor,
                             )
 
                             # Store events in database
-                            db.save_contraction_events(analysis_id, events)
+                            db.save_contraction_events(
+                                analysis_id,
+                                events,
+                                parameters_used=default_params,
+                                detection_version=CONTRACTION_DETECTION_VERSION_V2,
+                            )
                             logger.info(
                                 f"Auto-detected {len(events)} contraction events for analysis {analysis_id}"
                             )

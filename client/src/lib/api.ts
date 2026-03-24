@@ -538,10 +538,19 @@ export interface ContractionDetectionParameters {
   open_iters?: number;
   close_iters?: number;
   min_pixels?: number;
+  min_duration_s?: number;
+  min_span_mm?: number | null;
+  area_threshold_median_fraction?: number;
+  merge_max_gap_s?: number;
+  merge_max_offset_mm?: number;
+  merge_max_velocity_delta_mm_s?: number;
   min_area?: number | null;
   min_height?: number | null;
   dy?: number | null;
 }
+
+export const CONTRACTION_DETECTION_VERSION_V2 = 'v2';
+export const CONTRACTION_DETECTION_VERSION_LEGACY = 'legacy-v1';
 
 export interface ContractionEventLineFit {
   a_idx_per_frame: number;
@@ -568,6 +577,7 @@ export interface ContractionDetectionResult {
   events: ContractionEvent[];
   parameters_used: ContractionDetectionParameters;
   total_events: number;
+  detection_version: string;
 }
 
 export type MultiViewAnalysisDirection = 'front' | 'bottom';

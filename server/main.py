@@ -19,7 +19,11 @@ import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .calibration import calibrate_tube_width
-from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE, PIXEL_TO_MM_FACTOR
+from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE
+from .display_settings import (
+    load_video_display_settings,
+    save_video_display_settings,
+)
 from .edge_detection_silhouette import edge_detection_silhouette_calculation
 from .database import (
     MultiViewSessionDB,
@@ -72,7 +76,12 @@ from .storage import (
 )
 from .tasks import task_manager
 from .video_pool import VideoHandlePool
-from .contraction_detection import detect_contractions, calculate_physical_spacing
+from .contraction_detection import (
+    CONTRACTION_DETECTION_VERSION_LEGACY,
+    CONTRACTION_DETECTION_VERSION_V2,
+    calculate_physical_spacing,
+    detect_contractions_with_parameters,
+)
 from .multiview_validation import validate_multi_view_pair
 from .multiview_alignment import (
     AUTO_APPLY_CONFIDENCE_THRESHOLD,
@@ -117,33 +126,12 @@ app.add_middleware(
 
 def _load_video_display_settings(video_path: Path) -> DisplaySettings:
     """Load display settings from the per-video JSON file."""
-    settings_path = video_path.with_suffix(".json")
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r") as f:
-                all_data = json.load(f)
-                if "display_settings" in all_data:
-                    return DisplaySettings(**all_data["display_settings"])
-        except (json.JSONDecodeError, IOError, ValueError):
-            pass
-    return DisplaySettings(
-        pixel_to_mm_factor=PIXEL_TO_MM_FACTOR, heatmap_min_mm=3.0, heatmap_max_mm=30.0
-    )
+    return load_video_display_settings(video_path)
 
 
 def _save_video_display_settings(video_path: Path, settings: DisplaySettings) -> None:
     """Save display settings to the per-video JSON file, preserving other keys."""
-    settings_path = video_path.with_suffix(".json")
-    existing_data = {}
-    if settings_path.exists():
-        try:
-            with open(settings_path, "r") as f:
-                existing_data = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            existing_data = {}
-    existing_data["display_settings"] = settings.model_dump()
-    with open(settings_path, "w") as f:
-        json.dump(existing_data, f, indent=2, default=str)
+    save_video_display_settings(video_path, settings)
 
 
 def _normalize_optional_display_name(raw_name: str | None) -> str | None:
@@ -152,6 +140,33 @@ def _normalize_optional_display_name(raw_name: str | None) -> str | None:
         return None
     cleaned = raw_name.strip()
     return cleaned if cleaned else None
+
+
+def _build_contraction_event_models(events_dict: list[dict]) -> list[ContractionEvent]:
+    """Convert raw contraction-event dictionaries into response models."""
+    contraction_events = []
+    for event in events_dict:
+        contraction_events.append(
+            ContractionEvent(
+                id=event["id"],
+                label=event["label"],
+                n_pixels=event["n_pixels"],
+                threshold_used=event["threshold_used"],
+                t_range_frames=event["t_range_frames"],
+                y_range_idx=event["y_range_idx"],
+                duration_s=event["duration_s"],
+                height_phys=event["height_phys"],
+                velocity_phys_per_s=event["velocity_phys_per_s"],
+                line_fit=ContractionEventLineFit(
+                    a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
+                    b=event["line_fit"]["b"],
+                ),
+                area_exact=event["area_exact"],
+                area_triangle=event["area_triangle"],
+                created_at=event["created_at"],
+            )
+        )
+    return contraction_events
 
 
 @app.get("/")
@@ -1208,6 +1223,7 @@ async def detect_contractions_endpoint(
     results_storage = ResultsStorage()
     db = results_storage.db
     matrix, _, _ = db.build_heatmap_matrix(analysis_id)
+    display_settings = _load_video_display_settings(video_path)
 
     if matrix.size == 0:
         raise HTTPException(
@@ -1224,22 +1240,20 @@ async def detect_contractions_endpoint(
     # Calculate physical spacing if not provided
     dy = parameters.dy
     if dy is None:
-        dy = calculate_physical_spacing(analysis_id, results_storage)
+        dy = calculate_physical_spacing(
+            analysis_id,
+            results_storage,
+            pixel_to_mm_factor=display_settings.pixel_to_mm_factor,
+        )
 
     # Run contraction detection
     try:
-        events, mask_c, lbl = detect_contractions(
+        events, _, _ = detect_contractions_with_parameters(
             thickness=thickness,
             dt=dt,
+            parameters=parameters,
             dy=dy,
-            thr=parameters.threshold,
-            percentile=parameters.threshold_percentile,
-            smooth_sigma=(parameters.smooth_sigma_y, parameters.smooth_sigma_t),
-            min_pixels=parameters.min_pixels,
-            min_area=parameters.min_area,
-            min_height=parameters.min_height,
-            open_iters=parameters.open_iters,
-            close_iters=parameters.close_iters,
+            pixel_to_mm_factor=display_settings.pixel_to_mm_factor,
         )
     except Exception as e:
         raise HTTPException(
@@ -1248,7 +1262,12 @@ async def detect_contractions_endpoint(
 
     # Store events in database
     try:
-        db.save_contraction_events(analysis_id, events)
+        db.save_contraction_events(
+            analysis_id,
+            events,
+            parameters_used=parameters,
+            detection_version=CONTRACTION_DETECTION_VERSION_V2,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to save contraction events: {str(e)}"
@@ -1256,35 +1275,13 @@ async def detect_contractions_endpoint(
 
     # Retrieve events from database to get proper IDs
     events_dict = db.get_contraction_events(analysis_id)
-
-    # Convert events to ContractionEvent models
-    contraction_events = []
-    for event in events_dict:
-        contraction_events.append(
-            ContractionEvent(
-                id=event["id"],
-                label=event["label"],
-                n_pixels=event["n_pixels"],
-                threshold_used=event["threshold_used"],
-                t_range_frames=event["t_range_frames"],
-                y_range_idx=event["y_range_idx"],
-                duration_s=event["duration_s"],
-                height_phys=event["height_phys"],
-                velocity_phys_per_s=event["velocity_phys_per_s"],
-                line_fit=ContractionEventLineFit(
-                    a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
-                    b=event["line_fit"]["b"],
-                ),
-                area_exact=event["area_exact"],
-                area_triangle=event["area_triangle"],
-                created_at=event["created_at"],
-            )
-        )
+    contraction_events = _build_contraction_event_models(events_dict)
 
     return ContractionDetectionResult(
         events=contraction_events,
         parameters_used=parameters,
         total_events=len(contraction_events),
+        detection_version=CONTRACTION_DETECTION_VERSION_V2,
     )
 
 
@@ -1310,39 +1307,21 @@ def get_contraction_events(analysis_id: str):
 
     # Get events from database
     events_dict = db.get_contraction_events(analysis_id)
+    run_metadata = db.get_contraction_detection_run(analysis_id)
 
-    # Convert to ContractionEvent models
-    contraction_events = []
-    for event in events_dict:
-        contraction_events.append(
-            ContractionEvent(
-                id=event["id"],
-                label=event["label"],
-                n_pixels=event["n_pixels"],
-                threshold_used=event["threshold_used"],
-                t_range_frames=event["t_range_frames"],
-                y_range_idx=event["y_range_idx"],
-                duration_s=event["duration_s"],
-                height_phys=event["height_phys"],
-                velocity_phys_per_s=event["velocity_phys_per_s"],
-                line_fit=ContractionEventLineFit(
-                    a_idx_per_frame=event["line_fit"]["a_idx_per_frame"],
-                    b=event["line_fit"]["b"],
-                ),
-                area_exact=event["area_exact"],
-                area_triangle=event["area_triangle"],
-                created_at=event["created_at"],
-            )
-        )
-
-    # For parameters_used, we'll use defaults since we don't store them
-    # In a production system, you might want to store parameters with events
-    parameters_used = ContractionDetectionParameters()
+    contraction_events = _build_contraction_event_models(events_dict)
+    if run_metadata is None:
+        parameters_used = ContractionDetectionParameters()
+        detection_version = CONTRACTION_DETECTION_VERSION_LEGACY
+    else:
+        parameters_used = run_metadata["parameters_used"]
+        detection_version = run_metadata["detection_version"]
 
     return ContractionDetectionResult(
         events=contraction_events,
         parameters_used=parameters_used,
         total_events=len(contraction_events),
+        detection_version=detection_version,
     )
 
 
