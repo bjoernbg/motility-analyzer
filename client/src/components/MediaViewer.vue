@@ -8,6 +8,9 @@
         <button :class="{ active: viewMode === 'heatmap' }" @click="viewMode = 'heatmap'">
           Heatmap
         </button>
+        <button :class="{ active: viewMode === 'topography' }" @click="viewMode = 'topography'">
+          Topo 3D
+        </button>
       </div>
       <div class="flex items-center gap-1">
         <div v-if="viewMode === 'video' && hasFrameData" class="overlay-toggle">
@@ -48,7 +51,7 @@
             size="sm"
             variant="outline"
             :disabled="isExportingCurrentView || !canDownloadCurrentView"
-            :title="viewMode === 'video' ? 'Download current video frame' : 'Download current heatmap view'"
+            :title="downloadButtonTitle"
             @click="handleDownloadCurrentView"
           >
             <Icon name="lucide:download" size="1.1em" />
@@ -82,13 +85,30 @@
           ref="mainHeatmapViewerRef"
           :key="`main-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
           :current-frame="store.currentFrame"
+          :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
+          :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
+          :heatmap-max-mm-override="currentDisplaySettings?.heatmap_max_mm"
           :show-contraction-overlays="showContractionOverlays"
           :selected-contraction-id="props.selectedContractionId"
           @export-availability-change="handleHeatmapExportAvailabilityChange"
           @frame-click="handleFrameClick" />
 
+        <HeatmapTopographyViewer v-else-if="viewMode === 'topography' && store.activeAnalysis"
+          ref="mainTopographyViewerRef"
+          :key="`main-topography-${store.activeAnalysis.id}`"
+          :analysis-id="store.activeAnalysis.id"
+          :current-frame="store.currentFrame"
+          :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
+          :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
+          :heatmap-max-mm-override="currentDisplaySettings?.heatmap_max_mm"
+          @export-availability-change="handleTopographyExportAvailabilityChange"
+          @frame-click="handleFrameClick" />
+
         <div v-else-if="viewMode === 'heatmap' && !store.activeAnalysis" class="no-heatmap">
           No analysis available. Run an analysis to view the heatmap.
+        </div>
+        <div v-else-if="viewMode === 'topography' && !store.activeAnalysis" class="no-heatmap">
+          No analysis available. Run an analysis to view the topography.
         </div>
       </div>
 
@@ -97,11 +117,14 @@
           <HeatmapViewer v-if="viewMode === 'video' && store.activeAnalysis"
             :key="`overlay-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
             :current-frame="store.currentFrame"
+            :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
+            :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
+            :heatmap-max-mm-override="currentDisplaySettings?.heatmap_max_mm"
             :show-contraction-overlays="showContractionOverlays"
             :selected-contraction-id="props.selectedContractionId"
             compact
             @frame-click="handleFrameClick" />
-          <div v-else-if="viewMode === 'heatmap' && store.activeVideo" class="mini-video-wrapper">
+          <div v-else-if="(viewMode === 'heatmap' || viewMode === 'topography') && store.activeVideo" class="mini-video-wrapper">
             <VideoPlayer overlay :highlight-point-index="highlightedPointIndex"
               :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
               :calibration-region="calibrationRegion" />
@@ -133,6 +156,7 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import VideoPlayer from './VideoPlayer.vue';
 import HeatmapViewer from './HeatmapViewer.vue';
+import HeatmapTopographyViewer from './HeatmapTopographyViewer.vue';
 import DisplaySettingsControls from './DisplaySettingsControls.vue';
 import { ButtonGroup } from './ui/button-group';
 import { Button } from './ui/button';
@@ -153,9 +177,13 @@ interface HeatmapViewerExportHandle {
   downloadCurrentView: () => Promise<void>;
 }
 
+interface TopographyViewerExportHandle {
+  downloadCurrentView: () => Promise<void>;
+}
+
 const store = useAnalysisStore();
 
-const viewMode = ref<'video' | 'heatmap'>('video');
+const viewMode = ref<'video' | 'heatmap' | 'topography'>('video');
 const highlightedPointIndex = ref<number | null>(null);
 const showContractionOverlays = ref(false);
 const showCanvasOverlay = ref(true);
@@ -164,8 +192,10 @@ const currentDisplaySettings = ref<DisplaySettings | null>(null);
 const calibrationRegion = ref<CalibrationResult | null>(null);
 const videoPlayerRef = ref<VideoPlayerExportHandle | null>(null);
 const mainHeatmapViewerRef = ref<HeatmapViewerExportHandle | null>(null);
+const mainTopographyViewerRef = ref<TopographyViewerExportHandle | null>(null);
 const isExportingCurrentView = ref(false);
 const isHeatmapExportable = ref(false);
+const isTopographyExportable = ref(false);
 
 const hasFrameData = computed(() => store.liveFrameData.size > 0);
 const colorScaleCanvas = ref<HTMLCanvasElement | null>(null);
@@ -175,7 +205,11 @@ const canDownloadCurrentView = computed(() => {
     return Boolean(store.activeVideo && store.currentFrame !== null);
   }
 
-  return Boolean(store.activeAnalysis && isHeatmapExportable.value);
+  if (viewMode.value === 'heatmap') {
+    return Boolean(store.activeAnalysis && isHeatmapExportable.value);
+  }
+
+  return Boolean(store.activeAnalysis && isTopographyExportable.value);
 });
 
 const canShowOverlay = computed(() => {
@@ -189,7 +223,19 @@ const showOverlay = computed(() => {
 
 const showColorScale = computed(() => {
   if (!currentDisplaySettings.value) return false;
-  return viewMode.value === 'heatmap';
+  return viewMode.value === 'heatmap' || viewMode.value === 'topography';
+});
+
+const downloadButtonTitle = computed(() => {
+  if (viewMode.value === 'video') {
+    return 'Download current video frame';
+  }
+
+  if (viewMode.value === 'topography') {
+    return 'Download current topography view';
+  }
+
+  return 'Download current heatmap view';
 });
 
 const colorScaleLabels = computed(() => {
@@ -245,6 +291,10 @@ function handleHeatmapExportAvailabilityChange(available: boolean) {
   isHeatmapExportable.value = available;
 }
 
+function handleTopographyExportAvailabilityChange(available: boolean) {
+  isTopographyExportable.value = available;
+}
+
 async function handleDownloadCurrentView() {
   if (isExportingCurrentView.value || !canDownloadCurrentView.value) {
     return;
@@ -257,7 +307,12 @@ async function handleDownloadCurrentView() {
       return;
     }
 
-    await mainHeatmapViewerRef.value?.downloadCurrentView();
+    if (viewMode.value === 'heatmap') {
+      await mainHeatmapViewerRef.value?.downloadCurrentView();
+      return;
+    }
+
+    await mainTopographyViewerRef.value?.downloadCurrentView();
   } catch (error) {
     console.error('Failed to download current view:', error);
   } finally {
@@ -299,6 +354,7 @@ watch(
   (analysisId) => {
     if (!analysisId) {
       isHeatmapExportable.value = false;
+      isTopographyExportable.value = false;
     }
   }
 );

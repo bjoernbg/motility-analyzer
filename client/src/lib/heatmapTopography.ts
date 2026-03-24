@@ -1,0 +1,271 @@
+import { colormapValueToRgb } from './colormap';
+
+export const DEFAULT_TOPOGRAPHY_MAX_COLUMNS = 512;
+const MIN_RANGE = 1e-9;
+const HEIGHT_SCALE_RATIO = 0.2;
+
+export interface HeatmapTopographyMetrics {
+  columnCount: number;
+  frameCenterOffset: number;
+  frameCount: number;
+  heightScale: number;
+  maxHeight: number;
+  pointCenterOffset: number;
+  pointCount: number;
+  yScale: number;
+}
+
+export interface HeatmapTopographySurface {
+  colors: Float32Array;
+  frameWindows: Array<[startFrame: number, endFrameExclusive: number]>;
+  indices: Uint32Array;
+  metrics: HeatmapTopographyMetrics;
+  positions: Float32Array;
+}
+
+export interface HeatmapTopographySurfaceOptions {
+  colormap: Uint8Array;
+  frameCount: number;
+  heatmapMaxMm: number;
+  heatmapMinMm: number;
+  maxColumns?: number;
+  pixelToMmFactor: number;
+  pointCount: number;
+  values: Float32Array;
+}
+
+export interface HeatmapTopographyFrameLine {
+  positions: Float32Array;
+}
+
+export interface HeatmapTopographyFrameLineOptions {
+  frame: number | null | undefined;
+  heatmapMaxMm: number;
+  heatmapMinMm: number;
+  metrics: HeatmapTopographyMetrics;
+  pixelToMmFactor: number;
+  values: Float32Array;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function createEmptySurface(frameCount: number, pointCount: number): HeatmapTopographySurface {
+  return {
+    colors: new Float32Array(0),
+    frameWindows: [],
+    indices: new Uint32Array(0),
+    metrics: {
+      columnCount: 0,
+      frameCenterOffset: Math.max(0, (frameCount - 1) / 2),
+      frameCount,
+      heightScale: 1,
+      maxHeight: 0,
+      pointCenterOffset: 0,
+      pointCount,
+      yScale: 1,
+    },
+    positions: new Float32Array(0),
+  };
+}
+
+export function convertHeatmapPixelValueToMm(valuePx: number, pixelToMmFactor: number): number {
+  const safeFactor = Math.max(pixelToMmFactor, MIN_RANGE);
+  return valuePx / safeFactor;
+}
+
+export function normalizeHeatmapMmValue(
+  valueMm: number,
+  heatmapMinMm: number,
+  heatmapMaxMm: number,
+): number {
+  const range = Math.max(heatmapMaxMm - heatmapMinMm, MIN_RANGE);
+  return clamp((valueMm - heatmapMinMm) / range, 0, 1);
+}
+
+export function resolveTopographyColumnCount(
+  frameCount: number,
+  maxColumns = DEFAULT_TOPOGRAPHY_MAX_COLUMNS,
+): number {
+  if (frameCount <= 0) {
+    return 0;
+  }
+
+  return Math.min(frameCount, Math.max(1, Math.floor(maxColumns)));
+}
+
+export function buildHeatmapTopographySurface(
+  options: HeatmapTopographySurfaceOptions,
+): HeatmapTopographySurface {
+  const {
+    colormap,
+    frameCount,
+    heatmapMaxMm,
+    heatmapMinMm,
+    maxColumns = DEFAULT_TOPOGRAPHY_MAX_COLUMNS,
+    pixelToMmFactor,
+    pointCount,
+    values,
+  } = options;
+
+  if (frameCount <= 0 || pointCount <= 0 || values.length === 0) {
+    return createEmptySurface(frameCount, pointCount);
+  }
+
+  const columnCount = resolveTopographyColumnCount(frameCount, maxColumns);
+  if (columnCount <= 0) {
+    return createEmptySurface(frameCount, pointCount);
+  }
+
+  const frameCenterOffset = Math.max(0, (frameCount - 1) / 2);
+  const yScale = pointCount > 1 && frameCount > 1
+    ? (frameCount - 1) / (pointCount - 1)
+    : 1;
+  const pointCenterOffset = Math.max(0, ((pointCount - 1) * yScale) / 2);
+  const groundSpan = Math.max(frameCount - 1, (pointCount - 1) * yScale, 1);
+  const heightScale = groundSpan * HEIGHT_SCALE_RATIO;
+  const frameWindows: Array<[number, number]> = new Array(columnCount);
+  const positions = new Float32Array(columnCount * pointCount * 3);
+  const colors = new Float32Array(columnCount * pointCount * 3);
+  let maxHeight = 0;
+
+  for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+    const startFrame = Math.floor((columnIndex * frameCount) / columnCount);
+    const endFrameExclusive = Math.max(
+      startFrame + 1,
+      Math.floor(((columnIndex + 1) * frameCount) / columnCount),
+    );
+    const framePosition = columnCount === 1
+      ? 0
+      : (columnIndex / (columnCount - 1)) * (frameCount - 1);
+    frameWindows[columnIndex] = [startFrame, endFrameExclusive];
+
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      let accumulatedValuePx = 0;
+      let sampleCount = 0;
+
+      for (let frame = startFrame; frame < endFrameExclusive; frame += 1) {
+        accumulatedValuePx += values[frame * pointCount + pointIndex] ?? 0;
+        sampleCount += 1;
+      }
+
+      const averageValuePx = sampleCount > 0 ? accumulatedValuePx / sampleCount : 0;
+      const valueMm = convertHeatmapPixelValueToMm(averageValuePx, pixelToMmFactor);
+      const normalizedValue = normalizeHeatmapMmValue(valueMm, heatmapMinMm, heatmapMaxMm);
+      const [r, g, b] = colormapValueToRgb(colormap, normalizedValue);
+      const height = normalizedValue * heightScale;
+      const vertexOffset = (columnIndex * pointCount + pointIndex) * 3;
+
+      positions[vertexOffset] = framePosition - frameCenterOffset;
+      positions[vertexOffset + 1] = pointIndex * yScale - pointCenterOffset;
+      positions[vertexOffset + 2] = height;
+
+      colors[vertexOffset] = r;
+      colors[vertexOffset + 1] = g;
+      colors[vertexOffset + 2] = b;
+
+      if (height > maxHeight) {
+        maxHeight = height;
+      }
+    }
+  }
+
+  let indices = new Uint32Array(0);
+  if (columnCount > 1 && pointCount > 1) {
+    indices = new Uint32Array((columnCount - 1) * (pointCount - 1) * 6);
+    let writeIndex = 0;
+
+    for (let columnIndex = 0; columnIndex < columnCount - 1; columnIndex += 1) {
+      for (let pointIndex = 0; pointIndex < pointCount - 1; pointIndex += 1) {
+        const a = columnIndex * pointCount + pointIndex;
+        const b = (columnIndex + 1) * pointCount + pointIndex;
+        const c = a + 1;
+        const d = b + 1;
+
+        indices[writeIndex] = a;
+        indices[writeIndex + 1] = b;
+        indices[writeIndex + 2] = c;
+        indices[writeIndex + 3] = c;
+        indices[writeIndex + 4] = b;
+        indices[writeIndex + 5] = d;
+        writeIndex += 6;
+      }
+    }
+  }
+
+  return {
+    colors,
+    frameWindows,
+    indices,
+    metrics: {
+      columnCount,
+      frameCenterOffset,
+      frameCount,
+      heightScale,
+      maxHeight,
+      pointCenterOffset,
+      pointCount,
+      yScale,
+    },
+    positions,
+  };
+}
+
+export function buildHeatmapTopographyFrameLine(
+  options: HeatmapTopographyFrameLineOptions,
+): HeatmapTopographyFrameLine | null {
+  const {
+    frame,
+    heatmapMaxMm,
+    heatmapMinMm,
+    metrics,
+    pixelToMmFactor,
+    values,
+  } = options;
+
+  if (
+    frame === null ||
+    frame === undefined ||
+    frame < 0 ||
+    frame >= metrics.frameCount ||
+    metrics.pointCount <= 0
+  ) {
+    return null;
+  }
+
+  const positions = new Float32Array(metrics.pointCount * 3);
+  const lineOffset = Math.max(metrics.heightScale * 0.025, 0.05);
+
+  for (let pointIndex = 0; pointIndex < metrics.pointCount; pointIndex += 1) {
+    const valuePx = values[frame * metrics.pointCount + pointIndex] ?? 0;
+    const valueMm = convertHeatmapPixelValueToMm(valuePx, pixelToMmFactor);
+    const normalizedValue = normalizeHeatmapMmValue(valueMm, heatmapMinMm, heatmapMaxMm);
+    const vertexOffset = pointIndex * 3;
+
+    positions[vertexOffset] = frame - metrics.frameCenterOffset;
+    positions[vertexOffset + 1] = pointIndex * metrics.yScale - metrics.pointCenterOffset;
+    positions[vertexOffset + 2] = normalizedValue * metrics.heightScale + lineOffset;
+  }
+
+  return { positions };
+}
+
+export function resolveTopographyFrameFromWorldX(
+  worldX: number,
+  metrics: HeatmapTopographyMetrics,
+): number {
+  return clamp(Math.round(worldX + metrics.frameCenterOffset), 0, Math.max(0, metrics.frameCount - 1));
+}
+
+export function resolveTopographyPointIndexFromWorldY(
+  worldY: number,
+  metrics: HeatmapTopographyMetrics,
+): number {
+  if (metrics.pointCount <= 1) {
+    return 0;
+  }
+
+  const rawPointIndex = (worldY + metrics.pointCenterOffset) / metrics.yScale;
+  return clamp(Math.round(rawPointIndex), 0, metrics.pointCount - 1);
+}

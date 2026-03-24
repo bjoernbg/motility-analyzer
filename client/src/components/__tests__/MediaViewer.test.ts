@@ -11,7 +11,9 @@ const testState = vi.hoisted(() => ({
   })),
   videoDownloadMock: vi.fn(async () => {}),
   heatmapDownloadMock: vi.fn(async () => {}),
+  topographyDownloadMock: vi.fn(async () => {}),
   heatmapExportAvailable: true,
+  topographyExportAvailable: true,
 }));
 
 vi.mock('../../stores/analysis', async () => {
@@ -133,6 +135,22 @@ const HeatmapViewerStub = defineComponent({
   },
 });
 
+const HeatmapTopographyViewerStub = defineComponent({
+  name: 'HeatmapTopographyViewer',
+  emits: ['frame-click', 'export-availability-change'],
+  setup(_, { emit, expose }) {
+    onMounted(() => {
+      emit('export-availability-change', testState.topographyExportAvailable);
+    });
+
+    expose({
+      downloadCurrentView: testState.topographyDownloadMock,
+    });
+
+    return () => h('div', { class: 'topography-viewer-stub' });
+  },
+});
+
 import MediaViewer from '../MediaViewer.vue';
 
 async function flush(): Promise<void> {
@@ -153,6 +171,7 @@ function mountSubject() {
         DisplaySettingsControls: DisplaySettingsControlsStub,
         VideoPlayer: VideoPlayerStub,
         HeatmapViewer: HeatmapViewerStub,
+        HeatmapTopographyViewer: HeatmapTopographyViewerStub,
       },
     },
   });
@@ -167,8 +186,10 @@ describe('MediaViewer toolbar exports', () => {
     testState.storeMock.contractionEvents = [];
     testState.storeMock.seekToFrame = vi.fn();
     testState.heatmapExportAvailable = true;
+    testState.topographyExportAvailable = true;
     testState.videoDownloadMock.mockClear();
     testState.heatmapDownloadMock.mockClear();
+    testState.topographyDownloadMock.mockClear();
     testState.getVideoDisplaySettingsMock.mockClear();
   });
 
@@ -207,5 +228,45 @@ describe('MediaViewer toolbar exports', () => {
     await flush();
 
     expect(wrapper.get('button[title="Download current heatmap view"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('dispatches the download action to the topography viewer in topography mode', async () => {
+    const wrapper = mountSubject();
+    await flush();
+
+    const modeButtons = wrapper.findAll('.view-toggle button');
+    await modeButtons[2]?.trigger('click');
+    await flush();
+
+    await wrapper.get('button[title="Download current topography view"]').trigger('click');
+
+    expect(testState.topographyDownloadMock).toHaveBeenCalledTimes(1);
+    expect(testState.videoDownloadMock).not.toHaveBeenCalled();
+    expect(testState.heatmapDownloadMock).not.toHaveBeenCalled();
+  });
+
+  it('disables the download button when the active topography view is not exportable', async () => {
+    testState.topographyExportAvailable = false;
+
+    const wrapper = mountSubject();
+    await flush();
+
+    const modeButtons = wrapper.findAll('.view-toggle button');
+    await modeButtons[2]?.trigger('click');
+    await flush();
+
+    expect(wrapper.get('button[title="Download current topography view"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('keeps the mini video preview visible in topography mode', async () => {
+    const wrapper = mountSubject();
+    await flush();
+
+    const modeButtons = wrapper.findAll('.view-toggle button');
+    await modeButtons[2]?.trigger('click');
+    await flush();
+
+    expect(wrapper.find('.mini-video-wrapper').exists()).toBe(true);
+    expect(wrapper.find('.topography-viewer-stub').exists()).toBe(true);
   });
 });
