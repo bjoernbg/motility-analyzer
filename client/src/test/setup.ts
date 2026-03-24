@@ -33,6 +33,12 @@ if (typeof HTMLCanvasElement !== 'undefined') {
   const noop = () => {};
   const context2d = {
     clearRect: noop,
+    createImageData: (width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4),
+      width,
+      height,
+    }),
+    putImageData: noop,
     beginPath: noop,
     moveTo: noop,
     lineTo: noop,
@@ -42,9 +48,15 @@ if (typeof HTMLCanvasElement !== 'undefined') {
     fillRect: noop,
     strokeRect: noop,
     setLineDash: noop,
+    drawImage: noop,
+    save: noop,
+    restore: noop,
+    translate: noop,
+    scale: noop,
     measureText: () => ({ width: 0 }),
     fillText: noop,
     setTransform: noop,
+    imageSmoothingEnabled: true,
     textAlign: 'center',
     textBaseline: 'middle',
     font: '',
@@ -60,6 +72,10 @@ if (typeof HTMLCanvasElement !== 'undefined') {
     }
     return null;
   }) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+
+  HTMLCanvasElement.prototype.toBlob = function toBlob(callback) {
+    callback?.(new Blob(['canvas'], { type: 'image/png' }));
+  };
 }
 
 afterEach(() => {

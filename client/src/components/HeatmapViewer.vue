@@ -41,6 +41,12 @@ import { useHeatmapCache } from "../composables/useHeatmapCache";
 import { useAnalysisStore } from "../stores/analysis";
 import { PIXEL_TO_MM_FACTOR, HEATMAP_MIN_MM, HEATMAP_MAX_MM } from "../lib/constants";
 import { createColormap } from "../lib/colormap";
+import { downloadCanvas } from "../lib/download";
+import {
+  createHeatmapRasterCanvas,
+  drawHeatmapOverlays,
+  resolveHeatmapExportDimensions,
+} from "../lib/heatmapRendering";
 
 const props = defineProps<{
   analysisId: string;
@@ -56,6 +62,7 @@ const store = useAnalysisStore();
 
 const emit = defineEmits<{
   'frame-click': [frame: number, pointIndex: number];
+  'export-availability-change': [available: boolean];
 }>();
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -114,6 +121,16 @@ const tooltipStyle = computed(() => {
     left: mousePos.value.x + 10 + "px",
     top: mousePos.value.y + 10 + "px",
   };
+});
+
+const hasExportableData = computed(() => {
+  return Boolean(
+    meta.value &&
+    data.value &&
+    meta.value.width > 0 &&
+    meta.value.height > 0 &&
+    !error.value
+  );
 });
 
 // Axis dimensions
@@ -199,6 +216,14 @@ watch(isAnalysisProcessing, (processing, wasProcessing) => {
     loadData();
   }
 });
+
+watch(
+  hasExportableData,
+  (available) => {
+    emit('export-availability-change', available);
+  },
+  { immediate: true }
+);
 
 const resizeObserver = ref<ResizeObserver | null>(null);
 
@@ -399,6 +424,22 @@ function calculateInitialScale() {
 
 const colormap = createColormap();
 
+function createBaseHeatmapCanvas(): HTMLCanvasElement | null {
+  if (!meta.value || !data.value || meta.value.width === 0 || meta.value.height === 0) {
+    return null;
+  }
+
+  return createHeatmapRasterCanvas({
+    width: meta.value.width,
+    height: meta.value.height,
+    values: data.value,
+    pixelToMmFactor: pixelToMmFactor.value,
+    heatmapMinMm: heatmapMinMm.value,
+    heatmapMaxMm: heatmapMaxMm.value,
+    colormap,
+  });
+}
+
 function renderHeatmap() {
   if (!canvas.value || !meta.value || !data.value || !container.value) return;
 
@@ -412,54 +453,8 @@ function renderHeatmap() {
   const containerHeight = Math.max(1, container.value.clientHeight - axisHeight);
 
   const { width, height } = meta.value;
-  const values = data.value;
-
-  // We create an offscreen canvas at data resolution
-  const offCanvas = document.createElement("canvas");
-  offCanvas.width = width;
-  offCanvas.height = height;
-
-  const offCtx = offCanvas.getContext("2d");
-  if (!offCtx) return;
-
-  const imageData = offCtx.createImageData(width, height);
-  const pixels = imageData.data; // Uint8ClampedArray
-
-  // Fixed scale: Red = heatmapMinMm, Violet = heatmapMaxMm
-  // Convert pixel distances to mm and map to fixed scale
-  const mmRange = Math.max(1e-9, heatmapMaxMm.value - heatmapMinMm.value);
-
-  // Note: We'll treat x = frame, y = index
-  // Flatten index = x * height + y (because values are [frame][index])
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      const dataIndex = x * height + y;
-      const vPx = values[dataIndex] ?? 0; // value in pixels
-
-      // Convert to mm
-      const vMm = vPx / pixelToMmFactor.value;
-
-      // Map to fixed scale
-      // Clamp values outside the range
-      let t = (vMm - heatmapMinMm.value) / mmRange;
-      if (t < 0) t = 0; // Values < HEATMAP_MIN_MM map to red
-      if (t > 1) t = 1; // Values > HEATMAP_MAX_MM map to violet
-      const ci = Math.floor(t * 255);
-
-      const r = colormap[ci * 3 + 0] ?? 0;
-      const g = colormap[ci * 3 + 1] ?? 0;
-      const b = colormap[ci * 3 + 2] ?? 0;
-
-      // ImageData is row-major: (y * width + x) * 4
-      const pixelIndex = (y * width + x) * 4;
-      pixels[pixelIndex + 0] = r;
-      pixels[pixelIndex + 1] = g;
-      pixels[pixelIndex + 2] = b;
-      pixels[pixelIndex + 3] = 255;
-    }
-  }
-
-  offCtx.putImageData(imageData, 0, 0);
+  const offCanvas = createBaseHeatmapCanvas();
+  if (!offCanvas) return;
 
   // Set canvas display size (CSS pixels) - always constrain to container
   canvas.value.style.width = `${containerWidth}px`;
@@ -487,92 +482,75 @@ function renderHeatmap() {
   const scaledDataHeight = containerHeight; // Always fit height to container
 
   ctx.save();
-  ctx.translate(offsetX.value, 0); // No y-offset, always show full height
   ctx.imageSmoothingEnabled = false; // keep pixel crispness
   // Draw the offscreen canvas at the scaled size
-  ctx.drawImage(offCanvas, 0, 0, scaledDataWidth, scaledDataHeight);
+  ctx.drawImage(offCanvas, offsetX.value, 0, scaledDataWidth, scaledDataHeight);
   
-  // Draw contraction event overlays if enabled
-  if (props.showContractionOverlays && store.contractionEvents.length > 0 && meta.value) {
-    const numPoints = meta.value.height;
-    const hasSelectedContraction = Boolean(props.selectedContractionId);
-    
-    for (const event of store.contractionEvents) {
-      const [tStart, tEnd] = event.t_range_frames;
-      const [yStart, yEnd] = event.y_range_idx;
-      const isSelected = props.selectedContractionId === event.id;
-      
-      // Calculate positions in canvas coordinates
-      const xStart = tStart * scale.value;
-      const xEnd = tEnd * scale.value;
-      const yStartPx = (yStart / numPoints) * scaledDataHeight;
-      const yEndPx = (yEnd / numPoints) * scaledDataHeight;
+  drawHeatmapOverlays(ctx, {
+    width,
+    height,
+    currentFrame: props.currentFrame,
+    showContractionOverlays: props.showContractionOverlays,
+    selectedContractionId: props.selectedContractionId,
+    contractionEvents: store.contractionEvents,
+    scaleX: scale.value,
+    scaledDataHeight,
+    offsetX: offsetX.value,
+  });
 
-      ctx.save();
-      if (hasSelectedContraction && !isSelected) {
-        ctx.globalAlpha = 0.25;
-      }
-      
-      // Draw bounding box
-      ctx.strokeStyle = isSelected ? 'rgba(255, 255, 255, 0.95)' : 'rgba(255, 245, 120, 0.85)';
-      ctx.lineWidth = isSelected ? 3 : 1.8;
-      ctx.setLineDash([]);
-      ctx.strokeRect(xStart, yStartPx, xEnd - xStart, yEndPx - yStartPx);
-      
-      // Draw fitted line
-      const { a_idx_per_frame, b } = event.line_fit;
-      ctx.strokeStyle = isSelected ? 'rgba(255, 90, 90, 0.98)' : 'rgba(255, 40, 40, 0.78)';
-      ctx.lineWidth = isSelected ? 3 : 2;
-      ctx.beginPath();
-      
-      // Calculate line endpoints
-      const yAtStart = a_idx_per_frame * tStart + b;
-      const yAtEnd = a_idx_per_frame * tEnd + b;
-      
-      const yAtStartPx = (yAtStart / numPoints) * scaledDataHeight;
-      const yAtEndPx = (yAtEnd / numPoints) * scaledDataHeight;
-      
-      ctx.moveTo(xStart, yAtStartPx);
-      ctx.lineTo(xEnd, yAtEndPx);
-      ctx.stroke();
-      
-      // Draw direction arrow
-      const arrowLength = 20;
-      const arrowX = xEnd;
-      const arrowY = yAtEndPx;
-      const angle = Math.atan2(yAtEndPx - yAtStartPx, xEnd - xStart);
-      
-      ctx.beginPath();
-      ctx.moveTo(arrowX, arrowY);
-      ctx.lineTo(
-        arrowX - arrowLength * Math.cos(angle - Math.PI / 6),
-        arrowY - arrowLength * Math.sin(angle - Math.PI / 6)
-      );
-      ctx.moveTo(arrowX, arrowY);
-      ctx.lineTo(
-        arrowX - arrowLength * Math.cos(angle + Math.PI / 6),
-        arrowY - arrowLength * Math.sin(angle + Math.PI / 6)
-      );
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-  
-  // Draw current frame marker if provided
-  if (props.currentFrame !== null && props.currentFrame !== undefined && props.currentFrame >= 0 && props.currentFrame < width) {
-    const frameX = props.currentFrame * scale.value;
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(frameX, 0);
-    ctx.lineTo(frameX, containerHeight);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-  
   ctx.restore();
 }
+
+async function captureExportCanvas(): Promise<HTMLCanvasElement> {
+  if (!hasExportableData.value) {
+    await loadData();
+  }
+
+  const baseCanvas = createBaseHeatmapCanvas();
+  const resolvedMeta = meta.value;
+  if (!baseCanvas || !resolvedMeta) {
+    throw new Error('No heatmap data available for export');
+  }
+
+  const exportDimensions = resolveHeatmapExportDimensions(
+    resolvedMeta.width,
+    resolvedMeta.height,
+  );
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = exportDimensions.width;
+  exportCanvas.height = exportDimensions.height;
+  const exportCtx = exportCanvas.getContext('2d');
+  if (!exportCtx) {
+    throw new Error('Failed to create heatmap export context');
+  }
+
+  exportCtx.imageSmoothingEnabled = false;
+  exportCtx.drawImage(baseCanvas, 0, 0, exportCanvas.width, exportCanvas.height);
+
+  drawHeatmapOverlays(exportCtx, {
+    width: resolvedMeta.width,
+    height: resolvedMeta.height,
+    currentFrame: props.currentFrame,
+    showContractionOverlays: props.showContractionOverlays,
+    selectedContractionId: props.selectedContractionId,
+    contractionEvents: store.contractionEvents,
+    scaleX: exportDimensions.scaleX,
+    scaledDataHeight: exportDimensions.height,
+    frameMarkerLineWidth: Math.max(1, exportDimensions.scaleX),
+  });
+
+  return exportCanvas;
+}
+
+async function downloadCurrentView(): Promise<void> {
+  const exportCanvas = await captureExportCanvas();
+  await downloadCanvas(exportCanvas, `heatmap_${props.analysisId}.png`);
+}
+
+defineExpose({
+  captureExportCanvas,
+  downloadCurrentView,
+});
 
 function renderAxes() {
   if (props.compact) return; // Skip axes in compact mode

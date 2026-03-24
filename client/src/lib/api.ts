@@ -2,6 +2,21 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
+function getApiAssetUrl(path: string): string {
+  if (import.meta.env.DEV) {
+    return path;
+  }
+
+  if (typeof window !== 'undefined') {
+    const apiOrigin = new URL(API_BASE_URL, window.location.href).origin;
+    if (apiOrigin === window.location.origin) {
+      return path;
+    }
+  }
+
+  return `${API_BASE_URL}${path}`;
+}
+
 // Request cancellation management
 const activeRequests = new Map<string, AbortController>();
 
@@ -260,7 +275,9 @@ export async function listVideos(): Promise<Video[]> {
 }
 
 export function getFrameImageUrl(videoId: string, frameNumber: number): string {
-  return `${API_BASE_URL}/api/videos/${encodeURIComponent(videoId)}/frame/${frameNumber}/image`;
+  return getApiAssetUrl(
+    `/api/videos/${encodeURIComponent(videoId)}/frame/${frameNumber}/image`
+  );
 }
 
 export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> {

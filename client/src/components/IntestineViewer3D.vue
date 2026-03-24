@@ -6,6 +6,7 @@ import type { FrameData, MultiViewAnalysisDirection } from '../lib/api';
 import { formatMultiViewDirection } from '../lib/domain/multiViewDirections';
 import { buildTubeGeometry } from '../lib/tubeGeometry';
 import { createColormap } from '../lib/colormap';
+import { downloadCanvas } from '../lib/download';
 
 const props = defineProps<{
   leftFrameData: FrameData | null;
@@ -16,6 +17,13 @@ const props = defineProps<{
   heatmapMaxMm: number | null;
   leftDirection: MultiViewAnalysisDirection;
   rightDirection: MultiViewAnalysisDirection;
+  highlightedPointIndex?: number | null;
+  highlightSelectedPoint?: boolean;
+  exportFilename?: string;
+}>();
+
+const emit = defineEmits<{
+  'export-availability-change': [available: boolean];
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -32,15 +40,23 @@ const controls = shallowRef<OrbitControls | null>(null);
 const tubeMesh = shallowRef<THREE.Mesh | null>(null);
 const geometry = shallowRef<THREE.BufferGeometry | null>(null);
 const material = shallowRef<THREE.MeshPhongMaterial | null>(null);
+const highlightRing = shallowRef<THREE.LineLoop | null>(null);
+const highlightGeometry = shallowRef<THREE.BufferGeometry | null>(null);
+const highlightMaterial = shallowRef<THREE.LineBasicMaterial | null>(null);
 
 let dirty = true;
 let animFrameId = 0;
 let resizeObserver: ResizeObserver | null = null;
 let hasFramedCamera = false;
 
+const DEFAULT_TUBE_OPACITY = 1;
+const DIMMED_TUBE_OPACITY = 0.18;
+const HIGHLIGHT_RING_SCALE = 1.04;
+
 function clearGeometry(): void {
   hasData.value = false;
   if (!geometry.value) {
+    updateHighlightState();
     return;
   }
 
@@ -48,11 +64,59 @@ function clearGeometry(): void {
   geometry.value.deleteAttribute('position');
   geometry.value.deleteAttribute('normal');
   geometry.value.deleteAttribute('color');
+  updateHighlightState();
   requestRender();
 }
 
 function requestRender() {
   dirty = true;
+}
+
+async function captureCurrentViewFullHdCanvas(): Promise<HTMLCanvasElement> {
+  if (!hasData.value || !scene.value || !camera.value) {
+    throw new Error('No 3D geometry available for export');
+  }
+
+  controls.value?.update();
+
+  const exportCanvas = document.createElement('canvas');
+  const exportRenderer = new THREE.WebGLRenderer({
+    canvas: exportCanvas,
+    antialias: true,
+    alpha: true,
+    preserveDrawingBuffer: true,
+  });
+
+  try {
+    exportRenderer.setPixelRatio(1);
+    exportRenderer.setSize(1920, 1080, false);
+
+    const exportCamera = camera.value.clone();
+    exportCamera.aspect = 1920 / 1080;
+    exportCamera.updateProjectionMatrix();
+
+    exportRenderer.render(scene.value, exportCamera);
+    const copyCanvas = document.createElement('canvas');
+    copyCanvas.width = exportCanvas.width;
+    copyCanvas.height = exportCanvas.height;
+    const copyCtx = copyCanvas.getContext('2d');
+    if (!copyCtx) {
+      throw new Error('Failed to create 3D export copy context');
+    }
+    copyCtx.drawImage(exportCanvas, 0, 0);
+    return copyCanvas;
+  } finally {
+    exportRenderer.dispose();
+    exportRenderer.forceContextLoss();
+  }
+}
+
+async function downloadCurrentViewFullHd(): Promise<void> {
+  const exportCanvas = await captureCurrentViewFullHdCanvas();
+  await downloadCanvas(
+    exportCanvas,
+    props.exportFilename ?? 'multiview_3d.png',
+  );
 }
 
 function renderLoop() {
@@ -121,6 +185,24 @@ function initThree() {
   const mesh = new THREE.Mesh(geo, mat);
   s.add(mesh);
   tubeMesh.value = mesh;
+
+  const ringGeo = new THREE.BufferGeometry();
+  highlightGeometry.value = ringGeo;
+
+  const ringMat = new THREE.LineBasicMaterial({
+    color: 0xffc247,
+    transparent: true,
+    opacity: 1,
+    depthTest: false,
+    depthWrite: false,
+  });
+  highlightMaterial.value = ringMat;
+
+  const ring = new THREE.LineLoop(ringGeo, ringMat);
+  ring.visible = false;
+  ring.renderOrder = 10;
+  s.add(ring);
+  highlightRing.value = ring;
 
   // Resize observer
   resizeObserver = new ResizeObserver(() => {
@@ -210,6 +292,116 @@ function updateTube() {
     hasFramedCamera = true;
   }
 
+  updateHighlightState();
+  requestRender();
+}
+
+function resetTubeAppearance(): void {
+  if (!material.value) {
+    return;
+  }
+
+  material.value.transparent = false;
+  material.value.opacity = DEFAULT_TUBE_OPACITY;
+  material.value.depthWrite = true;
+  material.value.needsUpdate = true;
+}
+
+function hideHighlightRing(): void {
+  if (highlightRing.value) {
+    highlightRing.value.visible = false;
+  }
+}
+
+function getSampleCount(): number {
+  const leftSampleCount = props.leftFrameData?.mpp?.length ?? 0;
+  const rightSampleCount = props.rightFrameData?.mpp?.length ?? 0;
+  return Math.min(leftSampleCount, rightSampleCount);
+}
+
+function updateHighlightState(): void {
+  resetTubeAppearance();
+
+  if (!highlightRing.value || !highlightGeometry.value || !geometry.value) {
+    return;
+  }
+
+  const highlightIndex = props.highlightSelectedPoint
+    ? props.highlightedPointIndex ?? null
+    : null;
+
+  if (highlightIndex === null || highlightIndex < 0 || !hasData.value) {
+    hideHighlightRing();
+    requestRender();
+    return;
+  }
+
+  const sampleCount = getSampleCount();
+  const positionAttr = geometry.value.getAttribute('position') as THREE.BufferAttribute | null;
+
+  if (!positionAttr || sampleCount <= 0 || highlightIndex >= sampleCount) {
+    hideHighlightRing();
+    requestRender();
+    return;
+  }
+
+  const verticesPerRing = positionAttr.count / sampleCount;
+  if (!Number.isInteger(verticesPerRing) || verticesPerRing < 4) {
+    hideHighlightRing();
+    requestRender();
+    return;
+  }
+
+  const ringVertexCount = verticesPerRing - 1;
+  const source = positionAttr.array as Float32Array;
+  const startOffset = highlightIndex * verticesPerRing * 3;
+  const ringPositions = new Float32Array(ringVertexCount * 3);
+
+  let centerX = 0;
+  let centerY = 0;
+  let centerZ = 0;
+
+  for (let i = 0; i < ringVertexCount; i += 1) {
+    const sourceOffset = startOffset + i * 3;
+    centerX += source[sourceOffset] ?? 0;
+    centerY += source[sourceOffset + 1] ?? 0;
+    centerZ += source[sourceOffset + 2] ?? 0;
+  }
+
+  centerX /= ringVertexCount;
+  centerY /= ringVertexCount;
+  centerZ /= ringVertexCount;
+
+  for (let i = 0; i < ringVertexCount; i += 1) {
+    const sourceOffset = startOffset + i * 3;
+    const targetOffset = i * 3;
+
+    const x = source[sourceOffset] ?? 0;
+    const y = source[sourceOffset + 1] ?? 0;
+    const z = source[sourceOffset + 2] ?? 0;
+
+    ringPositions[targetOffset] = centerX + (x - centerX) * HIGHLIGHT_RING_SCALE;
+    ringPositions[targetOffset + 1] = centerY + (y - centerY) * HIGHLIGHT_RING_SCALE;
+    ringPositions[targetOffset + 2] = centerZ + (z - centerZ) * HIGHLIGHT_RING_SCALE;
+  }
+
+  const ringPositionAttr = highlightGeometry.value.getAttribute('position') as THREE.BufferAttribute | null;
+  if (ringPositionAttr && ringPositionAttr.array.length === ringPositions.length) {
+    (ringPositionAttr.array as Float32Array).set(ringPositions);
+    ringPositionAttr.needsUpdate = true;
+  } else {
+    highlightGeometry.value.setAttribute('position', new THREE.BufferAttribute(ringPositions, 3));
+  }
+  highlightGeometry.value.computeBoundingSphere();
+
+  if (material.value) {
+    material.value.transparent = true;
+    material.value.opacity = DIMMED_TUBE_OPACITY;
+    material.value.depthWrite = false;
+    material.value.needsUpdate = true;
+  }
+
+  highlightRing.value.visible = true;
   requestRender();
 }
 
@@ -247,6 +439,8 @@ onUnmounted(() => {
   if (controls.value) controls.value.dispose();
   if (geometry.value) geometry.value.dispose();
   if (material.value) material.value.dispose();
+  if (highlightGeometry.value) highlightGeometry.value.dispose();
+  if (highlightMaterial.value) highlightMaterial.value.dispose();
   if (renderer.value) {
     renderer.value.dispose();
     renderer.value.forceContextLoss();
@@ -269,6 +463,26 @@ watch(
   },
   { deep: true },
 );
+
+watch(
+  () => [props.highlightedPointIndex, props.highlightSelectedPoint],
+  () => {
+    updateHighlightState();
+  },
+);
+
+watch(
+  hasData,
+  (available) => {
+    emit('export-availability-change', available);
+  },
+  { immediate: true },
+);
+
+defineExpose({
+  captureCurrentViewFullHdCanvas,
+  downloadCurrentViewFullHd,
+});
 </script>
 
 <template>

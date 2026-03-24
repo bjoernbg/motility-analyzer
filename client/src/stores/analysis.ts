@@ -1215,6 +1215,9 @@ export const useAnalysisStore = defineStore('analysis', () => {
     try {
       multiViewSessions.value = await listMultiViewSessions();
     } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
       console.error('Failed to load multi-view sessions:', err);
       error.value = err instanceof Error ? err.message : 'Failed to load multi-view sessions';
     }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { nextTick, reactive } from 'vue';
+import { nextTick } from 'vue';
 import { shallowMount } from '@vue/test-utils';
 
 type VideoMetadata = {
@@ -14,35 +14,60 @@ type VideoEntity = {
   metadata: VideoMetadata;
 };
 
-const storeMock = reactive({
-  currentVideo: {
-    id: 'video-a',
-    metadata: {
-      fps: 30,
-      width: 1920,
-      height: 1080,
-      display_aspect_ratio: 16 / 9,
-    },
-  } as VideoEntity | null,
-  currentFrame: null as number | null,
-  currentParameters: null,
-  isProcessing: true,
-  isAnalysisSwitching: false,
-  liveFrameData: new Map<number, unknown>(),
-  analyzeCurrentFrame: vi.fn(async () => {}),
-  saveCurrentSettings: vi.fn(async () => {}),
-});
-
-vi.mock('../../stores/analysis', () => ({
-  useAnalysisStore: () => storeMock,
+const testState = vi.hoisted(() => ({
+  storeMock: null as any,
+  downloadUrlMock: vi.fn(),
+  getFrameImageUrlMock: vi.fn(() => '/frame.jpg'),
 }));
+
+vi.mock('../../stores/analysis', async () => {
+  const { reactive } = await import('vue');
+
+  testState.storeMock = reactive({
+    currentVideo: {
+      id: 'video-a',
+      metadata: {
+        fps: 30,
+        width: 1920,
+        height: 1080,
+        display_aspect_ratio: 16 / 9,
+      },
+    } as VideoEntity | null,
+    currentFrame: null as number | null,
+    currentParameters: null,
+    isProcessing: true,
+    isAnalysisSwitching: false,
+    liveFrameData: new Map<number, unknown>(),
+    analyzeCurrentFrame: vi.fn(async () => {}),
+    saveCurrentSettings: vi.fn(async () => {}),
+  });
+
+  return {
+    useAnalysisStore: () => testState.storeMock,
+  };
+});
 
 vi.mock('../../lib/api', () => ({
   detectHorizontalWindow: vi.fn(async () => ({ x_left: -1, x_right: -1 })),
-  getFrameImageUrl: vi.fn(() => '/frame.jpg'),
+  getFrameImageUrl: testState.getFrameImageUrlMock,
+}));
+
+vi.mock('../../lib/download', () => ({
+  downloadUrl: testState.downloadUrlMock,
 }));
 
 import VideoPlayer from '../VideoPlayer.vue';
+
+const storeMock = testState.storeMock as {
+  currentVideo: VideoEntity | null;
+  currentFrame: number | null;
+  currentParameters: null;
+  isProcessing: boolean;
+  isAnalysisSwitching: boolean;
+  liveFrameData: Map<number, unknown>;
+  analyzeCurrentFrame: ReturnType<typeof vi.fn>;
+  saveCurrentSettings: ReturnType<typeof vi.fn>;
+};
 
 async function flush(): Promise<void> {
   await nextTick();
@@ -83,6 +108,7 @@ describe('VideoPlayer RAF scheduling', () => {
 
     requestAnimationFrameMock.mockClear();
     cancelAnimationFrameMock.mockClear();
+    testState.downloadUrlMock.mockClear();
 
     vi.stubGlobal('requestAnimationFrame', requestAnimationFrameMock);
     vi.stubGlobal('cancelAnimationFrame', cancelAnimationFrameMock);
@@ -159,6 +185,19 @@ describe('VideoPlayer RAF scheduling', () => {
 
     expect(cancelAnimationFrameMock).toHaveBeenCalledWith(initialCallCount);
     expect(requestAnimationFrameMock.mock.calls.length).toBeGreaterThan(initialCallCount);
+
+    wrapper.unmount();
+  });
+
+  it('downloads the current frame using the source image URL', async () => {
+    storeMock.currentFrame = 7;
+
+    const wrapper = mountSubject();
+    await flush();
+
+    await (wrapper.vm as unknown as { downloadCurrentFrame: () => Promise<void> }).downloadCurrentFrame();
+
+    expect(testState.downloadUrlMock).toHaveBeenCalledWith('/frame.jpg', 'video_video-a_frame_7.jpg');
 
     wrapper.unmount();
   });

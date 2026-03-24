@@ -38,6 +38,7 @@ const props = defineProps<{
   leftPixelToMmFactor: number;
   rightPixelToMmFactor: number;
   showDetectedEdges: boolean;
+  showSelectedPointMeasurements: boolean;
   highlightedPointIndex: number | null;
   overlayAlpha: number;
   aspectRatio: number;
@@ -771,7 +772,7 @@ function drawScene() {
     }
   }
 
-  if (props.highlightedPointIndex !== null) {
+  if (props.showSelectedPointMeasurements && props.highlightedPointIndex !== null) {
     if (
       props.leftFrameData?.mpp &&
       props.highlightedPointIndex < props.leftFrameData.mpp.length
@@ -853,6 +854,7 @@ watch(
     props.leftFrameData,
     props.rightFrameData,
     props.showDetectedEdges,
+    props.showSelectedPointMeasurements,
     props.highlightedPointIndex,
     props.overlayAlpha,
     props.leftPixelToMmFactor,

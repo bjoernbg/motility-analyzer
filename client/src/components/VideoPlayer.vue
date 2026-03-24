@@ -6,6 +6,7 @@ import type { AnalysisParameters, CalibrationResult } from '../lib/api';
 import { Slider } from './ui/slider';
 import { debounce } from '../lib/utils';
 import { PIXEL_TO_MM_FACTOR } from '../lib/constants';
+import { downloadUrl } from '../lib/download';
 
 const props = defineProps<{
   overlay?: boolean;
@@ -552,6 +553,15 @@ const frameImageUrl = computed(() => {
   return getFrameImageUrl(videoId, frameNum);
 });
 
+async function downloadCurrentFrame(): Promise<void> {
+  if (!targetVideo.value || store.currentFrame === null || !frameImageUrl.value) {
+    throw new Error('No frame available for download');
+  }
+
+  const filename = `video_${targetVideo.value.id}_frame_${store.currentFrame}.jpg`;
+  downloadUrl(frameImageUrl.value, filename);
+}
+
 // Computed property for aspect ratio from video metadata
 // Uses display_aspect_ratio if available (handles non-square pixels), falls back to width/height
 const aspectRatio = computed(() => {
@@ -638,6 +648,10 @@ const windowSliderModel = computed({
 // Get video width for slider max
 const videoWidth = computed(() => {
   return store.currentVideo?.metadata?.width ?? 1920;
+});
+
+defineExpose({
+  downloadCurrentFrame,
 });
 </script>
 

@@ -37,6 +37,7 @@ const props = defineProps<{
   rightPixelToMmFactor: number;
   leftAspectRatio: number;
   showDetectedEdges: boolean;
+  showSelectedPointMeasurements: boolean;
   highlightedPointIndex: number | null;
   overlayAlignmentContext: OverlayAlignmentContext;
   isComputingAlignment: boolean;
@@ -162,6 +163,7 @@ const alignmentStatusLabel = computed(() =>
       :left-pixel-to-mm-factor="leftPixelToMmFactor"
       :right-pixel-to-mm-factor="rightPixelToMmFactor"
       :show-detected-edges="showDetectedEdges"
+      :show-selected-point-measurements="showSelectedPointMeasurements"
       :highlighted-point-index="highlightedPointIndex"
       :overlay-alpha="overlayAlpha"
       :aspect-ratio="leftAspectRatio"

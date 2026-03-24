@@ -43,6 +43,17 @@
             </Button>
           </ButtonGroup>
         </div>
+        <div class="download-toggle">
+          <Button
+            size="sm"
+            variant="outline"
+            :disabled="isExportingCurrentView || !canDownloadCurrentView"
+            :title="viewMode === 'video' ? 'Download current video frame' : 'Download current heatmap view'"
+            @click="handleDownloadCurrentView"
+          >
+            <Icon name="lucide:download" size="1.1em" />
+          </Button>
+        </div>
         <div v-if="store.activeAnalysis && store.activeVideo" class="settings-toggle">
           <Popover>
             <PopoverTrigger as-child>
@@ -62,16 +73,18 @@
 
     <div class="main-view-container">
       <div class="main-view">
-        <VideoPlayer v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
+        <VideoPlayer ref="videoPlayerRef" v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
           :highlight-point-index="highlightedPointIndex"
           :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
           :calibration-region="calibrationRegion" />
 
         <HeatmapViewer v-if="viewMode === 'heatmap' && store.activeAnalysis"
+          ref="mainHeatmapViewerRef"
           :key="`main-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
           :current-frame="store.currentFrame"
           :show-contraction-overlays="showContractionOverlays"
           :selected-contraction-id="props.selectedContractionId"
+          @export-availability-change="handleHeatmapExportAvailabilityChange"
           @frame-click="handleFrameClick" />
 
         <div v-else-if="viewMode === 'heatmap' && !store.activeAnalysis" class="no-heatmap">
@@ -132,6 +145,14 @@ const props = defineProps<{
   selectedContractionId?: string | null;
 }>();
 
+interface VideoPlayerExportHandle {
+  downloadCurrentFrame: () => Promise<void>;
+}
+
+interface HeatmapViewerExportHandle {
+  downloadCurrentView: () => Promise<void>;
+}
+
 const store = useAnalysisStore();
 
 const viewMode = ref<'video' | 'heatmap'>('video');
@@ -141,10 +162,21 @@ const showCanvasOverlay = ref(true);
 const overlayPosition = ref<'left' | 'right' | 'off'>('right');
 const currentDisplaySettings = ref<DisplaySettings | null>(null);
 const calibrationRegion = ref<CalibrationResult | null>(null);
+const videoPlayerRef = ref<VideoPlayerExportHandle | null>(null);
+const mainHeatmapViewerRef = ref<HeatmapViewerExportHandle | null>(null);
+const isExportingCurrentView = ref(false);
+const isHeatmapExportable = ref(false);
 
 const hasFrameData = computed(() => store.liveFrameData.size > 0);
 const colorScaleCanvas = ref<HTMLCanvasElement | null>(null);
 const colormapData = createColormap();
+const canDownloadCurrentView = computed(() => {
+  if (viewMode.value === 'video') {
+    return Boolean(store.activeVideo && store.currentFrame !== null);
+  }
+
+  return Boolean(store.activeAnalysis && isHeatmapExportable.value);
+});
 
 const canShowOverlay = computed(() => {
   return viewMode.value === 'video' ? store.activeAnalysis !== null : store.activeVideo !== null;
@@ -209,6 +241,30 @@ async function handleFrameClick(frame: number, pointIndex: number) {
   store.seekToFrame(frame);
 }
 
+function handleHeatmapExportAvailabilityChange(available: boolean) {
+  isHeatmapExportable.value = available;
+}
+
+async function handleDownloadCurrentView() {
+  if (isExportingCurrentView.value || !canDownloadCurrentView.value) {
+    return;
+  }
+
+  isExportingCurrentView.value = true;
+  try {
+    if (viewMode.value === 'video') {
+      await videoPlayerRef.value?.downloadCurrentFrame();
+      return;
+    }
+
+    await mainHeatmapViewerRef.value?.downloadCurrentView();
+  } catch (error) {
+    console.error('Failed to download current view:', error);
+  } finally {
+    isExportingCurrentView.value = false;
+  }
+}
+
 watch(() => store.activeVideo?.id, async (videoId) => {
   if (videoId) {
     try {
@@ -234,6 +290,15 @@ watch(
   (contractionId) => {
     if (contractionId) {
       showContractionOverlays.value = true;
+    }
+  }
+);
+
+watch(
+  () => store.activeAnalysis?.id,
+  (analysisId) => {
+    if (!analysisId) {
+      isHeatmapExportable.value = false;
     }
   }
 );
@@ -289,6 +354,7 @@ function handleCalibrationResult(result: CalibrationResult | null) {
 
 .contraction-overlay-toggle,
 .overlay-toggle,
+.download-toggle,
 .preview-position-toggle,
 .settings-toggle {
   display: flex;

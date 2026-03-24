@@ -25,10 +25,21 @@ import {
   formatTrackingPoints,
   formatWindowRange,
 } from '../lib/domain/formatting';
+import { canvasToBlob } from '../lib/download';
+import { renderSidebarFrameToCanvas } from '../lib/multiViewFrameRendering';
+import { downloadZip } from '../lib/zip';
 
 const store = useAnalysisStore();
 
 type ComparisonViewMode = 'side-by-side' | 'diff' | '3d';
+interface IntestineViewer3DExportHandle {
+  captureCurrentViewFullHdCanvas: () => Promise<HTMLCanvasElement>;
+}
+
+interface HeatmapViewerExportHandle {
+  captureExportCanvas: () => Promise<HTMLCanvasElement>;
+}
+
 interface OverlayAlignmentContext {
   isReady: boolean;
   reason: string;
@@ -49,8 +60,15 @@ interface OverlayAlignmentContext {
 const isDragging = ref(false);
 const sliderValue = ref([0]);
 const highlightedPointIndex = ref<number | null>(null);
+const highlightSelectedRingIn3D = ref(false);
+const showSelectedPointMeasurements = ref(true);
 const showDetectedEdges = ref(true);
 const comparisonMode = ref<ComparisonViewMode>('side-by-side');
+const viewer3DRef = ref<IntestineViewer3DExportHandle | null>(null);
+const leftThreeDHeatmapRef = ref<HeatmapViewerExportHandle | null>(null);
+const rightThreeDHeatmapRef = ref<HeatmapViewerExportHandle | null>(null);
+const isExporting3D = ref(false);
+const isThreeDExportable = ref(false);
 
 const leftFrameData = ref<FrameData | null>(null);
 const rightFrameData = ref<FrameData | null>(null);
@@ -139,6 +157,14 @@ const leftDirectionLabel = computed(() =>
 const rightDirectionLabel = computed(() =>
   formatMultiViewDirection(store.currentMultiViewDirections.rightDirection)
 );
+const threeDExportFilename = computed(() => {
+  const sessionId = store.currentMultiViewSession?.id ?? 'session';
+  return `multiview_3d_${sessionId}_${leftFrame.value}_${rightFrame.value}.png`;
+});
+const threeDWorkspaceBundleFilename = computed(() => {
+  const sessionId = store.currentMultiViewSession?.id ?? 'session';
+  return `multiview_views_${sessionId}_${leftFrame.value}_${rightFrame.value}.zip`;
+});
 
 watch(() => store.syncedTimeSec, (newTime) => {
   if (!isDragging.value) {
@@ -185,6 +211,7 @@ watch(
 watch(
   () => [
     showDetectedEdges.value,
+    showSelectedPointMeasurements.value,
     highlightedPointIndex.value,
     leftFrame.value,
     rightFrame.value,
@@ -196,7 +223,7 @@ watch(
       comparisonMode.value === 'diff' ||
       comparisonMode.value === '3d' ||
       showDetectedEdges.value ||
-      highlightedPointIndex.value !== null;
+      (showSelectedPointMeasurements.value && highlightedPointIndex.value !== null);
     if (
       !shouldLoadFrameData ||
       !store.leftAnalysis?.id ||
@@ -238,6 +265,7 @@ watch(
 watch(
   () => [
     showDetectedEdges.value,
+    showSelectedPointMeasurements.value,
     highlightedPointIndex.value,
     leftFrameData.value,
     rightFrameData.value,
@@ -320,6 +348,155 @@ async function handleAnalyzeAlignmentForDiffOverlay() {
     });
   } catch {
     // Store-level error state already captures backend failures.
+  }
+}
+
+function handleThreeDExportAvailabilityChange(available: boolean) {
+  isThreeDExportable.value = available;
+}
+
+async function handleDownloadCurrentThreeDView() {
+  if (isExporting3D.value || !isThreeDExportable.value) {
+    return;
+  }
+
+  isExporting3D.value = true;
+  try {
+    const [
+      threeDCanvas,
+      leftHeatmapCanvas,
+      rightHeatmapCanvas,
+      leftFrameCanvas,
+      rightFrameCanvas,
+    ] = await Promise.all([
+      viewer3DRef.value?.captureCurrentViewFullHdCanvas(),
+      leftThreeDHeatmapRef.value?.captureExportCanvas(),
+      rightThreeDHeatmapRef.value?.captureExportCanvas(),
+      captureSidebarFrameCanvas('left'),
+      captureSidebarFrameCanvas('right'),
+    ]);
+
+    if (!threeDCanvas || !leftHeatmapCanvas || !rightHeatmapCanvas || !leftFrameCanvas || !rightFrameCanvas) {
+      throw new Error('Missing one or more views for export');
+    }
+
+    const [
+      threeDBlob,
+      leftHeatmapBlob,
+      rightHeatmapBlob,
+      leftFrameBlob,
+      rightFrameBlob,
+    ] = await Promise.all([
+      canvasToBlob(threeDCanvas),
+      canvasToBlob(leftHeatmapCanvas),
+      canvasToBlob(rightHeatmapCanvas),
+      canvasToBlob(leftFrameCanvas),
+      canvasToBlob(rightFrameCanvas),
+    ]);
+
+    await downloadZip(
+      [
+        { filename: 'left_heatmap.png', blob: leftHeatmapBlob },
+        { filename: 'right_heatmap.png', blob: rightHeatmapBlob },
+        { filename: 'left_frame.png', blob: leftFrameBlob },
+        { filename: 'right_frame.png', blob: rightFrameBlob },
+        { filename: '3d_view.png', blob: threeDBlob },
+      ],
+      threeDWorkspaceBundleFilename.value,
+    );
+  } catch (error) {
+    console.error('Failed to download 3D workspace bundle:', error);
+  } finally {
+    isExporting3D.value = false;
+  }
+}
+
+function isSameOriginFrameUrl(imageUrl: string): boolean {
+  const resolvedUrl = new URL(imageUrl, window.location.href);
+  return resolvedUrl.origin === window.location.origin;
+}
+
+function loadImageFromObjectUrl(objectUrl: string): Promise<HTMLImageElement> {
+  const image = new Image();
+  image.src = objectUrl;
+
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Failed to load export image: ${objectUrl}`));
+  });
+}
+
+async function resolveImageSource(
+  existingImage: HTMLImageElement | null,
+  imageUrl: string | null,
+): Promise<{ image: CanvasImageSource; release: () => void }> {
+  if (!imageUrl) {
+    throw new Error('No frame image URL available for export');
+  }
+
+  if (
+    existingImage &&
+    existingImage.complete &&
+    existingImage.naturalWidth > 0 &&
+    isSameOriginFrameUrl(imageUrl)
+  ) {
+    return {
+      image: existingImage,
+      release: () => {},
+    };
+  }
+
+  const response = await fetch(imageUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch export image: ${response.status} ${response.statusText}`);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    const image = await loadImageFromObjectUrl(objectUrl);
+    return {
+      image,
+      release: () => URL.revokeObjectURL(objectUrl),
+    };
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
+async function captureSidebarFrameCanvas(side: 'left' | 'right'): Promise<HTMLCanvasElement> {
+  const isLeft = side === 'left';
+  const analysis = isLeft ? store.leftAnalysis : store.rightAnalysis;
+  const video = isLeft ? store.leftVideo : store.rightVideo;
+  const imageRef = isLeft ? leftSidebarImageRef.value : rightSidebarImageRef.value;
+  const frameData = isLeft ? leftFrameData.value : rightFrameData.value;
+  const pixelToMmFactor = isLeft ? leftPixelToMmFactor.value : rightPixelToMmFactor.value;
+  const imageUrl = isLeft ? leftFrameImageUrl.value : rightFrameImageUrl.value;
+
+  const videoWidth = video?.metadata?.width;
+  const videoHeight = video?.metadata?.height;
+  if (!analysis || !videoWidth || !videoHeight) {
+    throw new Error(`Missing ${side} sidebar frame export data`);
+  }
+
+  const { image, release } = await resolveImageSource(imageRef, imageUrl);
+  try {
+    return renderSidebarFrameToCanvas({
+      image,
+      videoWidth,
+      videoHeight,
+      clipWidth: videoWidth,
+      clipHeight: videoHeight,
+      frameData,
+      pixelToMmFactor,
+      showDetectedEdges: showDetectedEdges.value,
+      showSelectedPointMeasurements: showSelectedPointMeasurements.value,
+      highlightedPointIndex: highlightedPointIndex.value,
+    });
+  } finally {
+    release();
   }
 }
 
@@ -642,6 +819,7 @@ function drawOverlay(
   }
 
   if (
+    !showSelectedPointMeasurements.value ||
     highlightedPointIndex.value === null ||
     !frameData.mpp ||
     frameData.mpp.length <= highlightedPointIndex.value
@@ -769,7 +947,35 @@ function drawOverlay(
               >
                 <Icon name="lucide:chart-scatter" size="1.1em" />
               </Button>
+              <Button
+                :variant="showSelectedPointMeasurements ? 'default' : 'outline'"
+                @click="showSelectedPointMeasurements = !showSelectedPointMeasurements"
+                size="sm"
+                title="Display selected point measurements"
+              >
+                <Icon name="lucide:ruler" size="1.1em" />
+              </Button>
+              <Button
+                v-if="comparisonMode === '3d'"
+                :variant="highlightSelectedRingIn3D ? 'default' : 'outline'"
+                @click="highlightSelectedRingIn3D = !highlightSelectedRingIn3D"
+                size="sm"
+                title="Highlight selected ring in 3D"
+              >
+                <Icon name="lucide:circle-dot" size="1.1em" />
+              </Button>
             </ButtonGroup>
+          </div>
+          <div v-if="comparisonMode === '3d'" class="download-toggle">
+            <Button
+              size="sm"
+              variant="outline"
+              :disabled="isExporting3D || !isThreeDExportable"
+              title="Download current 3D workspace bundle"
+              @click="handleDownloadCurrentThreeDView"
+            >
+              <Icon name="lucide:download" size="1.1em" />
+            </Button>
           </div>
         </div>
       </div>
@@ -880,6 +1086,7 @@ function drawOverlay(
           :right-pixel-to-mm-factor="rightPixelToMmFactor"
           :left-aspect-ratio="leftAspectRatio"
           :show-detected-edges="showDetectedEdges"
+          :show-selected-point-measurements="showSelectedPointMeasurements"
           :highlighted-point-index="highlightedPointIndex"
           :overlay-alignment-context="overlayAlignmentContext"
           :is-computing-alignment="store.isComputingAlignment"
@@ -920,11 +1127,8 @@ function drawOverlay(
 
       <div v-else-if="comparisonMode === '3d'" class="viewer-3d-layout">
         <div class="viewer-3d-main">
-          <div class="viewer-3d-summary">
-            <span class="viewer-3d-chip">First Analysis: {{ leftDirectionLabel }}</span>
-            <span class="viewer-3d-chip">Second Analysis: {{ rightDirectionLabel }}</span>
-          </div>
           <IntestineViewer3D
+            ref="viewer3DRef"
             :left-frame-data="leftFrameData"
             :right-frame-data="rightFrameData"
             :left-pixel-to-mm-factor="leftPixelToMmFactor"
@@ -933,15 +1137,18 @@ function drawOverlay(
             :heatmap-max-mm="hasCombinedScale ? combinedScaleMaxMm : null"
             :left-direction="store.currentMultiViewDirections.leftDirection"
             :right-direction="store.currentMultiViewDirections.rightDirection"
+            :highlighted-point-index="highlightedPointIndex"
+            :highlight-selected-point="highlightSelectedRingIn3D"
+            :export-filename="threeDExportFilename"
+            @export-availability-change="handleThreeDExportAvailabilityChange"
           />
         </div>
         <div class="viewer-3d-sidebar">
           <div class="sidebar-panel">
-            <div class="sidebar-label-row">
-              <div class="sidebar-label">First Analysis</div>
+            <div class="sidebar-panel-header">
+              <div class="sidebar-label-meta">{{ getVideoDisplayName(store.leftVideo) }}</div>
               <span class="viewer-3d-chip">{{ leftDirectionLabel }}</span>
             </div>
-            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.leftVideo) }}</div>
             <div class="sidebar-frame-clip">
               <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.leftAnalysis, store.leftVideo)">
                 <img
@@ -956,12 +1163,23 @@ function drawOverlay(
               </div>
             </div>
           </div>
+          <div class="sidebar-panel sidebar-heatmap-panel">
+            <HeatmapViewer
+              ref="leftThreeDHeatmapRef"
+              :key="`left-3d-heatmap-${store.leftAnalysis.id}`"
+              :analysis-id="store.leftAnalysis.id"
+              :current-frame="leftFrame"
+              :compact="true"
+              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
+              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+              @frame-click="(frame, pointIndex) => handleHeatmapClick('left', frame, pointIndex)"
+            />
+          </div>
           <div class="sidebar-panel">
-            <div class="sidebar-label-row">
-              <div class="sidebar-label">Second Analysis</div>
+            <div class="sidebar-panel-header">
+              <div class="sidebar-label-meta">{{ getVideoDisplayName(store.rightVideo) }}</div>
               <span class="viewer-3d-chip">{{ rightDirectionLabel }}</span>
             </div>
-            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.rightVideo) }}</div>
             <div class="sidebar-frame-clip">
               <div class="sidebar-frame-inner" :style="sidebarInnerStyle(store.rightAnalysis, store.rightVideo)">
                 <img
@@ -977,33 +1195,15 @@ function drawOverlay(
             </div>
           </div>
           <div class="sidebar-panel sidebar-heatmap-panel">
-            <div class="sidebar-label-row">
-              <div class="sidebar-label">First Analysis Heatmap</div>
-              <span class="viewer-3d-chip">{{ leftDirectionLabel }}</span>
-            </div>
-            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.leftVideo) }}</div>
             <HeatmapViewer
-              :key="`left-3d-heatmap-${store.leftAnalysis.id}`"
-              :analysis-id="store.leftAnalysis.id"
-              :current-frame="leftFrame"
-              :compact="true"
-              :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
-              :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
-            />
-          </div>
-          <div class="sidebar-panel sidebar-heatmap-panel">
-            <div class="sidebar-label-row">
-              <div class="sidebar-label">Second Analysis Heatmap</div>
-              <span class="viewer-3d-chip">{{ rightDirectionLabel }}</span>
-            </div>
-            <div class="sidebar-label-meta">{{ getVideoDisplayName(store.rightVideo) }}</div>
-            <HeatmapViewer
+              ref="rightThreeDHeatmapRef"
               :key="`right-3d-heatmap-${store.rightAnalysis.id}`"
               :analysis-id="store.rightAnalysis.id"
               :current-frame="rightFrame"
               :compact="true"
               :heatmap-min-mm-override="hasCombinedScale ? combinedScaleMinMm : null"
               :heatmap-max-mm-override="hasCombinedScale ? combinedScaleMaxMm : null"
+              @frame-click="(frame, pointIndex) => handleHeatmapClick('right', frame, pointIndex)"
             />
           </div>
         </div>
@@ -1085,9 +1285,11 @@ function drawOverlay(
 .sync-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.5rem;
 }
 
-.overlay-toggle {
+.overlay-toggle,
+.download-toggle {
   display: flex;
   align-items: center;
 }
@@ -1213,23 +1415,6 @@ function drawOverlay(
   overflow: hidden;
 }
 
-.viewer-3d-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.viewer-3d-chip {
-  border: 1px solid var(--border-light);
-  border-radius: 999px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  font-size: 0.7rem;
-  font-weight: 600;
-  line-height: 1;
-  padding: 0.22rem 0.45rem;
-}
-
 .viewer-3d-sidebar {
   flex: 1;
   min-width: 0;
@@ -1248,20 +1433,11 @@ function drawOverlay(
   overflow: hidden;
 }
 
-.sidebar-label-row {
+.sidebar-panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-}
-
-.sidebar-label {
-  font-size: 0.72rem;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .sidebar-label-meta {
@@ -1270,7 +1446,8 @@ function drawOverlay(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
 }
 
 .sidebar-frame-clip {
@@ -1294,6 +1471,18 @@ function drawOverlay(
   display: block;
   width: 100%;
   height: auto;
+}
+
+.viewer-3d-chip {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.22rem 0.45rem;
+  flex-shrink: 0;
 }
 
 .sidebar-heatmap-panel :deep(.heatmap-container) {
