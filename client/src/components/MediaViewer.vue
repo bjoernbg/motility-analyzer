@@ -2,9 +2,7 @@
   <div class="media-viewer">
     <div class="view-toggle-container">
       <div class="view-toggle">
-        <button :class="{ active: viewMode === 'video' }" @click="viewMode = 'video'">
-          Video
-        </button>
+        <button :class="{ active: viewMode === 'video' }" @click="viewMode = 'video'">Video</button>
         <button :class="{ active: viewMode === 'heatmap' }" @click="viewMode = 'heatmap'">
           Heatmap
         </button>
@@ -15,33 +13,67 @@
       <div class="flex items-center gap-1">
         <div v-if="viewMode === 'video' && hasFrameData" class="overlay-toggle">
           <ButtonGroup>
-            <Button :variant="showCanvasOverlay ? 'default' : 'outline'" @click="showCanvasOverlay = !showCanvasOverlay"
-              size="sm" title="Display detected paths">
+            <Button
+              :variant="showCanvasOverlay ? 'default' : 'outline'"
+              @click="showCanvasOverlay = !showCanvasOverlay"
+              size="sm"
+              title="Display detected paths"
+            >
               <Icon name="lucide:chart-scatter" size="1.1em" />
             </Button>
           </ButtonGroup>
         </div>
-        <div v-if="viewMode === 'heatmap' && store.contractionEvents.length > 0" class="contraction-overlay-toggle">
+        <div
+          v-if="viewMode === 'heatmap' && store.contractionEvents.length > 0"
+          class="contraction-overlay-toggle"
+        >
           <ButtonGroup>
-            <Button :variant="showContractionOverlays ? 'default' : 'outline'"
-              @click="showContractionOverlays = !showContractionOverlays" size="sm"
-              title="Display detected contraction waves">
+            <Button
+              :variant="showContractionOverlays ? 'default' : 'outline'"
+              @click="showContractionOverlays = !showContractionOverlays"
+              size="sm"
+              title="Display detected contraction waves"
+            >
               <Icon name="lucide:chart-scatter" size="1.1em" />
+            </Button>
+          </ButtonGroup>
+        </div>
+        <div v-if="viewMode === 'topography' && topographyClipRange" class="topography-clip-toggle">
+          <ButtonGroup>
+            <Button
+              :variant="topographyClipEnabled ? 'default' : 'outline'"
+              @click="toggleTopographyClipping"
+              size="sm"
+              title="Toggle horizontal clipping plane"
+            >
+              <Icon name="lucide:minus" size="1.1em" />
             </Button>
           </ButtonGroup>
         </div>
         <div v-if="canShowOverlay" class="preview-position-toggle">
           <ButtonGroup>
-            <Button :variant="overlayPosition === 'left' ? 'default' : 'outline'"
-              @click="overlayPosition = 'left'" size="sm" title="Preview on left">
+            <Button
+              :variant="overlayPosition === 'left' ? 'default' : 'outline'"
+              @click="overlayPosition = 'left'"
+              size="sm"
+              title="Preview on left"
+            >
               <Icon name="lucide:panel-left" size="1.1em" />
             </Button>
-            <Button :variant="overlayPosition === 'right' ? 'default' : 'outline'"
-              @click="overlayPosition = 'right'" size="sm" title="Preview on right">
+            <Button
+              :variant="overlayPosition === 'right' ? 'default' : 'outline'"
+              @click="overlayPosition = 'right'"
+              size="sm"
+              title="Preview on right"
+            >
               <Icon name="lucide:panel-right" size="1.1em" />
             </Button>
-            <Button :variant="overlayPosition === 'off' ? 'default' : 'outline'"
-              @click="overlayPosition = 'off'" size="sm" title="Hide preview">
+            <Button
+              :variant="overlayPosition === 'off' ? 'default' : 'outline'"
+              @click="overlayPosition = 'off'"
+              size="sm"
+              title="Hide preview"
+            >
               <Icon name="lucide:eye-off" size="1.1em" />
             </Button>
           </ButtonGroup>
@@ -65,9 +97,11 @@
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" class="p-3">
-              <DisplaySettingsControls :video-id="store.activeVideo.id"
+              <DisplaySettingsControls
+                :video-id="store.activeVideo.id"
                 @settings-updated="handleSettingsUpdated"
-                @calibration-result="handleCalibrationResult" />
+                @calibration-result="handleCalibrationResult"
+              />
             </PopoverContent>
           </Popover>
         </div>
@@ -76,14 +110,20 @@
 
     <div class="main-view-container">
       <div class="main-view">
-        <VideoPlayer ref="videoPlayerRef" v-show="viewMode === 'video'" v-model:show-canvas-overlay="showCanvasOverlay"
+        <VideoPlayer
+          ref="videoPlayerRef"
+          v-show="viewMode === 'video'"
+          v-model:show-canvas-overlay="showCanvasOverlay"
           :highlight-point-index="highlightedPointIndex"
           :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
-          :calibration-region="calibrationRegion" />
+          :calibration-region="calibrationRegion"
+        />
 
-        <HeatmapViewer v-if="viewMode === 'heatmap' && store.activeAnalysis"
+        <HeatmapViewer
+          v-if="viewMode === 'heatmap' && store.activeAnalysis"
           ref="mainHeatmapViewerRef"
-          :key="`main-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
+          :key="`main-heatmap-${store.activeAnalysis.id}`"
+          :analysis-id="store.activeAnalysis.id"
           :current-frame="store.currentFrame"
           :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
           :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
@@ -91,9 +131,11 @@
           :show-contraction-overlays="showContractionOverlays"
           :selected-contraction-id="props.selectedContractionId"
           @export-availability-change="handleHeatmapExportAvailabilityChange"
-          @frame-click="handleFrameClick" />
+          @frame-click="handleFrameClick"
+        />
 
-        <HeatmapTopographyViewer v-else-if="viewMode === 'topography' && store.activeAnalysis"
+        <HeatmapTopographyViewer
+          v-else-if="viewMode === 'topography' && store.activeAnalysis"
           ref="mainTopographyViewerRef"
           :key="`main-topography-${store.activeAnalysis.id}`"
           :analysis-id="store.activeAnalysis.id"
@@ -101,8 +143,11 @@
           :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
           :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
           :heatmap-max-mm-override="currentDisplaySettings?.heatmap_max_mm"
+          :clipping-enabled="topographyClipEnabled"
+          :clip-plane-mm="topographyClipMm"
           @export-availability-change="handleTopographyExportAvailabilityChange"
-          @frame-click="handleFrameClick" />
+          @frame-click="handleFrameClick"
+        />
 
         <div v-else-if="viewMode === 'heatmap' && !store.activeAnalysis" class="no-heatmap">
           No analysis available. Run an analysis to view the heatmap.
@@ -114,8 +159,10 @@
 
       <div v-if="showOverlay" :class="['overlay-container', `overlay-${overlayPosition}`]">
         <div class="overlay-content">
-          <HeatmapViewer v-if="viewMode === 'video' && store.activeAnalysis"
-            :key="`overlay-heatmap-${store.activeAnalysis.id}`" :analysis-id="store.activeAnalysis.id"
+          <HeatmapViewer
+            v-if="viewMode === 'video' && store.activeAnalysis"
+            :key="`overlay-heatmap-${store.activeAnalysis.id}`"
+            :analysis-id="store.activeAnalysis.id"
             :current-frame="store.currentFrame"
             :pixel-to-mm-factor-override="currentDisplaySettings?.pixel_to_mm_factor"
             :heatmap-min-mm-override="currentDisplaySettings?.heatmap_min_mm"
@@ -123,11 +170,18 @@
             :show-contraction-overlays="showContractionOverlays"
             :selected-contraction-id="props.selectedContractionId"
             compact
-            @frame-click="handleFrameClick" />
-          <div v-else-if="(viewMode === 'heatmap' || viewMode === 'topography') && store.activeVideo" class="mini-video-wrapper">
-            <VideoPlayer overlay :highlight-point-index="highlightedPointIndex"
+            @frame-click="handleFrameClick"
+          />
+          <div
+            v-else-if="(viewMode === 'heatmap' || viewMode === 'topography') && store.activeVideo"
+            class="mini-video-wrapper"
+          >
+            <VideoPlayer
+              overlay
+              :highlight-point-index="highlightedPointIndex"
               :pixel-to-mm-factor="currentDisplaySettings?.pixel_to_mm_factor"
-              :calibration-region="calibrationRegion" />
+              :calibration-region="calibrationRegion"
+            />
           </div>
         </div>
       </div>
@@ -146,225 +200,341 @@
             {{ label.value }}
           </div>
         </div>
+        <div
+          v-if="showTopographyClipSlider && topographyClipRange"
+          class="color-scale-clip-control"
+        >
+          <div class="color-scale-clip-value">
+            {{ formatClipPlaneValue(resolvedTopographyClipMm) }}
+          </div>
+          <Slider
+            v-model="topographyClipSliderModel"
+            orientation="vertical"
+            :min="topographyClipRange.min"
+            :max="topographyClipRange.max"
+            :step="0.1"
+            :disabled="!topographyClipEnabled"
+            class="topography-clip-slider"
+          />
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
-import { useAnalysisStore } from '../stores/analysis';
-import VideoPlayer from './VideoPlayer.vue';
-import HeatmapViewer from './HeatmapViewer.vue';
-import HeatmapTopographyViewer from './HeatmapTopographyViewer.vue';
-import DisplaySettingsControls from './DisplaySettingsControls.vue';
-import { ButtonGroup } from './ui/button-group';
-import { Button } from './ui/button';
-import { Icon } from './ui/icon';
-import { Popover, PopoverTrigger, PopoverContent } from './ui/popover';
-import { getVideoDisplaySettings, type DisplaySettings, type CalibrationResult } from '../lib/api';
-import { createColormap } from '../lib/colormap';
+import { ref, computed, watch, nextTick } from 'vue'
+import { useAnalysisStore } from '../stores/analysis'
+import VideoPlayer from './VideoPlayer.vue'
+import HeatmapViewer from './HeatmapViewer.vue'
+import HeatmapTopographyViewer from './HeatmapTopographyViewer.vue'
+import DisplaySettingsControls from './DisplaySettingsControls.vue'
+import { Slider } from './ui/slider'
+import { ButtonGroup } from './ui/button-group'
+import { Button } from './ui/button'
+import { Icon } from './ui/icon'
+import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
+import { getVideoDisplaySettings, type DisplaySettings, type CalibrationResult } from '../lib/api'
+import { createColormap } from '../lib/colormap'
+import { buildColorScaleLabels, resolveColorScaleColorIndex } from '../lib/colorScale'
 
 const props = defineProps<{
-  selectedContractionId?: string | null;
-}>();
+  selectedContractionId?: string | null
+}>()
 
 interface VideoPlayerExportHandle {
-  downloadCurrentFrame: () => Promise<void>;
+  downloadCurrentFrame: () => Promise<void>
 }
 
 interface HeatmapViewerExportHandle {
-  downloadCurrentView: () => Promise<void>;
+  downloadCurrentView: () => Promise<void>
 }
 
 interface TopographyViewerExportHandle {
-  downloadCurrentView: () => Promise<void>;
+  downloadCurrentView: () => Promise<void>
 }
 
-const store = useAnalysisStore();
+interface MeasurementRange {
+  min: number
+  max: number
+}
 
-const viewMode = ref<'video' | 'heatmap' | 'topography'>('video');
-const highlightedPointIndex = ref<number | null>(null);
-const showContractionOverlays = ref(false);
-const showCanvasOverlay = ref(true);
-const overlayPosition = ref<'left' | 'right' | 'off'>('right');
-const currentDisplaySettings = ref<DisplaySettings | null>(null);
-const calibrationRegion = ref<CalibrationResult | null>(null);
-const videoPlayerRef = ref<VideoPlayerExportHandle | null>(null);
-const mainHeatmapViewerRef = ref<HeatmapViewerExportHandle | null>(null);
-const mainTopographyViewerRef = ref<TopographyViewerExportHandle | null>(null);
-const isExportingCurrentView = ref(false);
-const isHeatmapExportable = ref(false);
-const isTopographyExportable = ref(false);
+const store = useAnalysisStore()
 
-const hasFrameData = computed(() => store.liveFrameData.size > 0);
-const colorScaleCanvas = ref<HTMLCanvasElement | null>(null);
-const colormapData = createColormap();
+const viewMode = ref<'video' | 'heatmap' | 'topography'>('video')
+const highlightedPointIndex = ref<number | null>(null)
+const showContractionOverlays = ref(false)
+const showCanvasOverlay = ref(true)
+const overlayPosition = ref<'left' | 'right' | 'off'>('right')
+const currentDisplaySettings = ref<DisplaySettings | null>(null)
+const calibrationRegion = ref<CalibrationResult | null>(null)
+const videoPlayerRef = ref<VideoPlayerExportHandle | null>(null)
+const mainHeatmapViewerRef = ref<HeatmapViewerExportHandle | null>(null)
+const mainTopographyViewerRef = ref<TopographyViewerExportHandle | null>(null)
+const isExportingCurrentView = ref(false)
+const isHeatmapExportable = ref(false)
+const isTopographyExportable = ref(false)
+const topographyClipEnabled = ref(false)
+const topographyClipMm = ref<number | null>(null)
+
+const hasFrameData = computed(() => store.liveFrameData.size > 0)
+const colorScaleCanvas = ref<HTMLCanvasElement | null>(null)
+const colormapData = createColormap()
+const topographyClipRange = computed(() => resolveMeasurementRange(currentDisplaySettings.value))
 const canDownloadCurrentView = computed(() => {
   if (viewMode.value === 'video') {
-    return Boolean(store.activeVideo && store.currentFrame !== null);
+    return Boolean(store.activeVideo && store.currentFrame !== null)
   }
 
   if (viewMode.value === 'heatmap') {
-    return Boolean(store.activeAnalysis && isHeatmapExportable.value);
+    return Boolean(store.activeAnalysis && isHeatmapExportable.value)
   }
 
-  return Boolean(store.activeAnalysis && isTopographyExportable.value);
-});
+  return Boolean(store.activeAnalysis && isTopographyExportable.value)
+})
 
 const canShowOverlay = computed(() => {
-  return viewMode.value === 'video' ? store.activeAnalysis !== null : store.activeVideo !== null;
-});
+  return viewMode.value === 'video' ? store.activeAnalysis !== null : store.activeVideo !== null
+})
 
 const showOverlay = computed(() => {
-  if (overlayPosition.value === 'off') return false;
-  return canShowOverlay.value;
-});
+  if (overlayPosition.value === 'off') return false
+  return canShowOverlay.value
+})
 
 const showColorScale = computed(() => {
-  if (!currentDisplaySettings.value) return false;
-  return viewMode.value === 'heatmap' || viewMode.value === 'topography';
-});
+  if (!currentDisplaySettings.value) return false
+  return viewMode.value === 'heatmap' || viewMode.value === 'topography'
+})
+const showTopographyClipSlider = computed(() => {
+  return (
+    viewMode.value === 'topography' && showColorScale.value && topographyClipRange.value !== null
+  )
+})
 
 const downloadButtonTitle = computed(() => {
   if (viewMode.value === 'video') {
-    return 'Download current video frame';
+    return 'Download current video frame'
   }
 
   if (viewMode.value === 'topography') {
-    return 'Download current topography view';
+    return 'Download current topography view'
   }
 
-  return 'Download current heatmap view';
-});
+  return 'Download current heatmap view'
+})
 
 const colorScaleLabels = computed(() => {
-  if (!currentDisplaySettings.value) return [];
-  const min = currentDisplaySettings.value.heatmap_min_mm;
-  const max = currentDisplaySettings.value.heatmap_max_mm;
-  const range = max - min;
-  if (range <= 0) return [];
-
-  const labels: { value: string; percent: number }[] = [];
-  const startMm = Math.ceil(min);
-  const endMm = Math.floor(max);
-  for (let mm = startMm; mm <= endMm; mm++) {
-    const percent = ((mm - min) / range) * 100;
-    labels.push({ value: `${mm}`, percent });
+  if (!currentDisplaySettings.value) return []
+  return buildColorScaleLabels(
+    currentDisplaySettings.value.heatmap_min_mm,
+    currentDisplaySettings.value.heatmap_max_mm,
+  )
+})
+const resolvedTopographyClipMm = computed(() => {
+  const range = topographyClipRange.value
+  if (!range) {
+    return null
   }
-  return labels;
-});
+
+  return clampMeasurementValue(
+    topographyClipMm.value ?? resolveMeasurementRangeMidpoint(range),
+    range,
+  )
+})
+const topographyClipSliderModel = computed({
+  get: () => {
+    const range = topographyClipRange.value
+    if (!range) {
+      return [0]
+    }
+
+    return [resolvedTopographyClipMm.value ?? resolveMeasurementRangeMidpoint(range)]
+  },
+  set: (value: number[]) => {
+    const range = topographyClipRange.value
+    if (!range) {
+      return
+    }
+
+    const nextValue = value[0]
+    if (typeof nextValue !== 'number' || !Number.isFinite(nextValue)) {
+      return
+    }
+
+    topographyClipMm.value = clampMeasurementValue(nextValue, range)
+  },
+})
+
+function clampMeasurementValue(value: number, range: MeasurementRange): number {
+  return Math.max(range.min, Math.min(range.max, value))
+}
+
+function resolveMeasurementRange(settings: DisplaySettings | null): MeasurementRange | null {
+  if (!settings) {
+    return null
+  }
+
+  const min = settings.heatmap_min_mm
+  const max = settings.heatmap_max_mm
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return null
+  }
+
+  return { min, max }
+}
+
+function resolveMeasurementRangeMidpoint(range: MeasurementRange): number {
+  return range.min + (range.max - range.min) / 2
+}
+
+function formatClipPlaneValue(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return '--'
+  }
+
+  const rounded = Math.round(value * 10) / 10
+  return `${rounded.toFixed(1)} mm`
+}
 
 function renderColorScale() {
-  const cvs = colorScaleCanvas.value;
-  if (!cvs || !currentDisplaySettings.value) return;
-  const ctx = cvs.getContext('2d');
-  if (!ctx) return;
+  const cvs = colorScaleCanvas.value
+  if (!cvs || !currentDisplaySettings.value) return
+  const ctx = cvs.getContext('2d')
+  if (!ctx) return
 
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = 20;
-  const cssHeight = cvs.parentElement?.clientHeight ?? 200;
-  cvs.style.width = `${cssWidth}px`;
-  cvs.style.height = `${cssHeight}px`;
-  cvs.width = cssWidth * dpr;
-  cvs.height = cssHeight * dpr;
-  ctx.scale(dpr, dpr);
+  const dpr = window.devicePixelRatio || 1
+  const cssWidth = 20
+  const cssHeight = cvs.parentElement?.clientHeight ?? 200
+  cvs.style.width = `${cssWidth}px`
+  cvs.style.height = `${cssHeight}px`
+  cvs.width = cssWidth * dpr
+  cvs.height = cssHeight * dpr
+  ctx.scale(dpr, dpr)
 
   for (let y = 0; y < cssHeight; y++) {
-    const t = 1 - y / cssHeight;
-    const ci = Math.floor(t * 255);
-    const idx = 255 - ci;
-    const r = colormapData[idx * 3 + 0] ?? 0;
-    const g = colormapData[idx * 3 + 1] ?? 0;
-    const b = colormapData[idx * 3 + 2] ?? 0;
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(0, y, cssWidth, 1);
+    const colorIndex = resolveColorScaleColorIndex(y, cssHeight)
+    const r = colormapData[colorIndex * 3 + 0] ?? 0
+    const g = colormapData[colorIndex * 3 + 1] ?? 0
+    const b = colormapData[colorIndex * 3 + 2] ?? 0
+    ctx.fillStyle = `rgb(${r},${g},${b})`
+    ctx.fillRect(0, y, cssWidth, 1)
   }
+}
+
+function toggleTopographyClipping(): void {
+  const nextEnabled = !topographyClipEnabled.value
+
+  if (nextEnabled && topographyClipMm.value === null && topographyClipRange.value) {
+    topographyClipMm.value = resolveMeasurementRangeMidpoint(topographyClipRange.value)
+  }
+
+  topographyClipEnabled.value = nextEnabled
 }
 
 async function handleFrameClick(frame: number, pointIndex: number) {
-  highlightedPointIndex.value = pointIndex;
-  store.seekToFrame(frame);
+  highlightedPointIndex.value = pointIndex
+  store.seekToFrame(frame)
 }
 
 function handleHeatmapExportAvailabilityChange(available: boolean) {
-  isHeatmapExportable.value = available;
+  isHeatmapExportable.value = available
 }
 
 function handleTopographyExportAvailabilityChange(available: boolean) {
-  isTopographyExportable.value = available;
+  isTopographyExportable.value = available
 }
 
 async function handleDownloadCurrentView() {
   if (isExportingCurrentView.value || !canDownloadCurrentView.value) {
-    return;
+    return
   }
 
-  isExportingCurrentView.value = true;
+  isExportingCurrentView.value = true
   try {
     if (viewMode.value === 'video') {
-      await videoPlayerRef.value?.downloadCurrentFrame();
-      return;
+      await videoPlayerRef.value?.downloadCurrentFrame()
+      return
     }
 
     if (viewMode.value === 'heatmap') {
-      await mainHeatmapViewerRef.value?.downloadCurrentView();
-      return;
+      await mainHeatmapViewerRef.value?.downloadCurrentView()
+      return
     }
 
-    await mainTopographyViewerRef.value?.downloadCurrentView();
+    await mainTopographyViewerRef.value?.downloadCurrentView()
   } catch (error) {
-    console.error('Failed to download current view:', error);
+    console.error('Failed to download current view:', error)
   } finally {
-    isExportingCurrentView.value = false;
+    isExportingCurrentView.value = false
   }
 }
 
-watch(() => store.activeVideo?.id, async (videoId) => {
-  if (videoId) {
-    try {
-      currentDisplaySettings.value = await getVideoDisplaySettings(videoId);
-    } catch (err) {
-      console.error('Failed to load display settings:', err);
-      currentDisplaySettings.value = null;
+watch(
+  () => store.activeVideo?.id,
+  async (videoId) => {
+    if (videoId) {
+      try {
+        currentDisplaySettings.value = await getVideoDisplaySettings(videoId)
+      } catch (err) {
+        console.error('Failed to load display settings:', err)
+        currentDisplaySettings.value = null
+      }
+    } else {
+      currentDisplaySettings.value = null
     }
-  } else {
-    currentDisplaySettings.value = null;
-  }
-}, { immediate: true });
+  },
+  { immediate: true },
+)
 
-watch([currentDisplaySettings, showColorScale], async () => {
-  if (showColorScale.value && currentDisplaySettings.value) {
-    await nextTick();
-    renderColorScale();
-  }
-}, { deep: true });
+watch(
+  [currentDisplaySettings, showColorScale],
+  async () => {
+    if (showColorScale.value && currentDisplaySettings.value) {
+      await nextTick()
+      renderColorScale()
+    }
+  },
+  { deep: true },
+)
+
+watch(
+  topographyClipRange,
+  (range) => {
+    if (!range || topographyClipMm.value === null) {
+      return
+    }
+
+    topographyClipMm.value = clampMeasurementValue(topographyClipMm.value, range)
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.selectedContractionId,
   (contractionId) => {
     if (contractionId) {
-      showContractionOverlays.value = true;
+      showContractionOverlays.value = true
     }
-  }
-);
+  },
+)
 
 watch(
   () => store.activeAnalysis?.id,
   (analysisId) => {
     if (!analysisId) {
-      isHeatmapExportable.value = false;
-      isTopographyExportable.value = false;
+      isHeatmapExportable.value = false
+      isTopographyExportable.value = false
     }
-  }
-);
+  },
+)
 
 function handleSettingsUpdated(settings: DisplaySettings) {
-  currentDisplaySettings.value = settings;
+  currentDisplaySettings.value = settings
 }
 
 function handleCalibrationResult(result: CalibrationResult | null) {
-  calibrationRegion.value = result;
+  calibrationRegion.value = result
 }
 </script>
 
@@ -411,6 +581,7 @@ function handleCalibrationResult(result: CalibrationResult | null) {
 .contraction-overlay-toggle,
 .overlay-toggle,
 .download-toggle,
+.topography-clip-toggle,
 .preview-position-toggle,
 .settings-toggle {
   display: flex;
@@ -485,7 +656,7 @@ function handleCalibrationResult(result: CalibrationResult | null) {
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
-  width: 50px;
+  gap: 0.5rem;
   padding: 4px 4px 4px 8px;
   align-self: stretch;
 }
@@ -505,8 +676,8 @@ function handleCalibrationResult(result: CalibrationResult | null) {
 
 .color-scale-labels {
   position: relative;
-  flex: 1;
-  min-width: 0;
+  width: 2.7rem;
+  min-width: 2.7rem;
 }
 
 .color-scale-label {
@@ -517,5 +688,28 @@ function handleCalibrationResult(result: CalibrationResult | null) {
   color: var(--text-secondary);
   white-space: nowrap;
   line-height: 1;
+}
+
+.color-scale-clip-control {
+  width: 2rem;
+  min-width: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.color-scale-clip-value {
+  font-size: 10px;
+  color: var(--text-secondary);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  line-height: 1;
+}
+
+.topography-clip-slider {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 </style>
