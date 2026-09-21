@@ -1,18 +1,29 @@
 """Configuration settings for the video analysis server."""
 
 import os
-from pathlib import Path
 
-# Base directory for the server
-BASE_DIR = Path(__file__).parent
+from .paths import data_dir, resource_dir
+
+# Read-only files shipped with the app. Inside a PyInstaller bundle this is the
+# extraction directory, which is deleted on exit — never write here.
+RESOURCE_DIR = resource_dir()
+
+# Everything the app persists. Identical to RESOURCE_DIR in a source checkout,
+# a per-user directory in a frozen build.
+DATA_DIR = data_dir()
 
 # Storage directories
-VIDEOS_DIR = BASE_DIR / "videos"
-RESULTS_DIR = BASE_DIR / "results"
+VIDEOS_DIR = DATA_DIR / "videos"
+RESULTS_DIR = DATA_DIR / "results"
 
 # Ensure directories exist
-VIDEOS_DIR.mkdir(exist_ok=True)
-RESULTS_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Bundled resources
+STATIC_DIR = RESOURCE_DIR / "static"
+FFMPEG_BIN_DIR = RESOURCE_DIR / "ffmpeg_bin"
 
 # Allowed video file extensions
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mts"}
@@ -21,7 +32,7 @@ ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".mts"}
 MAX_UPLOAD_SIZE = 1000 * 1024 * 1024
 
 # Database path
-DATABASE_PATH = BASE_DIR / "analyses.db"
+DATABASE_PATH = DATA_DIR / "analyses.db"
 
 # Physical measurement constants
 # Pixel to millimeter conversion factor

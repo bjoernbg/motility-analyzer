@@ -1,5 +1,6 @@
 # Python-generated files
 server/__pycache__/
+server/**/__pycache__/
 server/*.py[oc]
 server/build/
 server/dist/
@@ -11,6 +12,12 @@ server/.venv
 server/videos/
 server/results/
 server/analyses.db
+
+# Built client, copied in by `npm run build-bundled`
+server/static/
+
+# Inno Setup output
+dist-installer/
 
 .DS_Store
 

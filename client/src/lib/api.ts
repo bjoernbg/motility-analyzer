@@ -1,6 +1,10 @@
 /** API client for video analysis backend. */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// The bundled build sets VITE_API_BASE_URL=/ so requests go to the app's own
+// origin, which works whether the user opened localhost:8000 or 127.0.0.1:8000.
+// Normalised to '' so paths stay root-relative rather than protocol-relative.
+const rawApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const API_BASE_URL = rawApiBaseUrl === '/' ? '' : rawApiBaseUrl.replace(/\/$/, '');
 
 function getApiAssetUrl(path: string): string {
   if (import.meta.env.DEV) {
@@ -189,7 +193,7 @@ function toRequestError(error: unknown): Error {
 
     if (error instanceof TypeError && error.message === 'Failed to fetch') {
       return new Error(
-        `Network error: Could not reach server at ${API_BASE_URL}. Make sure the backend server is running.`
+        `Network error: Could not reach server at ${API_BASE_URL || window.location.origin}. Make sure the backend server is running.`
       );
     }
 

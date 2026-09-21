@@ -8,6 +8,7 @@ from pathlib import Path
 import cv2  # type: ignore[import-untyped]
 from ffmpeg import FFmpeg
 
+from .ffmpeg_tools import FFmpegNotFoundError, ffprobe_executable
 from .models import VideoMetadata
 
 logger = logging.getLogger(__name__)
@@ -101,10 +102,20 @@ def generate_metadata_from_video(video_path: Path) -> VideoMetadata:
 
     try:
         # CAP_PROP_FRAME_COUNT and CAP_PROP_FPS are unreliable, so we use ffprobe
-        ffprobe = FFmpeg(executable="ffprobe").input(
-            video_path, print_format="json", show_streams=None
-        )
-        media = json.loads(ffprobe.execute())
+        try:
+            ffprobe = FFmpeg(executable=ffprobe_executable()).input(
+                video_path, print_format="json", show_streams=None
+            )
+            media = json.loads(ffprobe.execute())
+        except FFmpegNotFoundError as e:
+            # This sits on the upload path, so surface it as something readable
+            # rather than letting a bare subprocess error reach the client.
+            raise ValueError(str(e)) from e
+        except Exception as e:
+            raise ValueError(
+                f"ffprobe could not read {video_path.name}: {e}"
+            ) from e
+
         video_stream = media["streams"][0]
         duration = float(video_stream["duration"])
 

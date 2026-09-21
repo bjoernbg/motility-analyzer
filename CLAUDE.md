@@ -203,12 +203,12 @@ Vue 3 application with TypeScript, using Composition API and `<script setup>`:
 - `DELETE /api/clear-all-data` - Factory reset: clear all data and caches
 
 **CORS Configuration:**
-- Backend allows `http://localhost:5173` and `http://127.0.0.1:5173` (dev frontend)
-- Update `server/main.py` CORS middleware when adding new origins
+- Backend allows any loopback origin via `allow_origin_regex` — the Vite dev server on 5173 and whichever port the packaged app lands on. `localhost` and `127.0.0.1` are distinct origins to the browser, so both have to work.
+- Update `server/main.py` CORS middleware when adding non-loopback origins
 
 **Environment Variables:**
-- Frontend: `VITE_API_BASE_URL` (defaults to `http://localhost:8000`)
-- Backend: `ANALYSIS_MAX_WORKERS` (default: cpu_count - 1), `ANALYSIS_PERSIST_EVERY_N_FRAMES` (default: 25)
+- Frontend: `VITE_API_BASE_URL` (defaults to `http://localhost:8000`; `/` for the bundled build, see `client/.env.bundled`)
+- Backend: `ANALYSIS_MAX_WORKERS` (default: cpu_count - 1), `ANALYSIS_PERSIST_EVERY_N_FRAMES` (default: 25), `MOTILITY_ANALYZER_DATA_DIR` (overrides the writable data directory)
 
 ### Edge Detection
 
@@ -400,7 +400,36 @@ server/
   videos/          # Uploaded video files + per-video settings JSON
   results/         # (Reserved for future use)
   analyses.db      # SQLite database (WAL mode)
+  static/          # Built client (gitignored; produced by `npm run build-bundled`)
+  ffmpeg_bin/      # Vendored ffmpeg/ffprobe per platform (Git LFS)
 ```
+
+In a source checkout those paths all sit under `server/`. In a PyInstaller
+build they split in two — see Packaging below.
+
+## Packaging
+
+The app ships as a single Windows artifact that needs no Python, Node or system
+ffmpeg. `packaging/README.md` has the build and verification steps; the parts
+that affect everyday development:
+
+- **Paths** (`server/paths.py`): `RESOURCE_DIR` is read-only bundled content
+  (built client, ffmpeg binaries), `DATA_DIR` is writable user data (videos,
+  `analyses.db`, results). A frozen build resolves `DATA_DIR` to
+  `%LOCALAPPDATA%\MotilityAnalyzer` (or the platform equivalent) because the
+  bundle directory is deleted on exit. Never write under `RESOURCE_DIR`.
+- **ffmpeg** (`server/ffmpeg_tools.py`): `ffmpeg_executable()` and
+  `ffprobe_executable()` prefer the vendored binary and fall back to PATH. Never
+  shell out to a bare `"ffmpeg"` — a packaged machine has none on PATH.
+- **Entry point** (`server/run.py`): picks a free port, starts uvicorn on
+  loopback, opens the browser. `uv run python run.py` from `server/` serves the
+  whole app on one port with no Vite process.
+- **Static client**: `server/main.py` mounts `server/static/` with an SPA
+  fallback, registered after every API route. Empty in a checkout, so the Vite
+  dev server is still the development path.
+- **Build**: `server/motility-analyzer.spec` (one-folder),
+  `packaging/motility-analyzer.iss` (Inno Setup),
+  `.github/workflows/windows-build.yml` (PyInstaller cannot cross-compile).
 
 ## Type Safety
 

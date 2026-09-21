@@ -6,6 +6,8 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
+from .ffmpeg_tools import ffmpeg_executable
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,7 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
         Tuple of (path to re-encoded video, statistics dict)
 
     Raises:
-        RuntimeError: If ffmpeg encoding fails
+        RuntimeError: If ffmpeg encoding fails or no ffmpeg binary is available
         FileNotFoundError: If input video doesn't exist
     """
     if not video_path.exists():
@@ -54,7 +56,7 @@ def reencode_video(video_path: Path) -> tuple[Path, dict]:
 
         # Build ffmpeg command exactly as specified
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-hide_banner",
             "-i",
             str(video_path),
