@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { reactive, ref } from 'vue';
 import { useAnalysisStore } from '../stores/analysis';
 import type { Video, MultiViewSession } from '../lib/api';
 import { videoNeedsReencoding } from '../lib/api';
@@ -9,6 +9,7 @@ import { Icon } from './ui/icon';
 
 const emit = defineEmits<{
   'create-combined': [];
+  'entity-selected': [{ type: 'video' | 'combined'; id: string }];
 }>();
 
 const store = useAnalysisStore();
@@ -32,10 +33,6 @@ const videoMenuOpen = reactive<Record<string, boolean>>({});
 const sessionMenuOpen = reactive<Record<string, boolean>>({});
 
 const VIDEO_UPLOAD_ACCEPT = '.mp4,.avi,.mov,.mkv,.webm,.mts,video/*';
-
-onMounted(async () => {
-  await Promise.all([store.loadVideos(), store.loadMultiViewSessions()]);
-});
 
 function isSessionAutoAligned(session: MultiViewSession): boolean {
   const alignmentSource = session.metadata?.alignment?.source;
@@ -80,9 +77,15 @@ async function selectVideo(videoId: string) {
     return;
   }
 
+  if (store.activeEntityType === 'video' && store.activeEntityId === videoId) {
+    emit('entity-selected', { type: 'video', id: videoId });
+    return;
+  }
+
   try {
     selectingVideoId.value = videoId;
     await store.selectVideoEntity(videoId);
+    emit('entity-selected', { type: 'video', id: videoId });
   } catch (error) {
     console.error('Failed to select video:', error);
   } finally {
@@ -105,6 +108,9 @@ async function handleFileSelect(event: Event) {
 
   try {
     await store.handleVideoUpload(file);
+    if (store.activeEntityType === 'video' && store.activeEntityId) {
+      emit('entity-selected', { type: 'video', id: store.activeEntityId });
+    }
   } catch (error) {
     console.error('Upload failed:', error);
   } finally {
@@ -276,8 +282,14 @@ async function saveRenameSession(sessionId: string) {
 }
 
 async function selectSession(sessionId: string) {
+  if (store.activeEntityType === 'combined' && store.activeEntityId === sessionId) {
+    emit('entity-selected', { type: 'combined', id: sessionId });
+    return;
+  }
+
   try {
     await store.selectCombinedEntity(sessionId);
+    emit('entity-selected', { type: 'combined', id: sessionId });
   } catch (error) {
     console.error('Failed to select combined analysis:', error);
   }

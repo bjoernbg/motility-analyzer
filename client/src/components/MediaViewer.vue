@@ -213,7 +213,6 @@
             :min="topographyClipRange.min"
             :max="topographyClipRange.max"
             :step="0.1"
-            :disabled="!topographyClipEnabled"
             class="topography-clip-slider"
           />
         </div>
@@ -308,7 +307,10 @@ const showColorScale = computed(() => {
 })
 const showTopographyClipSlider = computed(() => {
   return (
-    viewMode.value === 'topography' && showColorScale.value && topographyClipRange.value !== null
+    viewMode.value === 'topography' &&
+    showColorScale.value &&
+    topographyClipRange.value !== null &&
+    topographyClipEnabled.value
   )
 })
 

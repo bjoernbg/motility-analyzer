@@ -22,7 +22,13 @@
       </div>
       <!-- Main heatmap canvas -->
       <div class="heatmap-canvas-wrapper">
-        <canvas ref="canvas" class="heatmap-canvas"></canvas>
+        <canvas
+          ref="canvas"
+          class="heatmap-canvas"
+          @mousemove="onCanvasMouseMove"
+          @mouseleave="onCanvasMouseLeave"
+          @click="onCanvasClick"
+        ></canvas>
         <!-- X-axis labels (bottom) -->
         <canvas v-if="!compact" ref="xAxisCanvas" class="x-axis-canvas"></canvas>
       </div>
@@ -114,12 +120,10 @@ const colormap = createColormap();
 onMounted(() => {
   renderHeatmap();
   renderAxes();
-  setupMouseMove();
   setupResizeObserver();
 });
 
 onUnmounted(() => {
-  cleanupMouseMove();
   resizeObserver.value?.disconnect();
 });
 
@@ -619,26 +623,6 @@ function onCanvasClick(e: MouseEvent): void {
   if (result) {
     emit('frame-click', result.frame, result.index);
   }
-}
-
-function setupMouseMove(): void {
-  if (!canvas.value || !container.value) {
-    return;
-  }
-
-  canvas.value.addEventListener('mousemove', onCanvasMouseMove);
-  canvas.value.addEventListener('mouseleave', onCanvasMouseLeave);
-  canvas.value.addEventListener('click', onCanvasClick);
-}
-
-function cleanupMouseMove(): void {
-  if (!canvas.value) {
-    return;
-  }
-
-  canvas.value.removeEventListener('mousemove', onCanvasMouseMove);
-  canvas.value.removeEventListener('mouseleave', onCanvasMouseLeave);
-  canvas.value.removeEventListener('click', onCanvasClick);
 }
 </script>
 

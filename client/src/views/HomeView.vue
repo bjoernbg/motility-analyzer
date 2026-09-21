@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue';
-import WorkspaceEntitySelector from '../components/WorkspaceEntitySelector.vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import CombinedAnalysisSidebar from '../components/CombinedAnalysisSidebar.vue';
 import AnalysisParams from '../components/AnalysisParams.vue';
 import MediaViewer from '../components/MediaViewer.vue';
@@ -8,14 +8,57 @@ import MediaController from '../components/MediaController.vue';
 import AnalysisResults from '../components/AnalysisResults.vue';
 import MultiViewStartModal from '../components/MultiViewStartModal.vue';
 import MultiViewWorkspace from '../components/MultiViewWorkspace.vue';
+import ProjectSelectorDrawer from '../components/ProjectSelectorDrawer.vue';
+import { Button } from '../components/ui/button';
+import { getVideoDisplayName } from '../lib/domain/displayNames';
 import { useAnalysisStore } from '../stores/analysis';
 import { useWorkspaceEntityRouting } from '../composables/useWorkspaceEntityRouting';
 
 const store = useAnalysisStore();
+const route = useRoute();
 const showMultiViewModal = ref(false);
+const isProjectDrawerOpen = ref(false);
 const selectedContractionId = ref<string | null>(null);
 
 useWorkspaceEntityRouting();
+
+const hasActiveEntity = computed(() => store.isInVideoMode || store.isInCombinedMode);
+
+const activeProjectName = computed(() => {
+  if (store.isInVideoMode && store.currentVideo) {
+    return getVideoDisplayName(store.currentVideo);
+  }
+
+  if (store.isInCombinedMode && store.currentMultiViewSession) {
+    return store.currentMultiViewSession.name;
+  }
+
+  return 'No project selected';
+});
+
+const activeProjectKindLabel = computed(() => {
+  if (store.isInVideoMode) {
+    return 'Video';
+  }
+
+  if (store.isInCombinedMode) {
+    return 'Combined analysis';
+  }
+
+  return null;
+});
+
+const projectMetaCopy = computed(() => {
+  if (store.isInVideoMode) {
+    return 'Video analyses and measurement settings are shown below.';
+  }
+
+  if (store.isInCombinedMode) {
+    return 'Combined alignment and session settings are shown below.';
+  }
+
+  return 'Choose a video or combined analysis to begin.';
+});
 
 function handleSeek(frame: number) {
   store.seekToFrame(frame);
@@ -24,6 +67,42 @@ function handleSeek(frame: number) {
 function handleContractionSelection(contractionId: string | null) {
   selectedContractionId.value = contractionId;
 }
+
+function openProjectDrawer() {
+  isProjectDrawerOpen.value = true;
+}
+
+function handleProjectSelected() {
+  isProjectDrawerOpen.value = false;
+}
+
+function handleCreateCombined() {
+  isProjectDrawerOpen.value = false;
+  showMultiViewModal.value = true;
+}
+
+onMounted(() => {
+  void Promise.all([store.loadVideos(), store.loadMultiViewSessions()]);
+});
+
+watch(
+  () => [route.name, store.activeEntityType, store.activeEntityId] as const,
+  ([routeName, activeEntityType, activeEntityId]) => {
+    const hasEntity =
+      (activeEntityType === 'video' || activeEntityType === 'combined') &&
+      activeEntityId !== null;
+
+    if (hasEntity) {
+      isProjectDrawerOpen.value = false;
+      return;
+    }
+
+    if (routeName === 'home') {
+      isProjectDrawerOpen.value = true;
+    }
+  },
+  { immediate: true }
+);
 
 onUnmounted(() => {
   store.stopPolling();
@@ -39,12 +118,30 @@ onUnmounted(() => {
 
       <div class="layout">
         <div class="left-panel">
-          <WorkspaceEntitySelector @create-combined="showMultiViewModal = true" />
+          <section class="project-switcher">
+            <div class="project-switcher-header">
+              <p class="project-switcher-label">Project</p>
+              <Button
+                class="project-switcher-action"
+                size="sm"
+                :variant="hasActiveEntity ? 'outline' : 'default'"
+                @click="openProjectDrawer"
+              >
+                {{ hasActiveEntity ? 'Change project' : 'Select project' }}
+              </Button>
+            </div>
+
+            <p class="project-switcher-title">{{ activeProjectName }}</p>
+            <span v-if="activeProjectKindLabel" class="project-kind-badge">
+              {{ activeProjectKindLabel }}
+            </span>
+            <p class="project-switcher-meta">{{ projectMetaCopy }}</p>
+          </section>
 
           <AnalysisParams v-if="store.isInVideoMode" />
           <CombinedAnalysisSidebar v-else-if="store.isInCombinedMode" />
           <div v-else class="empty-panel">
-            Select a video or combined analysis to begin.
+            No project selected. Use the project picker to choose a video or combined analysis.
           </div>
         </div>
 
@@ -65,6 +162,11 @@ onUnmounted(() => {
     </div>
 
     <MultiViewStartModal v-model="showMultiViewModal" />
+    <ProjectSelectorDrawer
+      v-model:open="isProjectDrawerOpen"
+      @entity-selected="handleProjectSelected"
+      @create-combined="handleCreateCombined"
+    />
   </div>
 </template>
 
@@ -100,11 +202,70 @@ h1 {
   gap: 1rem;
 }
 
+.project-switcher,
 .left-panel,
 .right-panel {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.project-switcher {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  gap: 0.75rem;
+}
+
+.project-switcher-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.project-switcher-label,
+.project-switcher-title {
+  margin: 0;
+}
+
+.project-switcher-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.project-switcher-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.project-kind-badge {
+  align-self: flex-start;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.22rem 0.45rem;
+}
+
+.project-switcher-meta {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.project-switcher-action {
+  flex-shrink: 0;
 }
 
 .empty-panel,
@@ -127,6 +288,19 @@ h1 {
 @media (max-width: 1200px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+
+  .project-switcher {
+    gap: 0.85rem;
+  }
+
+  .project-switcher-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .project-switcher-action {
+    align-self: flex-start;
   }
 
   .empty-workspace {

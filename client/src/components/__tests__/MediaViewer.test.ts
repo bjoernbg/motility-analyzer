@@ -330,7 +330,7 @@ describe('MediaViewer toolbar exports', () => {
     expect(wrapper.find('.topography-viewer-stub').exists()).toBe(true)
   })
 
-  it('only shows the clipping toggle and slider in topography mode', async () => {
+  it('only shows the clipping toggle in topography mode and hides the slider until clipping is active', async () => {
     const wrapper = mountSubject()
     await flush()
 
@@ -345,6 +345,11 @@ describe('MediaViewer toolbar exports', () => {
     await switchToTopography(wrapper)
 
     expect(wrapper.find('button[title="Toggle horizontal clipping plane"]').exists()).toBe(true)
+    expect(wrapper.findComponent(SliderStub).exists()).toBe(false)
+
+    await wrapper.get('button[title="Toggle horizontal clipping plane"]').trigger('click')
+    await flush()
+
     expect(wrapper.findComponent(SliderStub).exists()).toBe(true)
   })
 
@@ -354,18 +359,19 @@ describe('MediaViewer toolbar exports', () => {
     await switchToTopography(wrapper)
 
     const topographyViewer = wrapper.findComponent(HeatmapTopographyViewerStub)
-    const slider = wrapper.findComponent(SliderStub)
 
     expect(topographyViewer.props('clippingEnabled')).toBe(false)
     expect(topographyViewer.props('clipPlaneMm')).toBe(null)
-    expect(slider.props('disabled')).toBe(true)
+    expect(wrapper.findComponent(SliderStub).exists()).toBe(false)
 
     await wrapper.get('button[title="Toggle horizontal clipping plane"]').trigger('click')
     await flush()
 
+    const slider = wrapper.findComponent(SliderStub)
+
     expect(topographyViewer.props('clippingEnabled')).toBe(true)
     expect(Number(topographyViewer.props('clipPlaneMm'))).toBeCloseTo(16.5)
-    expect(slider.props('disabled')).toBe(false)
+    expect(slider.exists()).toBe(true)
   })
 
   it('propagates slider changes to the topography clipping plane', async () => {
