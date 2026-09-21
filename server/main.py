@@ -12,14 +12,15 @@ import json
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from brotli_asgi import BrotliMiddleware
 
 import numpy as np
 
 from .analysis import calculate_center_path, calculate_measurement_point_pairs
 from .calibration import calibrate_tube_width
-from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE
+from .config import ALLOWED_VIDEO_EXTENSIONS, MAX_UPLOAD_SIZE, STATIC_DIR
 from .display_settings import (
     load_video_display_settings,
     save_video_display_settings,
@@ -114,9 +115,12 @@ app.add_middleware(
 )
 
 # CORS middleware
+# Any loopback origin is allowed: the Vite dev server (5173) in development, and
+# whichever port the packaged app lands on. localhost and 127.0.0.1 are distinct
+# origins to the browser, so a user who types either one has to work.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -171,7 +175,10 @@ def _build_contraction_event_models(events_dict: list[dict]) -> list[Contraction
 
 @app.get("/")
 def read_root():
-    """Root endpoint."""
+    """Serve the built client if one is bundled, otherwise report the API is up."""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.is_file():
+        return FileResponse(index_file)
     return {"message": "Video Analysis API"}
 
 
@@ -1963,3 +1970,40 @@ async def delete_multi_view_session(session_id: str):
 
     multi_view_session_db.delete_session(session_id)
     return {"message": "Multi-view session deleted successfully"}
+
+
+# --- Built client ----------------------------------------------------------
+# Registered last so every API route above wins the match. In a source checkout
+# server/static/ is empty and the Vite dev server serves the client instead.
+
+
+def _mount_built_client() -> None:
+    """Serve the built Vue client from STATIC_DIR with an SPA fallback."""
+    index_file = STATIC_DIR / "index.html"
+    if not index_file.is_file():
+        logger.info("No built client at %s; not serving static files", STATIC_DIR)
+        return
+
+    static_root = STATIC_DIR.resolve()
+
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def serve_spa(spa_path: str) -> Response:
+        """Return the requested file, or index.html so the router can handle it."""
+        if spa_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        if spa_path:
+            candidate = (static_root / spa_path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(static_root):
+                return FileResponse(candidate)
+
+        return FileResponse(index_file)
+
+    logger.info("Serving built client from %s", static_root)
+
+
+_mount_built_client()

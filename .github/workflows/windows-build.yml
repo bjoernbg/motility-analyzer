@@ -1,0 +1,119 @@
+name: Windows build
+
+# PyInstaller cannot cross-compile, so the Windows executable has to be built on
+# Windows. Building in CI also guarantees a fresh clone with Git LFS, which is
+# the only reliable way to know the vendored ffmpeg binaries are real binaries
+# rather than LFS pointer files.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify vendored ffmpeg binaries are not LFS pointers
+        shell: pwsh
+        run: |
+          foreach ($tool in "ffmpeg", "ffprobe") {
+            $path = "server/ffmpeg_bin/windows/$tool.exe"
+            $size = (Get-Item $path).Length
+            if ($size -lt 1MB) {
+              throw "$path is only $size bytes - that is a Git LFS pointer, not a binary."
+            }
+            Write-Host "$path OK ($([math]::Round($size / 1MB)) MB)"
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build the client into server/static
+        working-directory: client
+        run: |
+          npm ci
+          npm run build-bundled
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        working-directory: server
+        run: uv sync
+
+      - name: Run backend tests
+        run: uv run --project server pytest server/tests -q
+
+      - name: Build the executable
+        working-directory: server
+        run: uv run pyinstaller --noconfirm motility-analyzer.spec
+
+      - name: Smoke test the build
+        shell: pwsh
+        working-directory: server
+        env:
+          MOTILITY_ANALYZER_DATA_DIR: ${{ runner.temp }}/smoke-data
+        run: |
+          $exe = Resolve-Path "dist/motility-analyzer/motility-analyzer.exe"
+          $app = Start-Process -PassThru -FilePath $exe `
+            -ArgumentList "--port", "8000", "--no-browser"
+          try {
+            $ok = $false
+            foreach ($attempt in 1..60) {
+              Start-Sleep -Seconds 1
+              try {
+                Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/videos" -UseBasicParsing | Out-Null
+                Invoke-WebRequest -Uri "http://127.0.0.1:8000/" -UseBasicParsing | Out-Null
+                $ok = $true
+                break
+              } catch { }
+            }
+            if (-not $ok) { throw "App did not answer on http://127.0.0.1:8000 within 60s" }
+            Write-Host "App served the client and the API."
+          } finally {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $version = if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $env:GITHUB_REF -replace "^refs/tags/v", ""
+          } else {
+            "0.0.0-$($env:GITHUB_SHA.Substring(0, 7))"
+          }
+          Write-Host "Building installer for version $version"
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if ($iscc) {
+            $isccPath = $iscc.Source
+          } else {
+            $isccPath = Get-ChildItem "${env:ProgramFiles(x86)}", $env:ProgramFiles `
+              -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $isccPath) { throw "ISCC.exe not found after installing Inno Setup" }
+          Write-Host "Using $isccPath"
+          & $isccPath "/DAppVersion=$version" packaging/motility-analyzer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motility-analyzer-windows-installer
+          path: dist-installer/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motility-analyzer-windows-portable
+          path: server/dist/motility-analyzer/
+          if-no-files-found: error
