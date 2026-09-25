@@ -52,7 +52,10 @@ jobs:
         run: uv sync
 
       - name: Run backend tests
-        run: uv run --project server pytest server/tests -q
+        # `python -m pytest`, not `pytest`: the tests import `server.*` as a
+        # top-level package, so the repo root has to be on sys.path. Only the
+        # `-m` form puts the working directory there.
+        run: uv run --project server python -m pytest server/tests -q
 
       - name: Build the executable
         working-directory: server

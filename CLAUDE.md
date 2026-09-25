@@ -31,8 +31,9 @@ uv run uvicorn server.main:app --reload --port 8000
 ruff check server
 ruff format server
 
-# Run tests (if pytest is set up)
-uv run pytest
+# Run tests — from the REPO ROOT, and via `python -m` so that the repo root
+# lands on sys.path. The tests import `server.*` as a top-level package.
+cd .. && uv run --project server python -m pytest server/tests -q
 ```
 
 ### Frontend (Vue + Vite)
